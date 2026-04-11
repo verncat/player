@@ -64,6 +64,8 @@ pub fn run() {
             library::get_track_cover,
             library::update_track,
             library::open_data_dir,
+            library::record_play,
+            library::get_recent_tracks,
             audio::get_output_devices,
             audio::set_output_device,
             audio::get_volume,

@@ -93,6 +93,7 @@ const queueSource = ref<QueueSource>('library');
 const queueSourceIndex = ref(0);       // index into source list of the LAST item pushed
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
+const recentTracks = ref<Track[]>([]);
 const showQueueMenu = ref(false);
 
 const currentTrack = computed(() => {
@@ -110,7 +111,7 @@ const progressPercent = computed(() => (duration.value > 0 ? (currentTime.value 
 
 /** Return the full ordered list for a given source */
 function sourceList(src: QueueSource): Track[] {
-  if (src === 'recent') return libraryTracks.value.slice(0, 12);
+  if (src === 'recent') return recentTracks.value.length ? recentTracks.value : libraryTracks.value.slice(0, 12);
   // 'library' – flattened in grouped order
   const flat: Track[] = [];
   for (const [, tracks] of groupedByArtist.value) flat.push(...tracks);
@@ -147,6 +148,7 @@ async function playTrackFrom(src: QueueSource, index: number) {
   queue.value = [];
   refillQueue();
   await invoke('playback_play', { path: track.path });
+  invoke('record_play', { id: track.id }).then(() => loadRecent());
   startTicker();
 }
 
@@ -167,6 +169,7 @@ async function playNext() {
     isPlaying.value = true;
   }
   await invoke('playback_play', { path: next.path });
+  invoke('record_play', { id: next.id }).then(() => loadRecent());
   startTicker();
 }
 
@@ -317,6 +320,13 @@ async function loadLibrary() {
   }
 }
 
+async function loadRecent() {
+  try {
+    recentTracks.value = await invoke<Track[]>('get_recent_tracks', { limit: 12 });
+    fetchCovers(recentTracks.value);
+  } catch (_) {}
+}
+
 async function fetchCovers(tracks: Track[]) {
   for (const t of tracks) {
     if (covers.value[t.id] !== undefined) continue;
@@ -395,6 +405,7 @@ function identifyStatusIcon(status: string) {
 onMounted(() => {
   document.addEventListener('click', onDocClick);
   loadLibrary();
+  loadRecent();
   listen('library-changed', () => loadLibrary());
   listen<{current: number; total: number; track_id: number; track_name: string | null; status: string; message: string | null}>('identify-progress', (e) => {
     const p = e.payload;
@@ -513,9 +524,9 @@ onUnmounted(() => {
         <template v-if="activeNav === 'home'">
           <section>
             <h2>Recently played</h2>
-            <div v-if="libraryTracks.length === 0" class="library-empty">No tracks yet.</div>
+            <div v-if="recentTracks.length === 0 && libraryTracks.length === 0" class="library-empty">No tracks yet.</div>
             <div v-else class="card-list">
-              <div v-for="(track, idx) in libraryTracks.slice(0, 12)" :key="track.id"
+              <div v-for="(track, idx) in (recentTracks.length ? recentTracks : libraryTracks.slice(0, 12))" :key="track.id + '-' + idx"
                 class="card" :class="rarityClass(track.rarity)" :style="rarityVars(track.rarity)"
                 @click="playTrackFrom('recent', idx)">
                 <div class="cover" :style="covers[track.id]

@@ -166,6 +166,14 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN rarity TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0");
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS play_history (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id  INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            played_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_played_at ON play_history(played_at DESC);",
+    )?;
     Ok(())
 }
 
@@ -614,4 +622,45 @@ pub fn update_track(
 #[tauri::command]
 pub fn open_data_dir(state: tauri::State<'_, LibraryState>) -> Result<(), String> {
     open::that(&state.data_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn record_play(
+    id: i64,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    conn.execute(
+        "INSERT INTO play_history (track_id, played_at) VALUES (?1, ?2)",
+        params![id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_recent_tracks(
+    limit: Option<usize>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Vec<Track>, String> {
+    let conn = state.conn.lock().unwrap();
+    let lim = limit.unwrap_or(12) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT t.id, t.path, t.title, t.artist, t.album, t.track_number,
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited
+           FROM play_history h
+           JOIN tracks t ON t.id = h.track_id
+          ORDER BY h.played_at DESC
+          LIMIT ?1",
+    ).map_err(|e| e.to_string())?;
+    let tracks = stmt
+        .query_map(params![lim], row_to_track)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(tracks)
 }
