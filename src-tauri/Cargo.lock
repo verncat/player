@@ -2960,6 +2960,7 @@ dependencies = [
  "cpal",
  "lofty",
  "notify",
+ "open",
  "rusqlite",
  "serde",
  "serde_json",

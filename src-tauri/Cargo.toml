@@ -28,4 +28,5 @@ lofty = "0"
 notify = "6"
 walkdir = "2"
 base64 = "0.22"
+open = "5"
 

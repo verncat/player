@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 interface AudioDevice { name: string }
 interface DeviceList { devices: AudioDevice[]; current: string | null }
@@ -158,6 +159,7 @@ function formatDuration(secs: number | null) {
 onMounted(() => {
   document.addEventListener('click', onDocClick);
   loadLibrary();
+  listen('library-changed', () => loadLibrary());
 });
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
@@ -203,6 +205,10 @@ onUnmounted(() => {
             <svg viewBox="0 0 24 24" fill="white" width="14" height="14"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
           </span>
           Liked Songs
+        </a>
+        <a class="nav-item" href="#" @click.prevent="invoke('open_data_dir')">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+          Open Data Folder
         </a>
       </nav>
     </aside>

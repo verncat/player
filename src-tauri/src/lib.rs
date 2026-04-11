@@ -47,7 +47,7 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
             let data_dir = app.path().app_data_dir()?.join("data");
-            let library = library::LibraryState::new(data_dir)
+            let library = library::LibraryState::new(data_dir, app.handle().clone())
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             app.manage(library);
             app.manage(audio::AudioState::new());
@@ -59,6 +59,7 @@ pub fn run() {
             library::get_all_tracks,
             library::reindex,
             library::get_track_cover,
+            library::open_data_dir,
             audio::get_output_devices,
             audio::set_output_device,
             audio::get_volume,

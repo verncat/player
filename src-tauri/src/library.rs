@@ -78,7 +78,7 @@ impl LibraryState {
     ///   2. Opens / migrates `data_dir/app.db`.
     ///   3. Full-scans `data_dir` on startup.
     ///   4. Spawns a background FS watcher for incremental updates.
-    pub fn new(data_dir: PathBuf) -> Result<Self, BoxError> {
+    pub fn new(data_dir: PathBuf, app_handle: tauri::AppHandle) -> Result<Self, BoxError> {
         std::fs::create_dir_all(&data_dir)?;
 
         let conn = Connection::open(data_dir.join("app.db"))?;
@@ -86,7 +86,7 @@ impl LibraryState {
         index_directory(&conn, &data_dir)?;
 
         let conn = Arc::new(Mutex::new(conn));
-        start_watcher(data_dir.clone(), Arc::clone(&conn))?;
+        start_watcher(data_dir.clone(), Arc::clone(&conn), app_handle)?;
 
         Ok(Self { conn, data_dir })
     }
@@ -401,7 +401,11 @@ fn parse_filename(stem: &str) -> (Option<i64>, String) {
 
 // ── Filesystem watcher ────────────────────────────────────────────────────────
 
-fn start_watcher(data_dir: PathBuf, conn: Arc<Mutex<Connection>>) -> Result<(), BoxError> {
+fn start_watcher(
+    data_dir: PathBuf,
+    conn: Arc<Mutex<Connection>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), BoxError> {
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
 
     let mut watcher = RecommendedWatcher::new(
@@ -416,7 +420,7 @@ fn start_watcher(data_dir: PathBuf, conn: Arc<Mutex<Connection>>) -> Result<(), 
         let _watcher = watcher; // keep watcher alive for the lifetime of this thread
         for result in rx {
             match result {
-                Ok(event) => handle_fs_event(event, &conn, &data_dir),
+                Ok(event) => handle_fs_event(event, &conn, &data_dir, &app_handle),
                 Err(e) => eprintln!("[library] watcher error: {e}"),
             }
         }
@@ -425,7 +429,13 @@ fn start_watcher(data_dir: PathBuf, conn: Arc<Mutex<Connection>>) -> Result<(), 
     Ok(())
 }
 
-fn handle_fs_event(event: Event, conn: &Arc<Mutex<Connection>>, data_dir: &Path) {
+fn handle_fs_event(
+    event: Event,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    app_handle: &tauri::AppHandle,
+) {
+    let mut changed = false;
     match event.kind {
         EventKind::Create(_) | EventKind::Modify(_) => {
             for path in &event.paths {
@@ -436,8 +446,11 @@ fn handle_fs_event(event: Event, conn: &Arc<Mutex<Connection>>, data_dir: &Path)
                     .to_ascii_lowercase();
                 if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
                     let conn = conn.lock().unwrap();
+                    println!("[library] watcher: indexing {}", path.display());
                     if let Err(e) = index_file(&conn, data_dir, path) {
                         eprintln!("[library] watcher: index error for {}: {e}", path.display());
+                    } else {
+                        changed = true;
                     }
                 }
             }
@@ -446,10 +459,16 @@ fn handle_fs_event(event: Event, conn: &Arc<Mutex<Connection>>, data_dir: &Path)
             for path in &event.paths {
                 let rel = rel_path(data_dir, path);
                 let conn = conn.lock().unwrap();
-                let _ = conn.execute("DELETE FROM tracks WHERE path = ?1", params![rel]);
+                if conn.execute("DELETE FROM tracks WHERE path = ?1", params![rel]).unwrap_or(0) > 0 {
+                    changed = true;
+                }
             }
         }
         _ => {}
+    }
+    if changed {
+        use tauri::Emitter;
+        let _ = app_handle.emit("library-changed", ());
     }
 }
 
@@ -495,4 +514,9 @@ pub fn get_all_tracks(state: tauri::State<'_, LibraryState>) -> Result<Vec<Track
 #[tauri::command]
 pub fn reindex(state: tauri::State<'_, LibraryState>) -> Result<(), String> {
     state.reindex().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn open_data_dir(state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+    open::that(&state.data_dir).map_err(|e| e.to_string())
 }
