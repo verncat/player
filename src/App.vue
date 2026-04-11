@@ -51,6 +51,7 @@ const libraryLoading = ref(false);
 const searchQuery = ref("");
 const editingTrack = ref<Track | null>(null);
 const editForm = ref({ title: '', artist: '', album: '', track_number: null as number | null });
+const covers = ref<Record<number, string | null>>({});
 
 const currentTrack = ref({
   title: "Never Gonna Give You Up",
@@ -145,10 +146,20 @@ async function loadLibrary() {
   libraryLoading.value = true;
   try {
     libraryTracks.value = await invoke<Track[]>('get_all_tracks');
+    fetchCovers(libraryTracks.value);
   } catch (e) {
     console.error('Failed to load library:', e);
   } finally {
     libraryLoading.value = false;
+  }
+}
+
+async function fetchCovers(tracks: Track[]) {
+  for (const t of tracks) {
+    if (covers.value[t.id] !== undefined) continue;
+    invoke<string | null>('get_track_cover', { id: t.id }).then(url => {
+      covers.value[t.id] = url;
+    });
   }
 }
 
@@ -196,12 +207,12 @@ onUnmounted(() => {
   <div class="app">
     <!-- Sidebar -->
     <aside class="sidebar">
-      <div class="brand">
+      <!-- <div class="brand">
         <svg viewBox="0 0 24 24" fill="#1db954" width="32" height="32">
           <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.622.622 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.622.622 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.622.622 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.632-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.541-1.073 9.43-.865 13.152 1.337a.937.937 0 0 1-.992 1.613z"/>
         </svg>
         <span class="brand-name">Player</span>
-      </div>
+      </div> -->
 
       <nav>
         <a class="nav-item" :class="{ active: activeNav === 'home' }" @click.prevent="activeNav = 'home'" href="#">
@@ -221,7 +232,7 @@ onUnmounted(() => {
       <div class="sidebar-divider" />
 
       <nav>
-        <a class="nav-item" href="#">
+        <!-- <a class="nav-item" href="#">
           <span class="icon-box create">+</span>
           Create Playlist
         </a>
@@ -230,7 +241,7 @@ onUnmounted(() => {
             <svg viewBox="0 0 24 24" fill="white" width="14" height="14"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
           </span>
           Liked Songs
-        </a>
+        </a> -->
         <a class="nav-item" href="#" @click.prevent="invoke('open_data_dir')">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           Open Data Folder
@@ -245,7 +256,7 @@ onUnmounted(() => {
           <button class="arrow-btn">&lsaquo;</button>
           <button class="arrow-btn">&rsaquo;</button>
         </div>
-        <div class="user-menu-wrapper">
+        <!-- <div class="user-menu-wrapper">
           <button class="user-btn" @click.stop="showUserMenu = !showUserMenu">
             <span class="avatar">e</span>
             <span>user</span>
@@ -271,7 +282,7 @@ onUnmounted(() => {
               <a href="#">Log out</a>
             </div>
           </Transition>
-        </div>
+        </div> -->
       </header>
 
       <div class="content">
@@ -282,7 +293,9 @@ onUnmounted(() => {
             <div v-if="libraryTracks.length === 0" class="library-empty">No tracks yet.</div>
             <div v-else class="card-list">
               <div v-for="track in libraryTracks.slice(0, 12)" :key="track.id" class="card">
-                <div class="cover" style="background: linear-gradient(135deg, #1db954, #191414)">
+                <div class="cover" :style="covers[track.id]
+                  ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                  : 'background: linear-gradient(135deg, #1db954, #191414)'">
                   <div class="hover-play">
                     <button class="green-circle">
                       <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
@@ -342,6 +355,10 @@ onUnmounted(() => {
                   :key="track.id"
                   class="track-row"
                 >
+                  <div class="track-cover-sm" :style="covers[track.id]
+                    ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                    : 'background: linear-gradient(135deg, #1db954, #191414)'"
+                  />
                   <span class="track-num">{{ track.track_number ?? '–' }}</span>
                   <div class="track-info">
                     <span class="track-title">{{ track.title || track.path }}</span>
@@ -818,6 +835,9 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   cursor: pointer; user-select: none;
 }
 .track-row:hover { background: #282828; }
+.track-cover-sm {
+  width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0;
+}
 .track-num {
   width: 24px; text-align: right;
   font-size: 13px; color: #a7a7a7; flex-shrink: 0;
