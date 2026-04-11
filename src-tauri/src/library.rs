@@ -517,6 +517,24 @@ pub fn reindex(state: tauri::State<'_, LibraryState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn update_track(
+    id: i64,
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    track_number: Option<i64>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute(
+        "UPDATE tracks SET title = ?1, artist = ?2, album = ?3, track_number = ?4 WHERE id = ?5",
+        params![title, artist, album, track_number, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn open_data_dir(state: tauri::State<'_, LibraryState>) -> Result<(), String> {
     open::that(&state.data_dir).map_err(|e| e.to_string())
 }

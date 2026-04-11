@@ -49,6 +49,8 @@ const activeNav = ref("home");
 const libraryTracks = ref<Track[]>([]);
 const libraryLoading = ref(false);
 const searchQuery = ref("");
+const editingTrack = ref<Track | null>(null);
+const editForm = ref({ title: '', artist: '', album: '', track_number: null as number | null });
 
 const currentTrack = ref({
   title: "Never Gonna Give You Up",
@@ -148,6 +150,29 @@ async function loadLibrary() {
   } finally {
     libraryLoading.value = false;
   }
+}
+
+function openEditor(track: Track) {
+  editForm.value = {
+    title: track.title || '',
+    artist: track.artist || '',
+    album: track.album || '',
+    track_number: track.track_number,
+  };
+  editingTrack.value = track;
+}
+
+async function saveTrack() {
+  if (!editingTrack.value) return;
+  await invoke('update_track', {
+    id: editingTrack.value.id,
+    title: editForm.value.title || null,
+    artist: editForm.value.artist || null,
+    album: editForm.value.album || null,
+    trackNumber: editForm.value.track_number || null,
+  });
+  editingTrack.value = null;
+  await loadLibrary();
 }
 
 function formatDuration(secs: number | null) {
@@ -322,6 +347,9 @@ onUnmounted(() => {
                     <span class="track-title">{{ track.title || track.path }}</span>
                     <span class="track-album">{{ track.album || '' }}</span>
                   </div>
+                  <button class="icon-btn edit-btn" title="Edit" @click.stop="openEditor(track)">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
+                  </button>
                   <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                 </div>
               </div>
@@ -338,6 +366,42 @@ onUnmounted(() => {
         </template>
       </div>
     </main>
+
+    <!-- Edit modal -->
+    <Transition name="modal">
+      <div v-if="editingTrack" class="modal-overlay" @click.self="editingTrack = null">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>Edit Track</h3>
+            <button class="icon-btn" @click="editingTrack = null">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <label class="field">
+              <span>Title</span>
+              <input v-model="editForm.title" />
+            </label>
+            <label class="field">
+              <span>Artist</span>
+              <input v-model="editForm.artist" />
+            </label>
+            <label class="field">
+              <span>Album</span>
+              <input v-model="editForm.album" />
+            </label>
+            <label class="field">
+              <span>Track #</span>
+              <input v-model.number="editForm.track_number" type="number" min="0" />
+            </label>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" @click="editingTrack = null">Cancel</button>
+            <button class="btn-primary" @click="saveTrack">Save</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- Player bar -->
     <footer class="player">
@@ -770,6 +834,59 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .track-dur {
   font-size: 13px; color: #a7a7a7; flex-shrink: 0;
 }
+.edit-btn {
+  opacity: 0; transition: opacity .12s; flex-shrink: 0;
+}
+.track-row:hover .edit-btn { opacity: 1; }
+
+/* ── Edit modal ── */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, .65);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 500;
+}
+.modal {
+  background: #282828; border-radius: 8px;
+  width: 400px; max-width: 90vw;
+  box-shadow: 0 16px 48px rgba(0,0,0,.6);
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 24px 12px;
+}
+.modal-header h3 { font-size: 18px; font-weight: 700; }
+.modal-body { padding: 8px 24px 16px; display: flex; flex-direction: column; gap: 14px; }
+.field {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.field span {
+  font-size: 12px; font-weight: 600; color: #a7a7a7; text-transform: uppercase; letter-spacing: .03em;
+}
+.field input {
+  background: #3e3e3e; border: none; border-radius: 4px;
+  color: #fff; font-size: 14px; padding: 10px 12px; outline: none;
+}
+.field input:focus { outline: 1px solid #1db954; }
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: 10px;
+  padding: 12px 24px 20px;
+}
+.btn-secondary {
+  background: transparent; border: 1px solid #727272; border-radius: 20px;
+  color: #fff; font-size: 13px; font-weight: 700;
+  padding: 8px 24px; cursor: pointer;
+}
+.btn-secondary:hover { border-color: #fff; }
+.btn-primary {
+  background: #1db954; border: none; border-radius: 20px;
+  color: #000; font-size: 13px; font-weight: 700;
+  padding: 8px 28px; cursor: pointer;
+}
+.btn-primary:hover { background: #1ed760; transform: scale(1.02); }
+
+.modal-enter-active, .modal-leave-active { transition: opacity .15s; }
+.modal-enter-from, .modal-leave-to { opacity: 0; }
 
 /* ── Device popup ── */
 .device-menu-wrapper { position: relative; }
