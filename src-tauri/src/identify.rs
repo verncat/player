@@ -338,6 +338,23 @@ fn run_identify(
         let dn = display_name.as_str();
 
         let abs = data_dir.join(&rel);
+
+        // Skip files larger than 15 MB
+        const MAX_FILE_SIZE: u64 = 15 * 1024 * 1024;
+        match std::fs::metadata(&abs) {
+            Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+                emit_progress(app, i + 1, total, *id, Some(dn), "error",
+                    Some(&format!("Skipped: file too large ({:.1} MB)", meta.len() as f64 / 1_048_576.0)));
+                continue;
+            }
+            Err(e) => {
+                emit_progress(app, i + 1, total, *id, Some(dn), "error",
+                    Some(&format!("Cannot read file: {e}")));
+                continue;
+            }
+            _ => {}
+        }
+
         emit_progress(app, i + 1, total, *id, Some(dn), "fingerprinting",
             Some(&format!("Decoding {rel}")));
 
