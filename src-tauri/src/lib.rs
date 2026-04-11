@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod identify;
 pub mod library;
 pub mod playback;
 
@@ -74,6 +75,7 @@ pub fn run() {
             playback::playback_seek,
             playback::playback_set_volume,
             playback::playback_status,
+            identify::identify_tracks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

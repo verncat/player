@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -16,6 +16,7 @@ interface Track {
   duration_secs: number | null;
   file_hash: string | null;
   rarity: string | null;
+  manually_edited: boolean;
 }
 
 const rarityColors: Record<string, string> = {
@@ -75,6 +76,16 @@ const searchQuery = ref("");
 const editingTrack = ref<Track | null>(null);
 const editForm = ref({ title: '', artist: '', album: '', track_number: null as number | null });
 const covers = ref<Record<number, string | null>>({});
+
+/* ── Identify state ── */
+const identifyRunning = ref(false);
+const identifyMinimized = ref(false);
+const identifyCurrent = ref(0);
+const identifyTotal = ref(0);
+const identifyDone = ref(false);
+interface IdentifyItem { track_id: number; track_name: string | null; status: string; message: string | null }
+const identifyResults = ref<IdentifyItem[]>([]);
+const identifyLogRef = ref<HTMLElement | null>(null);
 
 /* ── Queue state ── */
 type QueueSource = 'recent' | 'library';
@@ -349,10 +360,57 @@ async function doReindex() {
   await loadLibrary();
 }
 
+async function startIdentify() {
+  const ids = libraryTracks.value.filter(t => !t.manually_edited).map(t => t.id);
+  if (!ids.length) return;
+  identifyResults.value = [];
+  identifyCurrent.value = 0;
+  identifyTotal.value = ids.length;
+  identifyRunning.value = true;
+  identifyMinimized.value = false;
+  identifyDone.value = false;
+  await invoke('identify_tracks', { ids });
+}
+
+async function identifySingle(track: Track) {
+  identifyResults.value = [];
+  identifyCurrent.value = 0;
+  identifyTotal.value = 1;
+  identifyRunning.value = true;
+  identifyMinimized.value = false;
+  identifyDone.value = false;
+  await invoke('identify_tracks', { ids: [track.id] });
+}
+
+function identifyStatusIcon(status: string) {
+  if (status === 'found') return '\u2714';
+  if (status === 'not_found') return '\u2013';
+  if (status === 'error') return '\u2716';
+  if (status === 'fingerprinting') return '\u266B';
+  if (status === 'looking_up') return '\u21BB';
+  if (status === 'done') return '\u2605';
+  return '\u00B7';
+}
+
 onMounted(() => {
   document.addEventListener('click', onDocClick);
   loadLibrary();
   listen('library-changed', () => loadLibrary());
+  listen<{current: number; total: number; track_id: number; track_name: string | null; status: string; message: string | null}>('identify-progress', (e) => {
+    const p = e.payload;
+    identifyCurrent.value = p.current;
+    identifyTotal.value = p.total;
+    if (p.status === 'done') {
+      identifyDone.value = true;
+      identifyResults.value.push({ track_id: 0, track_name: null, status: 'done', message: `Finished: ${p.total} tracks processed` });
+      loadLibrary();
+    } else {
+      identifyResults.value.push({ track_id: p.track_id, track_name: p.track_name, status: p.status, message: p.message });
+    }
+    nextTick(() => {
+      if (identifyLogRef.value) identifyLogRef.value.scrollTop = identifyLogRef.value.scrollHeight;
+    });
+  });
 });
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
@@ -406,6 +464,10 @@ onUnmounted(() => {
         <a class="nav-item" href="#" @click.prevent="doReindex">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
           Reindex
+        </a>
+        <a class="nav-item" href="#" @click.prevent="startIdentify">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
+          Identify
         </a>
       </nav>
     </aside>
@@ -529,6 +591,9 @@ onUnmounted(() => {
                     <span class="track-title">{{ track.title || track.path }}</span>
                     <span class="track-album">{{ track.album || '' }}</span>
                   </div>
+                  <button class="icon-btn edit-btn" title="Identify" @click.stop="identifySingle(track)">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
+                  </button>
                   <button class="icon-btn edit-btn" title="Edit" @click.stop="openEditor(track)">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
                   </button>
@@ -580,6 +645,47 @@ onUnmounted(() => {
           <div class="modal-footer">
             <button class="btn-secondary" @click="editingTrack = null">Cancel</button>
             <button class="btn-primary" @click="saveTrack">Save</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Identify progress mini indicator (top-right when minimized) -->
+    <div v-if="identifyRunning && identifyMinimized" class="identify-mini" @click="identifyMinimized = false">
+      <div class="identify-mini-spinner" />
+      <span>{{ identifyCurrent }}/{{ identifyTotal }}</span>
+      <span v-if="identifyDone" class="identify-mini-done">✓</span>
+    </div>
+
+    <!-- Identify progress modal -->
+    <Transition name="modal">
+      <div v-if="identifyRunning && !identifyMinimized" class="modal-overlay" @click.self="identifyMinimized = true">
+        <div class="modal identify-modal">
+          <div class="modal-header">
+            <h3>Identifying tracks</h3>
+            <div style="display:flex;gap:8px">
+              <button class="icon-btn" title="Minimize" @click="identifyMinimized = true">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M6 19h12v2H6z"/></svg>
+              </button>
+              <button v-if="identifyDone" class="icon-btn" title="Close" @click="identifyRunning = false">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="modal-body">
+            <div class="identify-bar-wrap">
+              <div class="identify-bar-fill" :style="`width:${identifyTotal > 0 ? (identifyCurrent / identifyTotal * 100) : 0}%`" />
+            </div>
+            <div class="identify-status">{{ identifyCurrent }} / {{ identifyTotal }}{{ identifyDone ? ' — Done' : '' }}</div>
+            <div class="identify-results" ref="identifyLogRef">
+              <div v-for="(item, idx) in identifyResults" :key="idx"
+                class="identify-result-item" :class="'ir-' + item.status">
+                <span class="ir-icon">{{ identifyStatusIcon(item.status) }}</span>
+                <span class="ir-name" v-if="item.track_name">{{ item.track_name }}</span>
+                <span class="ir-text">{{ item.message || item.status.replace('_', ' ') }}</span>
+              </div>
+              <div v-if="!identifyResults.length && !identifyDone" class="identify-empty">Processing…</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1283,5 +1389,102 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 @keyframes rarity-sweep {
   from { background-position: 0 0; }
   to   { background-position: 34.77px 9.32px; }
+}
+
+/* ── Identify progress ── */
+.identify-mini {
+  position: fixed;
+  top: 16px;
+  right: 24px;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #282828;
+  border: 1px solid #3e3e3e;
+  border-radius: 20px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  transition: background .12s;
+}
+.identify-mini:hover { background: #333; }
+.identify-mini-spinner {
+  width: 14px; height: 14px;
+  border: 2px solid #555;
+  border-top-color: #1db954;
+  border-radius: 50%;
+  animation: ident-spin .8s linear infinite;
+}
+.identify-mini-done { color: #1db954; font-size: 14px; }
+@keyframes ident-spin { to { transform: rotate(360deg); } }
+.identify-modal { width: 440px; }
+.identify-bar-wrap {
+  height: 4px;
+  background: #535353;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.identify-bar-fill {
+  height: 100%;
+  background: #1db954;
+  border-radius: 2px;
+  transition: width .3s;
+}
+.identify-status {
+  font-size: 12px;
+  color: #a7a7a7;
+  margin-bottom: 12px;
+}
+.identify-results {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.identify-results::-webkit-scrollbar { width: 6px; }
+.identify-results::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.identify-results::-webkit-scrollbar-track { background: transparent; }
+.identify-result-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  min-width: 0;
+}
+.ir-icon { width: 16px; text-align: center; flex-shrink: 0; }
+.ir-name {
+  color: #ccc;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+  flex-shrink: 0;
+}
+.ir-text {
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
+  flex: 1;
+}
+.ir-found { color: #1db954; }
+.ir-not_found { color: #a7a7a7; }
+.ir-error { color: #ff5252; }
+.ir-fingerprinting { color: #4fc3f7; }
+.ir-looking_up { color: #ffa726; }
+.ir-done { color: #1db954; font-weight: 600; }
+.identify-empty {
+  color: #a7a7a7;
+  font-size: 13px;
+  padding: 12px 0;
+  text-align: center;
 }
 </style>

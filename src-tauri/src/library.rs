@@ -50,6 +50,7 @@ pub struct Track {
     pub duration_secs: Option<f64>,
     pub file_hash: Option<String>,
     pub rarity: Option<String>,
+    pub manually_edited: bool,
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -97,11 +98,15 @@ impl LibraryState {
         &self.data_dir
     }
 
+    pub fn conn(&self) -> Arc<Mutex<Connection>> {
+        Arc::clone(&self.conn)
+    }
+
     pub fn search(&self, query: &str) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited
                FROM tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
@@ -118,7 +123,7 @@ impl LibraryState {
     pub fn all_tracks(&self) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited
                FROM tracks
               ORDER BY artist, album, track_number, title",
         )?;
@@ -160,6 +165,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_mime TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN rarity TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0");
     Ok(())
 }
 
@@ -174,6 +180,7 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         duration_secs: row.get(6)?,
         file_hash: row.get(7)?,
         rarity: row.get(8)?,
+        manually_edited: row.get::<_, i64>(9).unwrap_or(0) != 0,
     })
 }
 
@@ -237,19 +244,33 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxE
         .unwrap_or(0);
 
     // Skip unchanged files that already have a hash.
-    let cached: Option<(i64, Option<String>)> = conn
+    let cached: Option<(i64, Option<String>, bool)> = conn
         .query_row(
-            "SELECT modified_secs, file_hash FROM tracks WHERE path = ?1",
+            "SELECT modified_secs, file_hash, manually_edited FROM tracks WHERE path = ?1",
             params![rel],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2).unwrap_or(0) != 0)),
         )
         .ok();
     if modified_secs > 0 {
-        if let Some((ms, Some(_))) = &cached {
+        if let Some((ms, Some(_), _)) = &cached {
             if *ms == modified_secs {
                 return Ok(());
             }
         }
+    }
+
+    // If manually edited, only update file hash, rarity, duration, cover — preserve metadata.
+    if let Some((_, _, true)) = &cached {
+        let meta = read_audio_meta(abs);
+        let file_hash = hash_file(abs);
+        let rarity = file_hash.as_deref().map(rarity_from_hash);
+        conn.execute(
+            "UPDATE tracks SET modified_secs = ?1, file_hash = ?2, rarity = ?3,
+             duration_secs = COALESCE(?4, duration_secs), cover_data = ?5, cover_mime = ?6
+             WHERE path = ?7",
+            params![modified_secs, file_hash, rarity, meta.duration_secs, meta.cover_data, meta.cover_mime, rel],
+        )?;
+        return Ok(());
     }
 
     let mut meta = read_audio_meta(abs);
@@ -583,7 +604,7 @@ pub fn update_track(
 ) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     conn.execute(
-        "UPDATE tracks SET title = ?1, artist = ?2, album = ?3, track_number = ?4 WHERE id = ?5",
+        "UPDATE tracks SET title = ?1, artist = ?2, album = ?3, track_number = ?4, manually_edited = 1 WHERE id = ?5",
         params![title, artist, album, track_number, id],
     )
     .map_err(|e| e.to_string())?;
