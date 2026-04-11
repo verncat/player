@@ -935,7 +935,6 @@ body { background: #000; font-family: 'Helvetica Neue', Helvetica, Arial, sans-s
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  overflow-y: scroll;
   background: linear-gradient(180deg, #4a2d8a 0%, #1f1b3a 30%, #121212 58%);
 }
 
@@ -1534,5 +1533,101 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   font-size: 13px;
   padding: 12px 0;
   text-align: center;
+}
+
+/* ── Responsive: tablets and small screens ── */
+@media (max-width: 768px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr 72px;
+  }
+
+  .sidebar {
+    grid-row: 1 / 2;
+    flex-direction: row;
+    padding: 8px 12px;
+    gap: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-bottom: 1px solid #282828;
+  }
+  .sidebar nav {
+    display: flex;
+    gap: 2px;
+    width: 100%;
+  }
+  .sidebar .sidebar-divider { display: none; }
+  .nav-item {
+    gap: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .nav-item svg { width: 18px; height: 18px; }
+
+  .main { grid-row: 2 / 3; }
+
+  .content { padding: 0 14px 24px; }
+
+  .topbar { padding: 10px 14px; }
+
+  .card-list {
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 14px;
+  }
+  .cover { aspect-ratio: 1; height: auto; }
+
+  .library-header { flex-direction: column; gap: 10px; align-items: stretch; }
+  .library-search { width: 100%; }
+
+  .track-row { gap: 8px; padding: 6px 4px; }
+  .track-cover-sm { width: 32px; height: 32px; }
+  .track-num { display: none; }
+  .edit-btn { opacity: 1; }
+
+  .player {
+    grid-column: 1;
+    grid-row: 3 / 4;
+    grid-template-columns: auto 1fr auto;
+    padding: 0 10px;
+    height: 72px;
+  }
+  .player-left .thumb { width: 44px; height: 44px; }
+  .player-left .track-meta { display: none; }
+  .player-center { gap: 2px; padding: 6px 0; }
+  .ctrl-row { gap: 10px; }
+  .progress-row .time { display: none; }
+  .player-right .vol-wrap { display: none; }
+
+  .status-pills { top: auto; bottom: 80px; right: 14px; }
+
+  .modal { width: 95vw; }
+  .identify-modal { width: 95vw; }
+  .queue-dropdown { min-width: 260px; max-width: 92vw; }
+  .device-dropdown { min-width: 200px; }
+}
+
+/* ── Responsive: phones ── */
+@media (max-width: 480px) {
+  .nav-item svg { width: 16px; height: 16px; }
+  .nav-item { padding: 6px 8px; font-size: 11px; }
+
+  .card-list { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+
+  .track-title { font-size: 13px; }
+  .track-album { display: none; }
+  .track-dur { display: none; }
+
+  .player {
+    grid-template-columns: auto 1fr auto;
+    padding: 0 8px;
+    height: 64px;
+  }
+  .player-left .thumb { width: 40px; height: 40px; }
+  .ctrl-row { gap: 8px; }
+  .progress-row { display: none; }
+
+  .player-right .device-menu-wrapper { display: none; }
 }
 </style>
