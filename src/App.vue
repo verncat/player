@@ -1258,6 +1258,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 
 /* Mythic: repeating diagonal light streaks */
 .rarity-mythic::before {
+  inset: -10px 0 0 0;
   background: repeating-linear-gradient(
     105deg,
     transparent 0px,
