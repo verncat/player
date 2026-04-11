@@ -29,4 +29,5 @@ notify = "6"
 walkdir = "2"
 base64 = "0.22"
 open = "5"
+blake3 = "1"
 

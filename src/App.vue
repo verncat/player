@@ -14,6 +14,29 @@ interface Track {
   album: string | null;
   track_number: number | null;
   duration_secs: number | null;
+  file_hash: string | null;
+  rarity: string | null;
+}
+
+const rarityColors: Record<string, string> = {
+  Common: '#b0b0b0',
+  Uncommon: '#1db954',
+  Rare: '#4fc3f7',
+  Epic: '#ba68c8',
+  Legendary: '#ffa726',
+  Mythic: '#ff5252',
+};
+const animatedRarities = new Set(['Epic', 'Legendary', 'Mythic']);
+
+function rarityClass(r: string | null) {
+  if (!r || r === 'Common') return '';
+  if (animatedRarities.has(r)) return `rarity-animated rarity-${r.toLowerCase()}`;
+  return 'rarity-tint';
+}
+function rarityVars(r: string | null): Record<string, string> {
+  if (!r || r === 'Common') return {};
+  const c = rarityColors[r] || '#b0b0b0';
+  return { '--rc': c };
 }
 
 const recentlyPlayed = [
@@ -192,6 +215,11 @@ function formatDuration(secs: number | null) {
   return `${m}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
 }
 
+async function doReindex() {
+  await invoke('reindex');
+  await loadLibrary();
+}
+
 onMounted(() => {
   document.addEventListener('click', onDocClick);
   loadLibrary();
@@ -246,6 +274,10 @@ onUnmounted(() => {
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           Open Data Folder
         </a>
+        <a class="nav-item" href="#" @click.prevent="doReindex">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          Reindex
+        </a>
       </nav>
     </aside>
 
@@ -292,7 +324,8 @@ onUnmounted(() => {
             <h2>Recently played</h2>
             <div v-if="libraryTracks.length === 0" class="library-empty">No tracks yet.</div>
             <div v-else class="card-list">
-              <div v-for="track in libraryTracks.slice(0, 12)" :key="track.id" class="card">
+              <div v-for="track in libraryTracks.slice(0, 12)" :key="track.id"
+                class="card" :class="rarityClass(track.rarity)" :style="rarityVars(track.rarity)">
                 <div class="cover" :style="covers[track.id]
                   ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                   : 'background: linear-gradient(135deg, #1db954, #191414)'">
@@ -353,7 +386,8 @@ onUnmounted(() => {
                 <div
                   v-for="track in tracks"
                   :key="track.id"
-                  class="track-row"
+                  class="track-row" :class="rarityClass(track.rarity)"
+                  :style="rarityVars(track.rarity)"
                 >
                   <div class="track-cover-sm" :style="covers[track.id]
                     ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -687,7 +721,8 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   width: 150px;
   flex-shrink: 0;
 }
-.card:hover { background: #282828; }
+.card:hover { background: #282828 !important; }
+.card.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
 .card:hover .hover-play { opacity: 1; transform: translateY(0); }
 
 .cover {
@@ -834,7 +869,8 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   padding: 8px 8px; border-radius: 4px;
   cursor: pointer; user-select: none;
 }
-.track-row:hover { background: #282828; }
+.track-row:hover { background: #282828 !important; }
+.track-row.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
 .track-cover-sm {
   width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0;
 }
@@ -954,5 +990,61 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── Rarity animations ── */
+.rarity-animated { position: relative; overflow: hidden; }
+.rarity-animated::before {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* Epic: diagonal moving stripes */
+.rarity-epic::before {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--rc) 48%,
+    var(--rc) 48%,
+    transparent 40px,
+    transparent 80px
+  );
+  background-size: 113px 113px;
+  opacity: .15;
+  animation: rarity-slide 3s linear infinite;
+  image-rendering: pixelated;
+}
+@keyframes rarity-slide {
+  from { background-position: 0 0; }
+  to   { background-position: 113px 113px; }
+}
+
+/* Legendary: pulsing glow that breathes */
+.rarity-legendary::before {
+  background: radial-gradient(ellipse at 30% 50%, var(--rc), transparent 70%);
+  opacity: 0;
+  animation: rarity-pulse 2.5s ease-in-out infinite;
+}
+@keyframes rarity-pulse {
+  0%, 100% { opacity: .06; transform: scale(1); }
+  50%      { opacity: .22; transform: scale(1.15); }
+}
+
+/* Mythic: repeating diagonal light streaks */
+.rarity-mythic::before {
+  background: repeating-linear-gradient(
+    105deg,
+    transparent 0px,
+    transparent 20px,
+    var(--rc) 20px,
+    var(--rc) 36px
+  );
+  opacity: .2;
+  animation: rarity-sweep 1.5s linear infinite;
+}
+@keyframes rarity-sweep {
+  from { background-position: 0 0; }
+  to   { background-position: 34.77px 9.32px; }
 }
 </style>

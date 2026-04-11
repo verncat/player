@@ -48,6 +48,8 @@ pub struct Track {
     pub album: Option<String>,
     pub track_number: Option<i64>,
     pub duration_secs: Option<f64>,
+    pub file_hash: Option<String>,
+    pub rarity: Option<String>,
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -95,7 +97,7 @@ impl LibraryState {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity
                FROM tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
@@ -112,7 +114,7 @@ impl LibraryState {
     pub fn all_tracks(&self) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity
                FROM tracks
               ORDER BY artist, album, track_number, title",
         )?;
@@ -152,6 +154,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Migrate existing databases that predate the cover columns.
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_data BLOB");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_mime TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN rarity TEXT");
     Ok(())
 }
 
@@ -164,6 +168,8 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         album: row.get(4)?,
         track_number: row.get(5)?,
         duration_secs: row.get(6)?,
+        file_hash: row.get(7)?,
+        rarity: row.get(8)?,
     })
 }
 
@@ -226,16 +232,20 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxE
         })
         .unwrap_or(0);
 
-    // Skip unchanged files.
-    let cached: Option<i64> = conn
+    // Skip unchanged files that already have a hash.
+    let cached: Option<(i64, Option<String>)> = conn
         .query_row(
-            "SELECT modified_secs FROM tracks WHERE path = ?1",
+            "SELECT modified_secs, file_hash FROM tracks WHERE path = ?1",
             params![rel],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .ok();
-    if modified_secs > 0 && cached == Some(modified_secs) {
-        return Ok(());
+    if modified_secs > 0 {
+        if let Some((ms, Some(_))) = &cached {
+            if *ms == modified_secs {
+                return Ok(());
+            }
+        }
     }
 
     let mut meta = read_audio_meta(abs);
@@ -251,10 +261,14 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxE
         meta.cover_mime = cover_mime;
     }
 
+    // Hash file contents for gacha rarity.
+    let file_hash = hash_file(abs);
+    let rarity = file_hash.as_deref().map(rarity_from_hash);
+
     conn.execute(
         "INSERT INTO tracks
-             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, file_hash, rarity)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(path) DO UPDATE SET
              title         = excluded.title,
              artist        = excluded.artist,
@@ -263,7 +277,9 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxE
              duration_secs = excluded.duration_secs,
              modified_secs = excluded.modified_secs,
              cover_data    = excluded.cover_data,
-             cover_mime    = excluded.cover_mime",
+             cover_mime    = excluded.cover_mime,
+             file_hash     = excluded.file_hash,
+             rarity        = excluded.rarity",
         params![
             rel,
             meta.title,
@@ -274,6 +290,8 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxE
             modified_secs,
             meta.cover_data,
             meta.cover_mime,
+            file_hash,
+            rarity,
         ],
     )?;
 
@@ -285,6 +303,40 @@ fn rel_path(data_dir: &Path, abs: &Path) -> String {
     abs.strip_prefix(data_dir)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| abs.to_string_lossy().to_string())
+}
+
+// ── Hashing & Gacha rarity ────────────────────────────────────────────────────
+
+/// BLAKE3 hash of the full file contents, returned as a hex string.
+fn hash_file(path: &Path) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    Some(blake3::hash(&data).to_hex().to_string())
+}
+
+/// Deterministic rarity grade derived from the first byte of the hash.
+///
+/// The BLAKE3 hash is uniformly distributed, so the first byte gives a
+/// fair 256-bucket lottery.  Tiers and their probabilities:
+///
+/// | Grade     | First byte | Probability |
+/// |-----------|------------|-------------|
+/// | Common    | 128–255    | 50.00 %     |
+/// | Uncommon  |  64–127    | 25.00 %     |
+/// | Rare      |  32–63     | 12.50 %     |
+/// | Epic      |  12–31     |  7.81 %     |
+/// | Legendary |   3–11     |  3.52 %     |
+/// | Mythic    |   0–2      |  1.17 %     |
+fn rarity_from_hash(hex: &str) -> String {
+    let byte = u8::from_str_radix(&hex[..2], 16).unwrap_or(255);
+    let grade = match byte {
+        0..=2 => "Mythic",
+        3..=11 => "Legendary",
+        12..=31 => "Epic",
+        32..=63 => "Rare",
+        64..=127 => "Uncommon",
+        128..=255 => "Common",
+    };
+    grade.to_owned()
 }
 
 // ── Metadata extraction ───────────────────────────────────────────────────────
