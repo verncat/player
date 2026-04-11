@@ -40,15 +40,6 @@ function rarityVars(r: string | null): Record<string, string> {
   return { '--rc': c };
 }
 
-const recentlyPlayed = [
-  { id: 1, title: "Binary Rhapsody", artist: "Ada Lovelace", colors: ["#c2185b", "#7b1fa2"] },
-  { id: 2, title: "Code Symphony", artist: "Grace Hopper", colors: ["#00acc1", "#283593"] },
-  { id: 3, title: "The Enigma Variati...", artist: "Alan Turing", colors: ["#546e7a", "#37474f"] },
-  { id: 4, title: "Kernel Blues", artist: "Linus Torvalds", colors: ["#8e24aa", "#c2185b"] },
-  { id: 5, title: "World Wide Web ...", artist: "Tim Berners-Lee", colors: ["#d81b60", "#e64a19"] },
-  { id: 6, title: "Apollo Overture", artist: "Margaret Hamilton", colors: ["#3949ab", "#7b1fa2"] },
-];
-
 const madeForYou = [
   { id: 7,  title: "The Logic Gate Sh...", artist: "John von Neumann", colors: ["#4527a0", "#283593"] },
   { id: 8,  title: "C++ Concerto", artist: "Bjarne Stroustrup", colors: ["#bf360c", "#b71c1c"] },
@@ -86,6 +77,14 @@ const identifyDone = ref(false);
 interface IdentifyItem { track_id: number; track_name: string | null; status: string; message: string | null }
 const identifyResults = ref<IdentifyItem[]>([]);
 const identifyLogRef = ref<HTMLElement | null>(null);
+
+/* ── Index progress state ── */
+const indexRunning = ref(false);
+const indexCurrent = ref(0);
+const indexTotal = ref(0);
+const indexAdded = ref(0);
+const indexDone = ref(false);
+let indexDismissTimer: ReturnType<typeof setTimeout> | null = null;
 
 /* ── Queue state ── */
 type QueueSource = 'recent' | 'library';
@@ -366,8 +365,7 @@ function formatDuration(secs: number | null) {
 }
 
 async function doReindex() {
-  await invoke('reindex');
-  await loadLibrary();
+  invoke('reindex');
 }
 
 async function startIdentify() {
@@ -406,7 +404,26 @@ onMounted(() => {
   document.addEventListener('click', onDocClick);
   loadLibrary();
   loadRecent();
-  listen('library-changed', () => loadLibrary());
+  listen('library-changed', () => { loadLibrary(); loadRecent(); });
+  listen<{current: number; total: number; status: string; added: number}>('index-progress', (e) => {
+    const p = e.payload;
+    if (p.status === 'done') {
+      indexAdded.value += p.added;
+      indexDone.value = true;
+      indexRunning.value = true;
+      if (indexDismissTimer) clearTimeout(indexDismissTimer);
+      indexDismissTimer = setTimeout(() => {
+        indexRunning.value = false;
+        indexAdded.value = 0;
+      }, 5000);
+    } else {
+      indexCurrent.value = p.current;
+      indexTotal.value = p.total;
+      indexRunning.value = true;
+      indexDone.value = false;
+      if (indexDismissTimer) { clearTimeout(indexDismissTimer); indexDismissTimer = null; }
+    }
+  });
   listen<{current: number; total: number; track_id: number; track_name: string | null; status: string; message: string | null}>('identify-progress', (e) => {
     const p = e.payload;
     identifyCurrent.value = p.current;
@@ -662,10 +679,20 @@ onUnmounted(() => {
     </Transition>
 
     <!-- Identify progress mini indicator (top-right when minimized) -->
-    <div v-if="identifyRunning && identifyMinimized" class="identify-mini" @click="identifyMinimized = false">
-      <div class="identify-mini-spinner" />
-      <span>{{ identifyCurrent }}/{{ identifyTotal }}</span>
-      <span v-if="identifyDone" class="identify-mini-done">✓</span>
+    <div class="status-pills">
+      <!-- Index progress pill -->
+      <div v-if="indexRunning" class="identify-mini" :class="{ 'index-done': indexDone }">
+        <div v-if="!indexDone" class="identify-mini-spinner" />
+        <svg v-else viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
+        <span v-else>+{{ indexAdded }}</span>
+      </div>
+      <!-- Identify progress pill -->
+      <div v-if="identifyRunning && identifyMinimized" class="identify-mini" @click="identifyMinimized = false">
+        <div v-if="!identifyDone" class="identify-mini-spinner" />
+        <span>{{ identifyCurrent }}/{{ identifyTotal }}</span>
+        <span v-if="identifyDone" class="identify-mini-done">✓</span>
+      </div>
     </div>
 
     <!-- Identify progress modal -->
@@ -1403,11 +1430,17 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 
 /* ── Identify progress ── */
-.identify-mini {
+/* ── Status pills container ── */
+.status-pills {
   position: fixed;
   top: 16px;
   right: 24px;
   z-index: 400;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.identify-mini {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1423,6 +1456,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   transition: background .12s;
 }
 .identify-mini:hover { background: #333; }
+.identify-mini.index-done { border-color: #1db954; }
 .identify-mini-spinner {
   width: 14px; height: 14px;
   border: 2px solid #555;

@@ -28,6 +28,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 use walkdir::WalkDir;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -134,9 +135,13 @@ impl LibraryState {
         Ok(tracks)
     }
 
-    pub fn reindex(&self) -> Result<(), BoxError> {
-        let conn = self.conn.lock().unwrap();
-        index_directory(&conn, &self.data_dir)
+    pub fn reindex(&self, app: &tauri::AppHandle) {
+        let conn = Arc::clone(&self.conn);
+        let data_dir = self.data_dir.clone();
+        let app = app.clone();
+        thread::spawn(move || {
+            index_directory_async(&conn, &data_dir, &app);
+        });
     }
 }
 
@@ -194,6 +199,87 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
 
 // ── Indexing ──────────────────────────────────────────────────────────────────
 
+#[derive(Clone, Serialize)]
+struct IndexProgress {
+    current: usize,
+    total: usize,
+    status: String, // indexing, done
+    added: usize,
+}
+
+fn emit_index_progress(app: &tauri::AppHandle, current: usize, total: usize, status: &str, added: usize) {
+    use tauri::Emitter;
+    let _ = app.emit("index-progress", IndexProgress {
+        current, total, status: status.to_owned(), added,
+    });
+}
+
+/// Async version that emits progress events.
+fn index_directory_async(
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    app: &tauri::AppHandle,
+) {
+    // Collect all audio files first.
+    let files: Vec<PathBuf> = WalkDir::new(data_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            let ext = e.path().extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+            AUDIO_EXTENSIONS.contains(&ext.as_str())
+        })
+        .map(|e| e.into_path())
+        .collect();
+
+    let total = files.len();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut added: usize = 0;
+
+    for (i, path) in files.iter().enumerate() {
+        let rel = rel_path(data_dir, path);
+        visited.insert(rel);
+
+        let conn = conn.lock().unwrap();
+        match index_file(&conn, data_dir, path) {
+            Ok(true) => added += 1,
+            Err(e) => eprintln!("[library] failed to index {}: {e}", path.display()),
+            _ => {}
+        }
+        drop(conn);
+
+        // Emit progress every 5 files or at the end.
+        if (i + 1) % 5 == 0 || i + 1 == total {
+            emit_index_progress(app, i + 1, total, "indexing", added);
+        }
+    }
+
+    // Remove stale rows.
+    {
+        let conn = conn.lock().unwrap();
+        let stale: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT path FROM tracks").unwrap_or_else(|_| unreachable!());
+            stmt.query_map([], |row| row.get(0))
+                .unwrap_or_else(|_| unreachable!())
+                .filter_map(|r| r.ok())
+                .filter(|p: &String| !visited.contains(p))
+                .collect()
+        };
+        for path in &stale {
+            let _ = conn.execute("DELETE FROM tracks WHERE path = ?1", params![path]);
+        }
+        if !stale.is_empty() {
+            added += stale.len(); // count removals as changes too
+        }
+    }
+
+    emit_index_progress(app, total, total, "done", added);
+
+    use tauri::Emitter;
+    let _ = app.emit("library-changed", ());
+}
+
+/// Synchronous version for startup (no events available yet).
 fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
     let mut visited: HashSet<String> = HashSet::new();
 
@@ -238,7 +324,8 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
     Ok(())
 }
 
-fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxError> {
+/// Returns `Ok(true)` if a new/updated row was written, `Ok(false)` if skipped.
+fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, BoxError> {
     let rel = rel_path(data_dir, abs);
 
     let modified_secs = abs
@@ -262,7 +349,7 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxE
     if modified_secs > 0 {
         if let Some((ms, Some(_), _)) = &cached {
             if *ms == modified_secs {
-                return Ok(());
+                return Ok(false);
             }
         }
     }
@@ -278,7 +365,7 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxE
              WHERE path = ?7",
             params![modified_secs, file_hash, rarity, meta.duration_secs, meta.cover_data, meta.cover_mime, rel],
         )?;
-        return Ok(());
+        return Ok(true);
     }
 
     let mut meta = read_audio_meta(abs);
@@ -328,7 +415,7 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<(), BoxE
         ],
     )?;
 
-    Ok(())
+    Ok(true)
 }
 
 /// Returns the path relative to `data_dir` with forward-slash separators.
@@ -502,59 +589,98 @@ fn start_watcher(
     watcher.watch(&data_dir, RecursiveMode::Recursive)?;
 
     thread::spawn(move || {
-        let _watcher = watcher; // keep watcher alive for the lifetime of this thread
-        for result in rx {
-            match result {
-                Ok(event) => handle_fs_event(event, &conn, &data_dir, &app_handle),
-                Err(e) => eprintln!("[library] watcher error: {e}"),
+        let _watcher = watcher;
+        // Collect events and debounce: wait 300ms of silence before processing batch.
+        loop {
+            // Block until first event.
+            let first = match rx.recv() {
+                Ok(r) => r,
+                Err(_) => break,
+            };
+            let mut events = vec![first];
+            // Drain any further events within the debounce window.
+            loop {
+                match rx.recv_timeout(Duration::from_millis(300)) {
+                    Ok(e) => events.push(e),
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
             }
+            handle_fs_events_batch(events, &conn, &data_dir, &app_handle);
         }
     });
 
     Ok(())
 }
 
-fn handle_fs_event(
-    event: Event,
+fn handle_fs_events_batch(
+    events: Vec<notify::Result<Event>>,
     conn: &Arc<Mutex<Connection>>,
     data_dir: &Path,
     app_handle: &tauri::AppHandle,
 ) {
-    let mut changed = false;
-    match event.kind {
-        EventKind::Create(_) | EventKind::Modify(_) => {
-            for path in &event.paths {
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-                    let conn = conn.lock().unwrap();
-                    println!("[library] watcher: indexing {}", path.display());
-                    if let Err(e) = index_file(&conn, data_dir, path) {
-                        eprintln!("[library] watcher: index error for {}: {e}", path.display());
-                    } else {
-                        changed = true;
+    let mut to_index: Vec<PathBuf> = Vec::new();
+    let mut to_remove: Vec<PathBuf> = Vec::new();
+
+    for result in events {
+        let event = match result {
+            Ok(e) => e,
+            Err(e) => { eprintln!("[library] watcher error: {e}"); continue; }
+        };
+        match event.kind {
+            EventKind::Create(_) | EventKind::Modify(_) => {
+                for path in event.paths {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                    if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+                        to_index.push(path);
                     }
                 }
             }
-        }
-        EventKind::Remove(_) => {
-            for path in &event.paths {
-                let rel = rel_path(data_dir, path);
-                let conn = conn.lock().unwrap();
-                if conn.execute("DELETE FROM tracks WHERE path = ?1", params![rel]).unwrap_or(0) > 0 {
-                    changed = true;
-                }
+            EventKind::Remove(_) => {
+                to_remove.extend(event.paths);
             }
+            _ => {}
         }
-        _ => {}
     }
-    if changed {
-        use tauri::Emitter;
-        let _ = app_handle.emit("library-changed", ());
+
+    // Deduplicate
+    to_index.sort();
+    to_index.dedup();
+
+    let total = to_index.len() + to_remove.len();
+    if total == 0 { return; }
+
+    let mut added: usize = 0;
+    let mut current: usize = 0;
+
+    for path in &to_index {
+        let c = conn.lock().unwrap();
+        match index_file(&c, data_dir, path) {
+            Ok(true) => added += 1,
+            Err(e) => eprintln!("[library] watcher: index error for {}: {e}", path.display()),
+            _ => {}
+        }
+        drop(c);
+        current += 1;
+        if current % 5 == 0 || current == total {
+            emit_index_progress(app_handle, current, total, "indexing", added);
+        }
     }
+
+    for path in &to_remove {
+        let rel = rel_path(data_dir, path);
+        let c = conn.lock().unwrap();
+        if c.execute("DELETE FROM tracks WHERE path = ?1", params![rel]).unwrap_or(0) > 0 {
+            added += 1;
+        }
+        drop(c);
+        current += 1;
+    }
+
+    emit_index_progress(app_handle, total, total, "done", added);
+
+    use tauri::Emitter;
+    let _ = app_handle.emit("library-changed", ());
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
@@ -597,8 +723,12 @@ pub fn get_all_tracks(state: tauri::State<'_, LibraryState>) -> Result<Vec<Track
 }
 
 #[tauri::command]
-pub fn reindex(state: tauri::State<'_, LibraryState>) -> Result<(), String> {
-    state.reindex().map_err(|e| e.to_string())
+pub fn reindex(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    state.reindex(&app);
+    Ok(())
 }
 
 #[tauri::command]
