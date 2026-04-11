@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod library;
+pub mod playback;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::f32::consts::PI;
@@ -51,6 +52,7 @@ pub fn run() {
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             app.manage(library);
             app.manage(audio::AudioState::new());
+            app.manage(playback::PlaybackState::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -65,6 +67,13 @@ pub fn run() {
             audio::set_output_device,
             audio::get_volume,
             audio::set_volume,
+            playback::playback_play,
+            playback::playback_pause,
+            playback::playback_resume,
+            playback::playback_stop,
+            playback::playback_seek,
+            playback::playback_set_volume,
+            playback::playback_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

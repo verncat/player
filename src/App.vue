@@ -122,7 +122,7 @@ function refillQueue() {
 }
 
 /** Start playing a specific track from a given source list at a given index */
-function playTrackFrom(src: QueueSource, index: number) {
+async function playTrackFrom(src: QueueSource, index: number) {
   const list = sourceList(src);
   if (!list.length) return;
   queueSource.value = src;
@@ -135,14 +135,16 @@ function playTrackFrom(src: QueueSource, index: number) {
   queueSourceIndex.value = index;
   queue.value = [];
   refillQueue();
+  await invoke('playback_play', { path: track.path });
   startTicker();
 }
 
 /** Advance to next track in queue */
-function playNext() {
+async function playNext() {
   if (!queue.value.length) {
     isPlaying.value = false;
     stopTicker();
+    await invoke('playback_stop');
     return;
   }
   const next = queue.value.shift()!;
@@ -153,20 +155,22 @@ function playNext() {
   if (!isPlaying.value) {
     isPlaying.value = true;
   }
+  await invoke('playback_play', { path: next.path });
   startTicker();
 }
 
 /** Go to previous track (restart current if >3s in, else go back in source) */
-function playPrev() {
+async function playPrev() {
   if (currentTime.value > 3) {
     currentTime.value = 0;
+    await invoke('playback_seek', { position: 0 });
     return;
   }
   const list = sourceList(queueSource.value);
   if (!list.length) return;
   const curIdx = list.findIndex(t => t.id === nowPlaying.value?.id);
   const prevIdx = curIdx > 0 ? curIdx - 1 : list.length - 1;
-  playTrackFrom(queueSource.value, prevIdx);
+  await playTrackFrom(queueSource.value, prevIdx);
 }
 
 function jumpToQueueItem(index: number) {
@@ -175,6 +179,8 @@ function jumpToQueueItem(index: number) {
   playNext();
   showQueueMenu.value = false;
 }
+
+interface PlaybackStatus { playing: boolean; finished: boolean; position: number; duration: number; }
 
 function formatTime(s: number) {
   const m = Math.floor(s / 60);
@@ -189,50 +195,55 @@ function stopTicker() {
 
 function startTicker() {
   stopTicker();
-  ticker = setInterval(() => {
-    if (currentTime.value < duration.value) {
-      currentTime.value++;
-    } else {
-      // track ended
-      if (repeatMode.value === 2) {
-        // repeat-one: restart same track
-        currentTime.value = 0;
-      } else if (repeatMode.value === 1) {
-        // repeat-all: advance (refill wraps around)
-        playNext();
-      } else {
-        playNext();
+  ticker = setInterval(async () => {
+    try {
+      const st = await invoke<PlaybackStatus>('playback_status');
+      currentTime.value = Math.floor(st.position);
+      if (st.duration > 0) duration.value = Math.floor(st.duration);
+      if (st.finished) {
+        // track ended — advance
+        if (repeatMode.value === 2) {
+          // repeat-one
+          if (nowPlaying.value) {
+            await invoke('playback_play', { path: nowPlaying.value.path });
+          }
+        } else {
+          await playNext();
+        }
       }
-    }
-  }, 1000);
+    } catch (_) { /* ignore polling errors */ }
+  }, 250);
 }
 
-function togglePlay() {
+async function togglePlay() {
   if (!nowPlaying.value) {
-    // nothing loaded – start from library
     if (libraryTracks.value.length) {
-      playTrackFrom('library', 0);
+      await playTrackFrom('library', 0);
     }
     return;
   }
   isPlaying.value = !isPlaying.value;
   if (isPlaying.value) {
+    await invoke('playback_resume');
     startTicker();
   } else {
+    await invoke('playback_pause');
     stopTicker();
   }
 }
 
-function seek(e: MouseEvent) {
+async function seek(e: MouseEvent) {
   const el = e.currentTarget as HTMLElement;
   const ratio = (e.clientX - el.getBoundingClientRect().left) / el.offsetWidth;
-  currentTime.value = Math.round(Math.max(0, Math.min(1, ratio)) * duration.value);
+  const pos = Math.max(0, Math.min(1, ratio)) * duration.value;
+  currentTime.value = Math.round(pos);
+  await invoke('playback_seek', { position: pos });
 }
 
 function setVolume(e: MouseEvent) {
   const el = e.currentTarget as HTMLElement;
   volume.value = Math.round(Math.max(0, Math.min(1, (e.clientX - el.getBoundingClientRect().left) / el.offsetWidth)) * 100);
-  invoke('set_volume', { value: volume.value / 100 });
+  invoke('playback_set_volume', { value: volume.value / 100 });
 }
 
 async function toggleDeviceMenu() {

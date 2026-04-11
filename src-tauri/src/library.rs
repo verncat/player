@@ -93,6 +93,10 @@ impl LibraryState {
         Ok(Self { conn, data_dir })
     }
 
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     pub fn search(&self, query: &str) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
