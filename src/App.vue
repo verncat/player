@@ -76,13 +76,105 @@ const editingTrack = ref<Track | null>(null);
 const editForm = ref({ title: '', artist: '', album: '', track_number: null as number | null });
 const covers = ref<Record<number, string | null>>({});
 
-const currentTrack = ref({
-  title: "Never Gonna Give You Up",
-  artist: "Rick Astley",
-  colors: ["#00acc1", "#283593"],
+/* ── Queue state ── */
+type QueueSource = 'recent' | 'library';
+const queueSource = ref<QueueSource>('library');
+const queueSourceIndex = ref(0);       // index into source list of the LAST item pushed
+const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
+const nowPlaying = ref<Track | null>(null);
+const showQueueMenu = ref(false);
+
+const currentTrack = computed(() => {
+  if (nowPlaying.value) {
+    return {
+      title: nowPlaying.value.title || nowPlaying.value.path,
+      artist: nowPlaying.value.artist || 'Unknown',
+      colors: ['#00acc1', '#283593'],
+    };
+  }
+  return { title: 'No track', artist: '', colors: ['#282828', '#181818'] };
 });
 
-const progressPercent = computed(() => (currentTime.value / duration.value) * 100);
+const progressPercent = computed(() => (duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0));
+
+/** Return the full ordered list for a given source */
+function sourceList(src: QueueSource): Track[] {
+  if (src === 'recent') return libraryTracks.value.slice(0, 12);
+  // 'library' – flattened in grouped order
+  const flat: Track[] = [];
+  for (const [, tracks] of groupedByArtist.value) flat.push(...tracks);
+  return flat.length ? flat : libraryTracks.value;
+}
+
+/** Fill the queue up to 5 upcoming tracks from the source */
+function refillQueue() {
+  if (repeatMode.value === 2 && nowPlaying.value) {
+    // repeat-one: queue is just the current track repeated
+    queue.value = Array(5).fill(nowPlaying.value);
+    return;
+  }
+  const list = sourceList(queueSource.value);
+  if (!list.length) return;
+  while (queue.value.length < 5) {
+    queueSourceIndex.value = (queueSourceIndex.value + 1) % list.length;
+    queue.value.push(list[queueSourceIndex.value]);
+  }
+}
+
+/** Start playing a specific track from a given source list at a given index */
+function playTrackFrom(src: QueueSource, index: number) {
+  const list = sourceList(src);
+  if (!list.length) return;
+  queueSource.value = src;
+  const track = list[index];
+  nowPlaying.value = track;
+  duration.value = track.duration_secs || 0;
+  currentTime.value = 0;
+  isPlaying.value = true;
+  // rebuild queue starting after this index
+  queueSourceIndex.value = index;
+  queue.value = [];
+  refillQueue();
+  startTicker();
+}
+
+/** Advance to next track in queue */
+function playNext() {
+  if (!queue.value.length) {
+    isPlaying.value = false;
+    stopTicker();
+    return;
+  }
+  const next = queue.value.shift()!;
+  nowPlaying.value = next;
+  duration.value = next.duration_secs || 0;
+  currentTime.value = 0;
+  refillQueue();
+  if (!isPlaying.value) {
+    isPlaying.value = true;
+  }
+  startTicker();
+}
+
+/** Go to previous track (restart current if >3s in, else go back in source) */
+function playPrev() {
+  if (currentTime.value > 3) {
+    currentTime.value = 0;
+    return;
+  }
+  const list = sourceList(queueSource.value);
+  if (!list.length) return;
+  const curIdx = list.findIndex(t => t.id === nowPlaying.value?.id);
+  const prevIdx = curIdx > 0 ? curIdx - 1 : list.length - 1;
+  playTrackFrom(queueSource.value, prevIdx);
+}
+
+function jumpToQueueItem(index: number) {
+  // remove everything before that item, play it
+  queue.value.splice(0, index);
+  playNext();
+  showQueueMenu.value = false;
+}
 
 function formatTime(s: number) {
   const m = Math.floor(s / 60);
@@ -91,20 +183,43 @@ function formatTime(s: number) {
 
 let ticker: ReturnType<typeof setInterval> | null = null;
 
+function stopTicker() {
+  if (ticker) { clearInterval(ticker); ticker = null; }
+}
+
+function startTicker() {
+  stopTicker();
+  ticker = setInterval(() => {
+    if (currentTime.value < duration.value) {
+      currentTime.value++;
+    } else {
+      // track ended
+      if (repeatMode.value === 2) {
+        // repeat-one: restart same track
+        currentTime.value = 0;
+      } else if (repeatMode.value === 1) {
+        // repeat-all: advance (refill wraps around)
+        playNext();
+      } else {
+        playNext();
+      }
+    }
+  }, 1000);
+}
+
 function togglePlay() {
+  if (!nowPlaying.value) {
+    // nothing loaded – start from library
+    if (libraryTracks.value.length) {
+      playTrackFrom('library', 0);
+    }
+    return;
+  }
   isPlaying.value = !isPlaying.value;
   if (isPlaying.value) {
-    ticker = setInterval(() => {
-      if (currentTime.value < duration.value) {
-        currentTime.value++;
-      } else {
-        currentTime.value = 0;
-        isPlaying.value = false;
-        clearInterval(ticker!);
-      }
-    }, 1000);
-  } else if (ticker) {
-    clearInterval(ticker);
+    startTicker();
+  } else {
+    stopTicker();
   }
 }
 
@@ -142,6 +257,9 @@ function onDocClick(e: MouseEvent) {
   }
   if (!(e.target as HTMLElement).closest(".device-menu-wrapper")) {
     showDeviceMenu.value = false;
+  }
+  if (!(e.target as HTMLElement).closest(".queue-menu-wrapper")) {
+    showQueueMenu.value = false;
   }
 }
 
@@ -227,7 +345,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
-  if (ticker) clearInterval(ticker);
+  stopTicker();
 });
 </script>
 
@@ -324,8 +442,9 @@ onUnmounted(() => {
             <h2>Recently played</h2>
             <div v-if="libraryTracks.length === 0" class="library-empty">No tracks yet.</div>
             <div v-else class="card-list">
-              <div v-for="track in libraryTracks.slice(0, 12)" :key="track.id"
-                class="card" :class="rarityClass(track.rarity)" :style="rarityVars(track.rarity)">
+              <div v-for="(track, idx) in libraryTracks.slice(0, 12)" :key="track.id"
+                class="card" :class="rarityClass(track.rarity)" :style="rarityVars(track.rarity)"
+                @click="playTrackFrom('recent', idx)">
                 <div class="cover" :style="covers[track.id]
                   ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                   : 'background: linear-gradient(135deg, #1db954, #191414)'">
@@ -388,6 +507,7 @@ onUnmounted(() => {
                   :key="track.id"
                   class="track-row" :class="rarityClass(track.rarity)"
                   :style="rarityVars(track.rarity)"
+                  @click="playTrackFrom('library', libraryTracks.indexOf(track))"
                 >
                   <div class="track-cover-sm" :style="covers[track.id]
                     ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -458,7 +578,9 @@ onUnmounted(() => {
     <footer class="player">
       <!-- Left: track info -->
       <div class="player-left">
-        <div class="thumb" :style="`background: linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})`" />
+        <div class="thumb" :style="nowPlaying && covers[nowPlaying.id]
+          ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
+          : `background: linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})`" />
         <div class="track-meta">
           <div class="track-name">{{ currentTrack.title }}</div>
           <div class="track-artist">{{ currentTrack.artist }}</div>
@@ -474,14 +596,14 @@ onUnmounted(() => {
           <button class="icon-btn" :class="{ green: isShuffled, dot: isShuffled }" @click="isShuffled = !isShuffled" title="Shuffle">
             <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
           </button>
-          <button class="icon-btn" title="Previous">
+          <button class="icon-btn" title="Previous" @click="playPrev">
             <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
           </button>
           <button class="play-btn" @click="togglePlay">
             <svg v-if="!isPlaying" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
             <svg v-else viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
           </button>
-          <button class="icon-btn" title="Next">
+          <button class="icon-btn" title="Next" @click="playNext">
             <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
           </button>
           <button class="icon-btn" :class="{ green: repeatMode > 0, dot: repeatMode > 0 }" @click="repeatMode = (repeatMode + 1) % 3" title="Repeat">
@@ -502,9 +624,48 @@ onUnmounted(() => {
 
       <!-- Right: extras -->
       <div class="player-right">
-        <button class="icon-btn" title="Queue">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
-        </button>
+        <div class="queue-menu-wrapper">
+          <button class="icon-btn" title="Queue" @click.stop="showQueueMenu = !showQueueMenu">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+          </button>
+          <Transition name="dropdown">
+            <div v-if="showQueueMenu" class="dropdown queue-dropdown">
+              <div class="dropdown-header">Queue · {{ queueSource === 'recent' ? 'Recently played' : 'Library' }}</div>
+              <div class="queue-now" v-if="nowPlaying">
+                <span class="queue-now-label">Now playing</span>
+                <div class="queue-item active">
+                  <div class="queue-item-cover" :style="covers[nowPlaying.id]
+                    ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
+                    : 'background: linear-gradient(135deg, #1db954, #191414)'" />
+                  <div class="queue-item-info">
+                    <span class="queue-item-title">{{ nowPlaying.title || nowPlaying.path }}</span>
+                    <span class="queue-item-artist">{{ nowPlaying.artist || 'Unknown' }}</span>
+                  </div>
+                  <span class="queue-item-dur">{{ formatDuration(nowPlaying.duration_secs) }}</span>
+                </div>
+              </div>
+              <div class="queue-list" v-if="queue.length">
+                <span class="queue-next-label">Next up</span>
+                <div
+                  v-for="(track, i) in queue"
+                  :key="i"
+                  class="queue-item"
+                  @click="jumpToQueueItem(i)"
+                >
+                  <div class="queue-item-cover" :style="covers[track.id]
+                    ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                    : 'background: linear-gradient(135deg, #1db954, #191414)'" />
+                  <div class="queue-item-info">
+                    <span class="queue-item-title">{{ track.title || track.path }}</span>
+                    <span class="queue-item-artist">{{ track.artist || 'Unknown' }}</span>
+                  </div>
+                  <span class="queue-item-dur">{{ formatDuration(track.duration_secs) }}</span>
+                </div>
+              </div>
+              <div v-else class="queue-empty">Queue is empty</div>
+            </div>
+          </Transition>
+        </div>
         <div class="device-menu-wrapper">
           <button class="icon-btn" title="Output device" @click.stop="toggleDeviceMenu">
             <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM12 20c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm5-12H7V5h10v3z"/></svg>
@@ -990,6 +1151,70 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── Queue popup ── */
+.queue-menu-wrapper { position: relative; }
+.queue-dropdown {
+  position: absolute;
+  top: auto;
+  bottom: calc(100% + 12px);
+  right: 0;
+  min-width: 300px;
+  max-width: 360px;
+}
+.queue-now-label, .queue-next-label {
+  display: block;
+  padding: 8px 16px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #a7a7a7;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background .1s;
+}
+.queue-item:hover { background: #3e3e3e; }
+.queue-item.active { background: #333; cursor: default; }
+.queue-item-cover {
+  width: 36px; height: 36px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.queue-item-info {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.queue-item-title {
+  font-size: 13px; font-weight: 600; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.queue-item.active .queue-item-title { color: #1db954; }
+.queue-item-artist {
+  font-size: 11px; color: #a7a7a7;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.queue-item-dur {
+  font-size: 12px; color: #a7a7a7; flex-shrink: 0;
+}
+.queue-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.queue-list::-webkit-scrollbar { width: 6px; }
+.queue-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.queue-list::-webkit-scrollbar-track { background: transparent; }
+.queue-empty {
+  padding: 16px;
+  color: #a7a7a7;
+  font-size: 13px;
+  text-align: center;
 }
 
 /* ── Rarity animations ── */
