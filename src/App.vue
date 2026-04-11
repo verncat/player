@@ -700,7 +700,7 @@ onUnmounted(() => {
       <div v-if="identifyRunning && !identifyMinimized" class="modal-overlay" @click.self="identifyMinimized = true">
         <div class="modal identify-modal">
           <div class="modal-header">
-            <h3>Identifying tracks</h3>
+            <h3>Identifying tracks <span class="powered-by">powered by <a href="https://acoustid.org" target="_blank">AcoustID</a></span></h3>
             <div style="display:flex;gap:8px">
               <button class="icon-btn" title="Minimize" @click="identifyMinimized = true">
                 <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M6 19h12v2H6z"/></svg>
@@ -1467,6 +1467,9 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .identify-mini-done { color: #1db954; font-size: 14px; }
 @keyframes ident-spin { to { transform: rotate(360deg); } }
 .identify-modal { width: 440px; }
+.powered-by { font-size: 11px; font-weight: 400; color: #888; margin-left: 6px; }
+.powered-by a { color: #1db954; text-decoration: none; }
+.powered-by a:hover { text-decoration: underline; }
 .identify-bar-wrap {
   height: 4px;
   background: #535353;

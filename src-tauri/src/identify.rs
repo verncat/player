@@ -1,6 +1,6 @@
 //! Track identification using AcoustID + rusty-chromaprint.
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::params;
 use rusty_chromaprint::{Configuration, FingerprintCompressor, Fingerprinter};
 use serde::{Deserialize, Serialize};
@@ -206,7 +206,7 @@ fn generate_fingerprint(
     }
 
     let compressed = FingerprintCompressor::from(&config).compress(raw);
-    let encoded = URL_SAFE_NO_PAD.encode(&compressed);
+    let encoded = STANDARD.encode(&compressed);
     let duration_secs = samples.len() as u32 / channels as u32 / sample_rate;
 
     Ok((encoded, duration_secs))
@@ -222,69 +222,92 @@ struct LookupResult {
 
 fn acoustid_lookup(fingerprint: &str, duration: u32) -> Result<Option<LookupResult>, String> {
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post("https://api.acoustid.org/v2/lookup")
-        .form(&[
-            ("client", ACOUSTID_API_KEY),
-            ("duration", &duration.to_string()),
-            ("fingerprint", fingerprint),
-            ("meta", "recordings+releasegroups+compress"),
-        ])
-        .send()
-        .map_err(|e| format!("HTTP error: {e}"))?;
 
-    let status = resp.status();
-    let body = resp.text().map_err(|e| format!("read body: {e}"))?;
+    let mut last_err = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2u64.pow(attempt)));
+        }
 
-    if !status.is_success() {
-        return Err(format!("HTTP {status}: {body}"));
+        let resp = match client
+            .post("https://api.acoustid.org/v2/lookup")
+            .form(&[
+                ("client", ACOUSTID_API_KEY),
+                ("duration", &duration.to_string()),
+                ("fingerprint", fingerprint),
+                ("meta", "recordings+releasegroups+compress"),
+            ])
+            .send()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("HTTP error: {e}");
+                eprintln!("[identify] attempt {}: {last_err}", attempt + 1);
+                continue;
+            }
+        };
+
+        let status = resp.status();
+        let body = resp.text().map_err(|e| format!("read body: {e}"))?;
+
+        if status.is_server_error() {
+            last_err = format!("HTTP {status}: {body}");
+            eprintln!("[identify] attempt {}: {last_err}", attempt + 1);
+            continue;
+        }
+
+        if !status.is_success() {
+            return Err(format!("HTTP {status}: {body}"));
+        }
+
+        let json: AcoustIdResponse =
+            serde_json::from_str(&body).map_err(|e| format!("JSON parse: {e} — body: {body}"))?;
+
+        if json.status != "ok" {
+            return Err(format!("AcoustID status '{}' — body: {body}", json.status));
+        }
+
+        let results = json.results.unwrap_or_default();
+        let best = results
+            .into_iter()
+            .filter(|r| r.score >= 0.5)
+            .max_by(|a, b| {
+                a.score
+                    .partial_cmp(&b.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+        let Some(result) = best else {
+            return Ok(None);
+        };
+
+        let recordings = result.recordings.unwrap_or_default();
+        let Some(rec) = recordings.into_iter().next() else {
+            return Ok(None);
+        };
+
+        let artist = rec
+            .artists
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| a.name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let album = rec
+            .releasegroups
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+            .map(|rg| rg.title);
+
+        return Ok(Some(LookupResult {
+            title: rec.title,
+            artist: if artist.is_empty() { None } else { Some(artist) },
+            album,
+        }));
     }
 
-    let json: AcoustIdResponse =
-        serde_json::from_str(&body).map_err(|e| format!("JSON parse: {e} — body: {body}"))?;
-
-    if json.status != "ok" {
-        return Err(format!("AcoustID status '{}' — body: {body}", json.status));
-    }
-
-    let results = json.results.unwrap_or_default();
-    let best = results
-        .into_iter()
-        .filter(|r| r.score >= 0.5)
-        .max_by(|a, b| {
-            a.score
-                .partial_cmp(&b.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-    let Some(result) = best else {
-        return Ok(None);
-    };
-
-    let recordings = result.recordings.unwrap_or_default();
-    let Some(rec) = recordings.into_iter().next() else {
-        return Ok(None);
-    };
-
-    let artist = rec
-        .artists
-        .unwrap_or_default()
-        .into_iter()
-        .map(|a| a.name)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let album = rec
-        .releasegroups
-        .unwrap_or_default()
-        .into_iter()
-        .next()
-        .map(|rg| rg.title);
-
-    Ok(Some(LookupResult {
-        title: rec.title,
-        artist: if artist.is_empty() { None } else { Some(artist) },
-        album,
-    }))
+    Err(last_err)
 }
 
 // ── Tauri command ────────────────────────────────────────────────────────────
