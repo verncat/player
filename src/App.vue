@@ -129,6 +129,11 @@ const indexAdded = ref(0);
 const indexDone = ref(false);
 let indexDismissTimer: ReturnType<typeof setTimeout> | null = null;
 
+interface IndexLogItem { timestamp: number; type: 'index' | 'sync'; device?: string; count: number; status: 'done' | 'error'; message: string }
+const indexLog = ref<IndexLogItem[]>([]);
+const indexLogRef = ref<HTMLElement | null>(null);
+const indexLogOpen = ref(false);
+
 /* ── Queue state ── */
 type QueueSource = 'recent' | 'library';
 const queueSource = ref<QueueSource>('library');
@@ -149,50 +154,9 @@ interface SyncProgress {
   done: number;
   message?: string;
 }
-interface SyncHistoryItem {
-  ts: string;
-  phase: string;
-  text: string;
-}
 const syncEnabled = ref(false);
 const syncProgress = ref<Record<string, SyncProgress>>({});
 const peerDeviceNames = ref<Record<string, string>>({});
-const syncHistory = ref<Record<string, SyncHistoryItem[]>>({});
-const syncHistoryOpen = ref(false);
-const syncHistoryPeer = ref<string | null>(null);
-const syncHistoryRef = ref<HTMLElement | null>(null);
-
-function syncText(p: SyncProgress): string {
-  if (p.phase === 'index') return 'Загрузка индекса...';
-  if (p.phase === 'download') return `Загрузка ${p.done}/${p.total}`;
-  if (p.phase === 'reindex') return 'Индексирование...';
-  if (p.phase === 'done') return `✓ ${p.message || 'Done'}`;
-  if (p.phase === 'error') return `✗ ${p.message || 'Error'}`;
-  return p.phase;
-}
-
-function pushSyncHistory(p: SyncProgress) {
-  const entry: SyncHistoryItem = {
-    ts: new Date().toLocaleTimeString(),
-    phase: p.phase,
-    text: syncText(p),
-  };
-  const prev = syncHistory.value[p.peer] || [];
-  syncHistory.value = { ...syncHistory.value, [p.peer]: [...prev, entry] };
-  if (syncHistoryOpen.value && syncHistoryPeer.value === p.peer) {
-    nextTick(() => {
-      if (syncHistoryRef.value) syncHistoryRef.value.scrollTop = syncHistoryRef.value.scrollHeight;
-    });
-  }
-}
-
-function openSyncHistory(peer: string) {
-  syncHistoryPeer.value = peer;
-  syncHistoryOpen.value = true;
-  nextTick(() => {
-    if (syncHistoryRef.value) syncHistoryRef.value.scrollTop = syncHistoryRef.value.scrollHeight;
-  });
-}
 
 async function toggleSync() {
   syncEnabled.value = !syncEnabled.value;
@@ -579,12 +543,26 @@ onMounted(() => {
   });
   listen<SyncProgress>('sync-progress', (e) => {
     syncProgress.value = { ...syncProgress.value, [e.payload.peer]: e.payload };
-    pushSyncHistory(e.payload);
     if (e.payload.device_name) {
       peerDeviceNames.value = {
         ...peerDeviceNames.value,
         [e.payload.peer]: e.payload.device_name,
       };
+    }
+    if (e.payload.phase === 'done' || e.payload.phase === 'error') {
+      indexLog.value.push({
+        timestamp: Date.now(),
+        type: 'sync',
+        device: e.payload.device_name || e.payload.peer,
+        count: e.payload.done,
+        status: e.payload.phase === 'done' ? 'done' : 'error',
+        message: e.payload.message || e.payload.phase,
+      });
+      nextTick(() => {
+        if (indexLogRef.value) {
+          indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight;
+        }
+      });
     }
   });
 
@@ -609,11 +587,18 @@ onMounted(() => {
       indexAdded.value += p.added;
       indexDone.value = true;
       indexRunning.value = true;
-      if (indexDismissTimer) clearTimeout(indexDismissTimer);
-      indexDismissTimer = setTimeout(() => {
-        indexRunning.value = false;
-        indexAdded.value = 0;
-      }, 5000);
+      indexLog.value.push({
+        timestamp: Date.now(),
+        type: 'index',
+        count: p.added,
+        status: 'done',
+        message: `+${p.added} track(s)`,
+      });
+      nextTick(() => {
+        if (indexLogRef.value) {
+          indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight;
+        }
+      });
     } else {
       indexCurrent.value = p.current;
       indexTotal.value = p.total;
@@ -888,12 +873,19 @@ onUnmounted(() => {
                           : '0%' }"
                       />
                     </div>
-                    <button
-                      type="button"
-                      class="sync-status"
-                      :class="'sync-' + syncProgress[peer.name].phase"
-                      @click.stop="openSyncHistory(peer.name)"
-                    >{{ syncText(syncProgress[peer.name]) }}</button>
+                    <span class="sync-status" :class="'sync-' + syncProgress[peer.name].phase">
+                      <template v-if="syncProgress[peer.name].phase === 'index'">Загрузка индекса…</template>
+                      <template v-else-if="syncProgress[peer.name].phase === 'download'">
+                        Loading {{ syncProgress[peer.name].done }}/{{ syncProgress[peer.name].total }}
+                      </template>
+                      <template v-else-if="syncProgress[peer.name].phase === 'reindex'">Indexing</template>
+                      <template v-else-if="syncProgress[peer.name].phase === 'done'">
+                        {{ syncProgress[peer.name].message }}
+                      </template>
+                      <template v-else-if="syncProgress[peer.name].phase === 'error'">
+                        {{ syncProgress[peer.name].message }}
+                      </template>
+                    </span>
                   </template>
                 </div>
                 <button
@@ -950,8 +942,8 @@ onUnmounted(() => {
 
     <!-- Identify progress mini indicator (top-right when minimized) -->
     <div class="status-pills">
-      <!-- Index progress pill -->
-      <div v-if="indexRunning" class="identify-mini" :class="{ 'index-done': indexDone }">
+    <!-- Index progress pill (clickable to open log) -->
+      <div v-if="indexRunning" class="identify-mini" :class="{ 'index-done': indexDone }" @click="indexLogOpen = true">
         <div v-if="!indexDone" class="identify-mini-spinner" />
         <svg v-else viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
         <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
@@ -999,35 +991,41 @@ onUnmounted(() => {
       </div>
     </Transition>
 
-    <!-- Sync history modal -->
+    <!-- Index & Sync log modal -->
     <Transition name="modal">
-      <div v-if="syncHistoryOpen && syncHistoryPeer !== null" class="modal-overlay" @click.self="syncHistoryOpen = false; syncHistoryPeer = null">
+      <div v-if="indexLogOpen" class="modal-overlay" @click.self="indexLogOpen = false; indexRunning = false">
         <div class="modal identify-modal">
           <div class="modal-header">
-            <h3>Sync history · {{ peerDeviceNames[syncHistoryPeer] || syncHistoryPeer }}</h3>
-            <button class="icon-btn" title="Close" @click="syncHistoryOpen = false; syncHistoryPeer = null">
+            <h3>Index & Sync History</h3>
+            <button class="icon-btn" title="Close" @click="indexLogOpen = false; indexRunning = false">
               <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
           <div class="modal-body">
-            <div class="identify-results" ref="syncHistoryRef">
-              <div
-                v-for="(item, idx) in (syncHistory[syncHistoryPeer] || [])"
-                :key="idx"
-                class="identify-result-item"
-                :class="'ir-' + item.phase"
-              >
-                <span class="ir-icon">{{ item.ts }}</span>
-                <span class="ir-text">{{ item.text }}</span>
+            <div class="index-log" ref="indexLogRef">
+              <div v-for="(item, idx) in indexLog" :key="idx" class="log-item" :class="`log-${item.type} log-${item.status}`">
+                <span class="log-time">{{ new Date(item.timestamp).toLocaleTimeString() }}</span>
+                <!-- <span v-if="item.type === 'index'" class="log-type-badge log-index">local</span>
+                <span v-else class="log-type-badge log-sync">sync</span> -->
+                <div class="log-content">
+                  <div class="log-title">
+                    <span v-if="item.type === 'index'">Local Index</span>
+                    <span v-else>{{ item.device }}</span>
+                    <span class="log-count">{{ item.count }} files</span>
+                  </div>
+                  <div class="log-message">{{ item.message }}</div>
+                </div>
+                <span v-if="item.status === 'done'" class="log-status-icon">✓</span>
+                <span v-else class="log-status-icon log-error">✗</span>
               </div>
-              <div v-if="!(syncHistory[syncHistoryPeer] || []).length" class="identify-empty">No sync history yet.</div>
+              <div v-if="!indexLog.length" class="index-empty" style="padding: 40px 20px; text-align: center; color: #a7a7a7;">
+                No history yet
+              </div>
             </div>
           </div>
         </div>
       </div>
     </Transition>
-
-    <!-- Player bar -->
     <footer class="player">
       <!-- Left: track info -->
       <div class="player-left">
@@ -1278,16 +1276,7 @@ a, button, [role="button"] {
   height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-top: 2px;
 }
 .sync-bar { height: 100%; background: #1db954; border-radius: 2px; transition: width 0.3s; }
-.sync-status {
-  font-size: 11px;
-  color: #a7a7a7;
-  background: none;
-  border: none;
-  padding: 0;
-  text-align: left;
-  cursor: pointer;
-}
-.sync-status:hover { color: #fff; text-decoration: underline; }
+.sync-status { font-size: 11px; color: #a7a7a7; }
 .sync-done { color: #1db954; }
 .sync-error { color: #e9283e; }
 
@@ -1829,7 +1818,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   box-shadow: 0 4px 16px rgba(0,0,0,.5);
   transition: background .12s;
 }
-.identify-mini:hover { background: #333; }
+.identify-mini:hover { background: #333; cursor: pointer; }
 .identify-mini.index-done { border-color: #1db954; }
 .identify-mini-spinner {
   width: 14px; height: 14px;
@@ -1908,6 +1897,72 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   font-size: 13px;
   padding: 12px 0;
   text-align: center;
+}
+
+/* ── Index & Sync log ── */
+.index-log {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 6px;
+}
+.index-log::-webkit-scrollbar { width: 6px; }
+.index-log::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.index-log::-webkit-scrollbar-track { background: transparent; }
+.log-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #1a1a1a;
+  border-left: 3px solid transparent;
+}
+.log-index { border-left-color: #4fc3f7; }
+.log-sync { border-left-color: #1db954; }
+.log-error { border-left-color: #e9283e; }
+.log-time {
+  font-size: 11px;
+  color: #888;
+  min-width: 50px;
+  flex-shrink: 0;
+}
+.log-type-badge {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+.log-content {
+  flex: 1;
+  min-width: 0;
+}
+.log-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+}
+.log-count {
+  font-size: 11px;
+  color: #888;
+  font-weight: 400;
+}
+.log-message {
+  font-size: 11px;
+  color: #a7a7a7;
+  margin-top: 2px;
+}
+.log-status-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  color: #1db954;
+  font-weight: bold;
+}
+.log-status-icon.log-error {
+  color: #e9283e;
 }
 
 /* ── Responsive: tablets and small screens ── */
