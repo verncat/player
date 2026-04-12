@@ -1,4 +1,9 @@
 //! Real audio playback engine using symphonia (decode) + cpal (output).
+//!
+//! Beat detection implements the same energy-based sliding-window algorithm as
+//! <https://docs.rs/beat-detector> (`StrategyKind::LPF`) directly in the decode
+//! pipeline. The crate's strategy constructors are crate-private, and its only
+//! yanked-dep release (0.1.2) currently can't be used as a Cargo dependency.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::path::{Path, PathBuf};
@@ -13,6 +18,71 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
+
+// ── Beat detection (mirrors BeatStrategyKind::LPF) ──────────────────────────
+
+/// Audio window size used by beat-detector's LPF strategy.
+const BEAT_WIN_SIZE: usize = 1024;
+/// Number of windows kept in the rolling energy history (~1 s at 44 100 Hz).
+const BEAT_HIST_LEN: usize = 43;
+/// Energy must exceed BEAT_SENSITIVITY × history mean to count as a beat.
+const BEAT_SENSITIVITY: f32 = 1.5;
+/// Minimum window energy — ignores silence / quiet passages.
+const BEAT_MIN_ENERGY: f32 = 0.0008;
+/// Minimum gap between consecutive beat events (ms).
+const BEAT_COOLDOWN_MS: u64 = 280;
+
+struct BeatState {
+    mono_buf: Vec<f32>,
+    energy_hist: [f32; BEAT_HIST_LEN],
+    hist_idx: usize,
+    hist_count: usize,
+    last_beat_ms: u64,
+}
+
+impl BeatState {
+    fn new() -> Self {
+        BeatState {
+            mono_buf: Vec::with_capacity(BEAT_WIN_SIZE),
+            energy_hist: [0.0; BEAT_HIST_LEN],
+            hist_idx: 0,
+            hist_count: 0,
+            last_beat_ms: 0,
+        }
+    }
+
+    /// Feed one mono sample; returns `true` when a beat window is complete and
+    /// the energy spike passes the threshold.
+    fn feed(&mut self, mono: f32) -> bool {
+        self.mono_buf.push(mono);
+        if self.mono_buf.len() < BEAT_WIN_SIZE {
+            return false;
+        }
+        let energy: f32 =
+            self.mono_buf.iter().map(|s| s * s).sum::<f32>() / BEAT_WIN_SIZE as f32;
+        self.mono_buf.clear();
+
+        self.energy_hist[self.hist_idx] = energy;
+        self.hist_idx = (self.hist_idx + 1) % BEAT_HIST_LEN;
+        if self.hist_count < BEAT_HIST_LEN {
+            self.hist_count += 1;
+        }
+        if self.hist_count < 2 {
+            return false;
+        }
+        let avg: f32 = self.energy_hist[..self.hist_count].iter().copied().sum::<f32>()
+            / self.hist_count as f32;
+        energy > avg * BEAT_SENSITIVITY && energy > BEAT_MIN_ENERGY
+    }
+}
+
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 // ── Ring buffer shared between decode thread and cpal callback ────────────────
 
@@ -87,10 +157,12 @@ struct Shared {
     selected_device: Mutex<Option<String>>,
     /// Active cpal output stream — dropped when replaced, which stops it.
     active_stream: Mutex<Option<cpal::Stream>>,
+    /// App handle used to emit beat events to the frontend.
+    app_handle: tauri::AppHandle,
 }
 
 impl PlaybackState {
-    pub fn new() -> Self {
+    pub fn new(app_handle: tauri::AppHandle) -> Self {
         Self {
             inner: Arc::new(Shared {
                 ring: Mutex::new(RingBuf::new(192_000)), // ~2s at 48kHz stereo
@@ -104,6 +176,7 @@ impl PlaybackState {
                 current_file: Mutex::new(None),
                 selected_device: Mutex::new(None),
                 active_stream: Mutex::new(None),
+                app_handle,
             }),
         }
     }
@@ -282,6 +355,8 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
     // Start cpal output stream (stores it in shared.active_stream)
     start_output_stream(Arc::clone(&shared), sample_rate, channels as u16)?;
 
+    let mut beat_state = BeatState::new();
+
     loop {
         if shared.stop.load(Ordering::SeqCst) {
             break;
@@ -326,7 +401,7 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                write_to_ring(&shared, &decoded, channels);
+                write_to_ring(&shared, &decoded, channels, &mut beat_state);
             }
             Err(symphonia::core::errors::Error::DecodeError(e)) => {
                 eprintln!("[playback] decode warning: {e}");
@@ -342,12 +417,14 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
     Ok(())
 }
 
-fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize) {
+fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize, beat: &mut BeatState) {
     let frames = buf.frames();
     // Convert to interleaved f32
     match buf {
         AudioBufferRef::F32(b) => {
             for frame in 0..frames {
+                let mono = (0..channels).map(|ch| b.chan(ch)[frame]).sum::<f32>() / channels as f32;
+                check_beat(shared, beat, mono);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame];
                     push_sample(shared, sample);
@@ -356,6 +433,8 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize) {
         }
         AudioBufferRef::S16(b) => {
             for frame in 0..frames {
+                let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32 / 32768.0).sum::<f32>() / channels as f32;
+                check_beat(shared, beat, mono);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32 / 32768.0;
                     push_sample(shared, sample);
@@ -364,6 +443,8 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize) {
         }
         AudioBufferRef::S32(b) => {
             for frame in 0..frames {
+                let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32 / 2_147_483_648.0).sum::<f32>() / channels as f32;
+                check_beat(shared, beat, mono);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32 / 2_147_483_648.0;
                     push_sample(shared, sample);
@@ -372,6 +453,8 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize) {
         }
         AudioBufferRef::U8(b) => {
             for frame in 0..frames {
+                let mono = (0..channels).map(|ch| (b.chan(ch)[frame] as f32 - 128.0) / 128.0).sum::<f32>() / channels as f32;
+                check_beat(shared, beat, mono);
                 for ch in 0..channels {
                     let sample = (b.chan(ch)[frame] as f32 - 128.0) / 128.0;
                     push_sample(shared, sample);
@@ -380,6 +463,8 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize) {
         }
         AudioBufferRef::F64(b) => {
             for frame in 0..frames {
+                let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32).sum::<f32>() / channels as f32;
+                check_beat(shared, beat, mono);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32;
                     push_sample(shared, sample);
@@ -387,6 +472,17 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize) {
             }
         }
         _ => {} // unsupported format, skip
+    }
+}
+
+fn check_beat(shared: &Shared, beat: &mut BeatState, mono: f32) {
+    if beat.feed(mono) {
+        let now = now_ms();
+        if now >= beat.last_beat_ms + BEAT_COOLDOWN_MS {
+            beat.last_beat_ms = now;
+            use tauri::Emitter;
+            let _ = shared.app_handle.emit("beat", ());
+        }
     }
 }
 

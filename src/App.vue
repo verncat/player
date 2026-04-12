@@ -68,6 +68,30 @@ const editingTrack = ref<Track | null>(null);
 const editForm = ref({ title: '', artist: '', album: '', track_number: null as number | null });
 const covers = ref<Record<number, string | null>>({});
 
+/* ── Beat animation ── */
+const beatScale = ref(1);
+let beatRafId: number | null = null;
+let beatStartTime = 0;
+const BEAT_AMP = 0.10;    // max scale overshoot (1.10× at peak)
+const BEAT_TAU = 130;     // exponential decay time-constant in ms
+
+function startBeatAnimation() {
+  beatStartTime = performance.now();
+  if (beatRafId !== null) return; // already running — just reset start time
+  function tick() {
+    const elapsed = performance.now() - beatStartTime;
+    const s = 1 + BEAT_AMP * Math.exp(-elapsed / BEAT_TAU);
+    beatScale.value = s;
+    if (s - 1 > 0.001) {
+      beatRafId = requestAnimationFrame(tick);
+    } else {
+      beatScale.value = 1;
+      beatRafId = null;
+    }
+  }
+  beatRafId = requestAnimationFrame(tick);
+}
+
 /* ── Identify state ── */
 const identifyRunning = ref(false);
 const identifyMinimized = ref(false);
@@ -405,6 +429,7 @@ onMounted(() => {
   loadLibrary();
   loadRecent();
   listen('library-changed', () => { loadLibrary(); loadRecent(); });
+  listen('beat', () => { startBeatAnimation(); });
   listen<{current: number; total: number; status: string; added: number}>('index-progress', (e) => {
     const p = e.payload;
     if (p.status === 'done') {
@@ -733,9 +758,14 @@ onUnmounted(() => {
     <footer class="player">
       <!-- Left: track info -->
       <div class="player-left">
-        <div class="thumb" :style="nowPlaying && covers[nowPlaying.id]
-          ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
-          : `background: linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})`" />
+        <div class="thumb" :style="{
+          ...(nowPlaying && covers[nowPlaying.id]
+            ? { backgroundImage: `url(${covers[nowPlaying.id]})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+            : { background: `linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})` }),
+          transform: `scale(${beatScale})`,
+          transformOrigin: 'center center',
+          willChange: 'transform',
+        }" />
         <div class="track-meta">
           <div class="track-name">{{ currentTrack.title }}</div>
           <div class="track-artist">{{ currentTrack.artist }}</div>
@@ -943,6 +973,7 @@ body { background: #000; font-family: 'Helvetica Neue', Helvetica, Arial, sans-s
   align-items: center;
   justify-content: space-between;
   padding: 16px 24px;
+  padding-top: calc(16px + env(safe-area-inset-top));
   flex-shrink: 0;
 }
 
@@ -1546,6 +1577,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     grid-row: 1 / 2;
     flex-direction: row;
     padding: 8px 12px;
+    padding-top: calc(8px + env(safe-area-inset-top));
     gap: 0;
     overflow-x: auto;
     overflow-y: hidden;
@@ -1591,7 +1623,8 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     grid-row: 3 / 4;
     grid-template-columns: auto 1fr auto;
     padding: 0 10px;
-    height: 72px;
+    padding-bottom: env(safe-area-inset-bottom);
+    height: calc(72px + env(safe-area-inset-bottom));
   }
   .player-left .thumb { width: 44px; height: 44px; }
   .player-left .track-meta { display: none; }
@@ -1600,7 +1633,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   .progress-row .time { display: none; }
   .player-right .vol-wrap { display: none; }
 
-  .status-pills { top: auto; bottom: 80px; right: 14px; }
+  .status-pills { top: auto; bottom: calc(80px + env(safe-area-inset-bottom)); right: 14px; }
 
   .modal { width: 95vw; }
   .identify-modal { width: 95vw; }

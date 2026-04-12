@@ -1,0 +1,34 @@
+[target.aarch64-linux-android]
+ar     = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+linker = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang"
+
+[target.armv7-linux-androideabi]
+ar     = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+linker = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/armv7a-linux-androideabi26-clang"
+
+[target.i686-linux-android]
+ar     = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+linker = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/i686-linux-android26-clang"
+
+[target.x86_64-linux-android]
+ar     = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+linker = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android26-clang"
+
+# These env vars are read by the `cc` crate (used by ring, etc.) during
+# cross-compilation build scripts.
+[env]
+CC_aarch64-linux-android    = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang"
+CXX_aarch64-linux-android   = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang++"
+AR_aarch64-linux-android    = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+
+CC_armv7-linux-androideabi   = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/armv7a-linux-androideabi26-clang"
+CXX_armv7-linux-androideabi  = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/armv7a-linux-androideabi26-clang++"
+AR_armv7-linux-androideabi   = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+
+CC_i686-linux-android        = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/i686-linux-android26-clang"
+CXX_i686-linux-android       = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/i686-linux-android26-clang++"
+AR_i686-linux-android        = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+
+CC_x86_64-linux-android      = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android26-clang"
+CXX_x86_64-linux-android     = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android26-clang++"
+AR_x86_64-linux-android      = "/Users/veronika/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"

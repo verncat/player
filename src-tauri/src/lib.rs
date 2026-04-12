@@ -53,7 +53,7 @@ pub fn run() {
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             app.manage(library);
             app.manage(audio::AudioState::new());
-            app.manage(playback::PlaybackState::new());
+            app.manage(playback::PlaybackState::new(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

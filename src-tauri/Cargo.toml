@@ -32,5 +32,5 @@ open = "5"
 blake3 = "1"
 symphonia = { version = "0.5", features = ["all"] }
 rusty-chromaprint = "0.3"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 
