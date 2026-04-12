@@ -750,8 +750,8 @@ pub fn update_track(
 }
 
 #[tauri::command]
-pub fn open_data_dir(state: tauri::State<'_, LibraryState>) -> Result<(), String> {
-    open::that(&state.data_dir).map_err(|e| e.to_string())
+pub fn get_data_dir(state: tauri::State<'_, LibraryState>) -> String {
+    state.data_dir.to_string_lossy().into_owned()
 }
 
 #[tauri::command]

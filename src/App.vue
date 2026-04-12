@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openPath } from "@tauri-apps/plugin-opener";
 
 interface AudioDevice { name: string }
 interface DeviceList { devices: AudioDevice[]; current: string | null }
@@ -388,6 +389,26 @@ function formatDuration(secs: number | null) {
   return `${m}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
 }
 
+async function openDataDir() {
+  const path = await invoke<string>('get_data_dir');
+  // On Android, use the native JavascriptInterface bridge that calls
+  // Intent(ACTION_VIEW).setDataAndType(safUri, "vnd.android.document/directory")
+  const sdcardPrefixes = ['/sdcard/', '/storage/emulated/0/'];
+  const matched = sdcardPrefixes.find(p => path.startsWith(p));
+  if (matched && (window as any).AndroidBridge) {
+    const relative = path.slice(matched.length);
+    (window as any).AndroidBridge.openFolder(relative);
+    return;
+  }
+  // Desktop fallback
+  try {
+    await openPath(path);
+  } catch (_) {
+    try { await navigator.clipboard.writeText(path); } catch (_2) {}
+    alert(`Data folder:\n${path}`);
+  }
+}
+
 async function doReindex() {
   invoke('reindex');
 }
@@ -510,7 +531,7 @@ onUnmounted(() => {
           </span>
           Liked Songs
         </a> -->
-        <a class="nav-item" href="#" @click.prevent="invoke('open_data_dir')">
+        <a class="nav-item" href="#" @click.prevent="openDataDir">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           Open Data Folder
         </a>

@@ -48,6 +48,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::Manager;
+            #[cfg(target_os = "android")]
+            let data_dir = std::path::PathBuf::from("/sdcard/Player");
+            #[cfg(not(target_os = "android"))]
             let data_dir = app.path().app_data_dir()?.join("data");
             let library = library::LibraryState::new(data_dir, app.handle().clone())
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
@@ -63,7 +66,7 @@ pub fn run() {
             library::reindex,
             library::get_track_cover,
             library::update_track,
-            library::open_data_dir,
+            library::get_data_dir,
             library::record_play,
             library::get_recent_tracks,
             audio::get_output_devices,

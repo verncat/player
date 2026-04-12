@@ -3075,7 +3075,6 @@ dependencies = [
  "cpal",
  "lofty",
  "notify",
- "open",
  "reqwest 0.12.28",
  "rusqlite",
  "rusty-chromaprint",
