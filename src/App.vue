@@ -958,6 +958,10 @@ onUnmounted(() => {
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; overflow: hidden; }
 body { background: #000; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+a, button, [role="button"] {
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
 </style>
 
 <style scoped>
