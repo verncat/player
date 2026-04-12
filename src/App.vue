@@ -157,6 +157,23 @@ function refillQueue() {
   }
 }
 
+/** Notify Android foreground service of current playback state. */
+function syncAndroid() {
+  const bridge = (window as any).AndroidBridge;
+  if (!bridge) return;
+  if (nowPlaying.value) {
+    bridge.updatePlayback(
+      currentTrack.value.title,
+      currentTrack.value.artist,
+      isPlaying.value,
+      currentTime.value,
+      duration.value
+    );
+  } else {
+    bridge.stopPlayback?.();
+  }
+}
+
 /** Start playing a specific track from a given source list at a given index */
 async function playTrackFrom(src: QueueSource, index: number) {
   const list = sourceList(src);
@@ -174,6 +191,7 @@ async function playTrackFrom(src: QueueSource, index: number) {
   await invoke('playback_play', { path: track.path });
   invoke('record_play', { id: track.id }).then(() => loadRecent());
   startTicker();
+  syncAndroid();
 }
 
 /** Advance to next track in queue */
@@ -182,6 +200,7 @@ async function playNext() {
     isPlaying.value = false;
     stopTicker();
     await invoke('playback_stop');
+    syncAndroid();
     return;
   }
   const next = queue.value.shift()!;
@@ -195,6 +214,7 @@ async function playNext() {
   await invoke('playback_play', { path: next.path });
   invoke('record_play', { id: next.id }).then(() => loadRecent());
   startTicker();
+  syncAndroid();
 }
 
 /** Go to previous track (restart current if >3s in, else go back in source) */
@@ -226,6 +246,7 @@ function formatTime(s: number) {
 }
 
 let ticker: ReturnType<typeof setInterval> | null = null;
+let androidSyncCounter = 0;
 
 function stopTicker() {
   if (ticker) { clearInterval(ticker); ticker = null; }
@@ -233,11 +254,14 @@ function stopTicker() {
 
 function startTicker() {
   stopTicker();
+  androidSyncCounter = 0;
   ticker = setInterval(async () => {
     try {
       const st = await invoke<PlaybackStatus>('playback_status');
       currentTime.value = Math.floor(st.position);
       if (st.duration > 0) duration.value = Math.floor(st.duration);
+      // sync Android notification progress ~every 4 ticks (≈1 s)
+      if (++androidSyncCounter >= 4) { androidSyncCounter = 0; syncAndroid(); }
       if (st.finished) {
         // track ended — advance
         if (repeatMode.value === 2) {
@@ -268,6 +292,7 @@ async function togglePlay() {
     await invoke('playback_pause');
     stopTicker();
   }
+  syncAndroid();
 }
 
 async function seek(e: MouseEvent) {
@@ -276,6 +301,7 @@ async function seek(e: MouseEvent) {
   const pos = Math.max(0, Math.min(1, ratio)) * duration.value;
   currentTime.value = Math.round(pos);
   await invoke('playback_seek', { position: pos });
+  syncAndroid();
 }
 
 function setVolume(e: MouseEvent) {
@@ -451,6 +477,22 @@ onMounted(() => {
   loadRecent();
   listen('library-changed', () => { loadLibrary(); loadRecent(); });
   listen('beat', () => { startBeatAnimation(); });
+
+  // Android media controls: _mediaControl is called by the native notification buttons
+  (window as any)._mediaControl = async (action: string) => {
+    if (action === 'play')       { if (!isPlaying.value) await togglePlay(); }
+    else if (action === 'pause') { if (isPlaying.value) await togglePlay(); }
+    else if (action === 'next')  { await playNext(); }
+    else if (action === 'prev')  { await playPrev(); }
+    else if (action.startsWith('seek:')) {
+      const pos = parseFloat(action.slice(5));
+      if (!isNaN(pos)) {
+        currentTime.value = Math.round(pos);
+        await invoke('playback_seek', { position: pos });
+        syncAndroid();
+      }
+    }
+  };
   listen<{current: number; total: number; status: string; added: number}>('index-progress', (e) => {
     const p = e.payload;
     if (p.status === 'done') {
