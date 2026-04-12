@@ -2,6 +2,7 @@ package dev.verncat.player
 
 import android.content.Intent
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -14,6 +15,7 @@ import java.lang.ref.WeakReference
 class MainActivity : TauriActivity() {
 
     private var webViewRef: WeakReference<WebView>? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     companion object {
         var instance: WeakReference<MainActivity>? = null
@@ -84,6 +86,20 @@ class MainActivity : TauriActivity() {
         }
         Environment.getExternalStorageDirectory().resolve("Player").mkdirs()
         enableEdgeToEdge()
+
+        // Acquire Wi-Fi multicast lock so mDNS (mdns-sd) can receive multicast packets
+        val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+        multicastLock = wm.createMulticastLock("player_mdns").apply {
+            setReferenceCounted(true)
+            acquire()
+        }
+
         super.onCreate(savedInstanceState)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        multicastLock?.release()
+        multicastLock = null
     }
 }

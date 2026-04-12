@@ -41,6 +41,24 @@ function rarityVars(r: string | null): Record<string, string> {
   return { '--rc': c };
 }
 
+/** Derive two complementary HSL colors from a hex hash string (or fallback). */
+function hashToColors(hash: string | null): [string, string] {
+  if (!hash || hash.length < 8) return ['#1a1a2e', '#16213e'];
+  // Take two 3-byte windows from the hash as seeds
+  const a = parseInt(hash.slice(0, 6), 16);
+  const b = parseInt(hash.slice(6, 12), 16);
+  const hueA = a % 360;
+  const hueB = (hueA + 137) % 360;  // golden angle offset for contrast
+  const satA = 45 + (a >> 16 & 0x1f); // 45-76%
+  const satB = 45 + (b >> 16 & 0x1f);
+  const litA = 20 + (a >> 8 & 0x0f);  // 20-35%
+  const litB = 15 + (b >> 8 & 0x0f);  // 15-30%
+  return [
+    `hsl(${hueA}, ${satA}%, ${litA}%)`,
+    `hsl(${hueB}, ${satB}%, ${litB}%)`,
+  ];
+}
+
 const madeForYou = [
   { id: 7,  title: "The Logic Gate Sh...", artist: "John von Neumann", colors: ["#4527a0", "#283593"] },
   { id: 8,  title: "C++ Concerto", artist: "Bjarne Stroustrup", colors: ["#bf360c", "#b71c1c"] },
@@ -120,12 +138,15 @@ const nowPlaying = ref<Track | null>(null);
 const recentTracks = ref<Track[]>([]);
 const showQueueMenu = ref(false);
 
+interface Peer { name: string; host: string; port: number; addresses: string[] }
+const peers = ref<Peer[]>([]);
+
 const currentTrack = computed(() => {
   if (nowPlaying.value) {
     return {
       title: nowPlaying.value.title || nowPlaying.value.path,
       artist: nowPlaying.value.artist || 'Unknown',
-      colors: ['#00acc1', '#283593'],
+      colors: hashToColors(nowPlaying.value.file_hash),
     };
   }
   return { title: 'No track', artist: '', colors: ['#282828', '#181818'] };
@@ -477,6 +498,7 @@ onMounted(() => {
   loadRecent();
   listen('library-changed', () => { loadLibrary(); loadRecent(); });
   listen('beat', () => { startBeatAnimation(); });
+  listen<Peer[]>('discovery-peers', (e) => { peers.value = e.payload; });
 
   // Android media controls: _mediaControl is called by the native notification buttons
   (window as any)._mediaControl = async (action: string) => {
@@ -573,6 +595,11 @@ onUnmounted(() => {
           </span>
           Liked Songs
         </a> -->
+        <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="activeNav = 'discovery'" href="#">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+          Устройства
+          <span v-if="peers.length" class="peer-badge">{{ peers.length }}</span>
+        </a>
         <a class="nav-item" href="#" @click.prevent="openDataDir">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           Open Data Folder
@@ -636,7 +663,7 @@ onUnmounted(() => {
                 @click="playTrackFrom('recent', idx)">
                 <div class="cover" :style="covers[track.id]
                   ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                  : 'background: linear-gradient(135deg, #1db954, #191414)'">
+                  : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`">
                   <div class="hover-play">
                     <button class="green-circle">
                       <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
@@ -700,7 +727,7 @@ onUnmounted(() => {
                 >
                   <div class="track-cover-sm" :style="covers[track.id]
                     ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                    : 'background: linear-gradient(135deg, #1db954, #191414)'"
+                    : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                   />
                   <span class="track-num">{{ track.track_number ?? '–' }}</span>
                   <div class="track-info">
@@ -725,6 +752,32 @@ onUnmounted(() => {
           <section>
             <h2>Search</h2>
             <p style="color:#a7a7a7">Search coming soon.</p>
+          </section>
+        </template>
+
+        <!-- Discovery view -->
+        <template v-else-if="activeNav === 'discovery'">
+          <section>
+            <div class="library-header">
+              <h2>Устройства в сети</h2>
+              <span style="color:#a7a7a7; font-size:12px">mDNS · автообнаружение</span>
+            </div>
+            <div v-if="!peers.length" class="discovery-empty">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" style="color:#535353"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+              <p>Другие инстансы не найдены</p>
+              <p style="font-size:12px; color:#535353">Убедитесь что устройства в одной Wi-Fi сети</p>
+            </div>
+            <div v-else class="peer-list">
+              <div v-for="peer in peers" :key="peer.host" class="peer-item">
+                <div class="peer-icon">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 3h5v2h-5V7zm0 3h5v2h-5v-2zm0 3h3v2h-3v-2zM4 7h10v10H4V7z"/></svg>
+                </div>
+                <div class="peer-info">
+                  <span class="peer-name">{{ peer.name }}</span>
+                  <span class="peer-addr">{{ peer.host }}:{{ peer.port }}</span>
+                </div>
+              </div>
+            </div>
           </section>
         </template>
       </div>
@@ -840,7 +893,7 @@ onUnmounted(() => {
 
       <!-- Center: controls -->
       <div class="player-center">
-        <div class="ctrl-row">
+        <div class="ctrl-row" :style="{ transform: `scale(${beatScale})`, transformOrigin: 'center', willChange: 'transform' }">
           <button class="icon-btn" :class="{ green: isShuffled, dot: isShuffled }" @click="isShuffled = !isShuffled" title="Shuffle">
             <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
           </button>
@@ -884,7 +937,7 @@ onUnmounted(() => {
                 <div class="queue-item active">
                   <div class="queue-item-cover" :style="covers[nowPlaying.id]
                     ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
-                    : 'background: linear-gradient(135deg, #1db954, #191414)'" />
+                    : `background: linear-gradient(135deg, ${hashToColors(nowPlaying.file_hash)[0]}, ${hashToColors(nowPlaying.file_hash)[1]})`" />
                   <div class="queue-item-info">
                     <span class="queue-item-title">{{ nowPlaying.title || nowPlaying.path }}</span>
                     <span class="queue-item-artist">{{ nowPlaying.artist || 'Unknown' }}</span>
@@ -902,7 +955,7 @@ onUnmounted(() => {
                 >
                   <div class="queue-item-cover" :style="covers[track.id]
                     ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                    : 'background: linear-gradient(135deg, #1db954, #191414)'" />
+                    : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`" />
                   <div class="queue-item-info">
                     <span class="queue-item-title">{{ track.title || track.path }}</span>
                     <span class="queue-item-artist">{{ track.artist || 'Unknown' }}</span>
@@ -1010,9 +1063,40 @@ a, button, [role="button"] {
   cursor: pointer;
   transition: color .12s;
   user-select: none;
+  position: relative;
 }
 .nav-item:hover { color: #fff; }
 .nav-item.active { color: #fff; }
+
+.peer-badge {
+  margin-left: auto;
+  background: #1db954;
+  color: #000;
+  font-size: 11px; font-weight: 700;
+  min-width: 18px; height: 18px;
+  border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 5px;
+}
+
+.discovery-empty {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 12px; padding: 60px 0; color: #a7a7a7; font-size: 14px;
+}
+.peer-list { display: flex; flex-direction: column; gap: 8px; }
+.peer-item {
+  display: flex; align-items: center; gap: 14px;
+  background: #181818; border-radius: 8px;
+  padding: 14px 16px;
+}
+.peer-icon {
+  width: 40px; height: 40px; border-radius: 6px; background: #282828;
+  display: flex; align-items: center; justify-content: center;
+  color: #a7a7a7; flex-shrink: 0;
+}
+.peer-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.peer-name { font-size: 14px; font-weight: 600; color: #fff; }
+.peer-addr { font-size: 12px; color: #a7a7a7; }
 
 .icon-box {
   width: 26px; height: 26px;
@@ -1688,11 +1772,13 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   .player {
     grid-column: 1;
     grid-row: 3 / 4;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: 1fr auto 1fr;
     padding: 0 10px;
     padding-bottom: env(safe-area-inset-bottom);
     height: calc(72px + env(safe-area-inset-bottom));
   }
+  .player-left { justify-self: start; }
+  .player-right { justify-self: end; }
   .player-left .thumb { width: 44px; height: 44px; }
   .player-left .track-meta { display: none; }
   .player-center { gap: 2px; padding: 6px 0; }
@@ -1720,7 +1806,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   .track-dur { display: none; }
 
   .player {
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: 1fr auto 1fr;
     padding: 0 8px;
     height: 64px;
   }

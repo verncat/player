@@ -85,9 +85,18 @@ impl LibraryState {
     pub fn new(data_dir: PathBuf, app_handle: tauri::AppHandle) -> Result<Self, BoxError> {
         std::fs::create_dir_all(&data_dir)?;
 
-        let conn = Connection::open(data_dir.join("app.db"))?;
+        let db_path = data_dir.join("app.db");
+        let is_new_db = !db_path.exists();
+
+        let conn = Connection::open(&db_path)?;
         init_schema(&conn)?;
-        index_directory(&conn, &data_dir)?;
+
+        // Only run the full directory scan on first launch (new DB).
+        // On subsequent launches the FS watcher handles incremental changes;
+        // the user can trigger a manual reindex at any time.
+        if is_new_db {
+            index_directory(&conn, &data_dir)?;
+        }
 
         let conn = Arc::new(Mutex::new(conn));
         start_watcher(data_dir.clone(), Arc::clone(&conn), app_handle)?;
@@ -308,6 +317,11 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
     }
 
     // Remove DB rows whose files no longer exist.
+    // Guard: if the walk found nothing at all (permission denied, unmounted storage, etc.)
+    // do NOT purge the DB — that would wipe all tracks on every cold start.
+    if visited.is_empty() {
+        return Ok(());
+    }
     let stale: Vec<String> = {
         let mut stmt = conn.prepare("SELECT path FROM tracks")?;
         let stale = stmt

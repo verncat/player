@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod discovery;
 pub mod identify;
 pub mod library;
 pub mod playback;
@@ -57,6 +58,12 @@ pub fn run() {
             app.manage(library);
             app.manage(audio::AudioState::new());
             app.manage(playback::PlaybackState::new(app.handle().clone()));
+            app.manage(discovery::DiscoveryState::new());
+            // Auto-start discovery
+            let _ = discovery::discovery_start(
+                app.state::<discovery::DiscoveryState>(),
+                app.handle().clone(),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -81,6 +88,9 @@ pub fn run() {
             playback::playback_set_volume,
             playback::playback_status,
             identify::identify_tracks,
+            discovery::discovery_start,
+            discovery::discovery_stop,
+            discovery::discovery_peers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
