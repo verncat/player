@@ -3,6 +3,7 @@ pub mod discovery;
 pub mod identify;
 pub mod library;
 pub mod playback;
+pub mod sync;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::f32::consts::PI;
@@ -59,6 +60,7 @@ pub fn run() {
             app.manage(audio::AudioState::new());
             app.manage(playback::PlaybackState::new(app.handle().clone()));
             app.manage(discovery::DiscoveryState::new());
+            app.manage(sync::SyncState::new());
             // Auto-start discovery
             let _ = discovery::discovery_start(
                 app.state::<discovery::DiscoveryState>(),
@@ -91,6 +93,9 @@ pub fn run() {
             discovery::discovery_start,
             discovery::discovery_stop,
             discovery::discovery_peers,
+            sync::sync_set_enabled,
+            sync::sync_get_enabled,
+            sync::sync_with_peer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

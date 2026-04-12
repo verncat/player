@@ -141,6 +141,74 @@ const showQueueMenu = ref(false);
 interface Peer { name: string; host: string; port: number; addresses: string[] }
 const peers = ref<Peer[]>([]);
 
+interface SyncProgress {
+  peer: string;
+  device_name?: string | null;
+  phase: string;
+  total: number;
+  done: number;
+  message?: string;
+}
+interface SyncHistoryItem {
+  ts: string;
+  phase: string;
+  text: string;
+}
+const syncEnabled = ref(false);
+const syncProgress = ref<Record<string, SyncProgress>>({});
+const peerDeviceNames = ref<Record<string, string>>({});
+const syncHistory = ref<Record<string, SyncHistoryItem[]>>({});
+const syncHistoryOpen = ref(false);
+const syncHistoryPeer = ref<string | null>(null);
+const syncHistoryRef = ref<HTMLElement | null>(null);
+
+function syncText(p: SyncProgress): string {
+  if (p.phase === 'index') return 'Загрузка индекса...';
+  if (p.phase === 'download') return `Загрузка ${p.done}/${p.total}`;
+  if (p.phase === 'reindex') return 'Индексирование...';
+  if (p.phase === 'done') return `✓ ${p.message || 'Done'}`;
+  if (p.phase === 'error') return `✗ ${p.message || 'Error'}`;
+  return p.phase;
+}
+
+function pushSyncHistory(p: SyncProgress) {
+  const entry: SyncHistoryItem = {
+    ts: new Date().toLocaleTimeString(),
+    phase: p.phase,
+    text: syncText(p),
+  };
+  const prev = syncHistory.value[p.peer] || [];
+  syncHistory.value = { ...syncHistory.value, [p.peer]: [...prev, entry] };
+  if (syncHistoryOpen.value && syncHistoryPeer.value === p.peer) {
+    nextTick(() => {
+      if (syncHistoryRef.value) syncHistoryRef.value.scrollTop = syncHistoryRef.value.scrollHeight;
+    });
+  }
+}
+
+function openSyncHistory(peer: string) {
+  syncHistoryPeer.value = peer;
+  syncHistoryOpen.value = true;
+  nextTick(() => {
+    if (syncHistoryRef.value) syncHistoryRef.value.scrollTop = syncHistoryRef.value.scrollHeight;
+  });
+}
+
+async function toggleSync() {
+  syncEnabled.value = !syncEnabled.value;
+  await invoke('sync_set_enabled', { enabled: syncEnabled.value });
+  if (syncEnabled.value) {
+    // Kick off sync with all currently known peers
+    for (const peer of peers.value) {
+      invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name }).catch(() => {});
+    }
+  }
+}
+
+function syncPeer(peer: Peer) {
+  invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name }).catch(() => {});
+}
+
 const currentTrack = computed(() => {
   if (nowPlaying.value) {
     return {
@@ -498,7 +566,27 @@ onMounted(() => {
   loadRecent();
   listen('library-changed', () => { loadLibrary(); loadRecent(); });
   listen('beat', () => { startBeatAnimation(); });
-  listen<Peer[]>('discovery-peers', (e) => { peers.value = e.payload; });
+  listen<Peer[]>('discovery-peers', (e) => {
+    const prev = new Set(peers.value.map(p => p.host));
+    peers.value = e.payload;
+    if (syncEnabled.value) {
+      for (const peer of e.payload) {
+        if (!prev.has(peer.host)) {
+          invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name }).catch(() => {});
+        }
+      }
+    }
+  });
+  listen<SyncProgress>('sync-progress', (e) => {
+    syncProgress.value = { ...syncProgress.value, [e.payload.peer]: e.payload };
+    pushSyncHistory(e.payload);
+    if (e.payload.device_name) {
+      peerDeviceNames.value = {
+        ...peerDeviceNames.value,
+        [e.payload.peer]: e.payload.device_name,
+      };
+    }
+  });
 
   // Android media controls: _mediaControl is called by the native notification buttons
   (window as any)._mediaControl = async (action: string) => {
@@ -760,7 +848,18 @@ onUnmounted(() => {
           <section>
             <div class="library-header">
               <h2>Устройства в сети</h2>
-              <span style="color:#a7a7a7; font-size:12px">mDNS · автообнаружение</span>
+              <div style="display:flex; align-items:center; gap:12px">
+                <span style="color:#a7a7a7; font-size:12px">mDNS · автообнаружение</span>
+                <button
+                  class="sync-toggle"
+                  :class="{ active: syncEnabled }"
+                  @click="toggleSync"
+                  :title="syncEnabled ? 'Sync on — click to disable' : 'Sync off — click to enable'"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                  Sync
+                </button>
+              </div>
             </div>
             <div v-if="!peers.length" class="discovery-empty">
               <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" style="color:#535353"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
@@ -773,9 +872,39 @@ onUnmounted(() => {
                   <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 3h5v2h-5V7zm0 3h5v2h-5v-2zm0 3h3v2h-3v-2zM4 7h10v10H4V7z"/></svg>
                 </div>
                 <div class="peer-info">
-                  <span class="peer-name">{{ peer.name }}</span>
+                  <span class="peer-name">{{ peerDeviceNames[peer.name] || peer.name }}</span>
+                  <span
+                    v-if="peerDeviceNames[peer.name] && peerDeviceNames[peer.name] !== peer.name"
+                    class="peer-alias"
+                  >{{ peer.name }}</span>
                   <span class="peer-addr">{{ peer.host }}:{{ peer.port }}</span>
+                  <!-- sync progress for this peer -->
+                  <template v-if="syncProgress[peer.name]">
+                    <div class="sync-bar-wrap" v-if="syncProgress[peer.name].phase === 'download'">
+                      <div
+                        class="sync-bar"
+                        :style="{ width: syncProgress[peer.name].total > 0
+                          ? (syncProgress[peer.name].done / syncProgress[peer.name].total * 100) + '%'
+                          : '0%' }"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      class="sync-status"
+                      :class="'sync-' + syncProgress[peer.name].phase"
+                      @click.stop="openSyncHistory(peer.name)"
+                    >{{ syncText(syncProgress[peer.name]) }}</button>
+                  </template>
                 </div>
+                <button
+                  v-if="syncEnabled"
+                  class="sync-now-btn"
+                  @click="syncPeer(peer)"
+                  :disabled="['index','download','reindex'].includes(syncProgress[peer.name]?.phase ?? '')"
+                  title="Sync now"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                </button>
               </div>
             </div>
           </section>
@@ -864,6 +993,34 @@ onUnmounted(() => {
                 <span class="ir-text">{{ item.message || item.status.replace('_', ' ') }}</span>
               </div>
               <div v-if="!identifyResults.length && !identifyDone" class="identify-empty">Processing…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Sync history modal -->
+    <Transition name="modal">
+      <div v-if="syncHistoryOpen && syncHistoryPeer !== null" class="modal-overlay" @click.self="syncHistoryOpen = false; syncHistoryPeer = null">
+        <div class="modal identify-modal">
+          <div class="modal-header">
+            <h3>Sync history · {{ peerDeviceNames[syncHistoryPeer] || syncHistoryPeer }}</h3>
+            <button class="icon-btn" title="Close" @click="syncHistoryOpen = false; syncHistoryPeer = null">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="identify-results" ref="syncHistoryRef">
+              <div
+                v-for="(item, idx) in (syncHistory[syncHistoryPeer] || [])"
+                :key="idx"
+                class="identify-result-item"
+                :class="'ir-' + item.phase"
+              >
+                <span class="ir-icon">{{ item.ts }}</span>
+                <span class="ir-text">{{ item.text }}</span>
+              </div>
+              <div v-if="!(syncHistory[syncHistoryPeer] || []).length" class="identify-empty">No sync history yet.</div>
             </div>
           </div>
         </div>
@@ -1094,9 +1251,45 @@ a, button, [role="button"] {
   display: flex; align-items: center; justify-content: center;
   color: #a7a7a7; flex-shrink: 0;
 }
-.peer-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.peer-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .peer-name { font-size: 14px; font-weight: 600; color: #fff; }
+.peer-alias { font-size: 11px; color: #7b7b7b; }
 .peer-addr { font-size: 12px; color: #a7a7a7; }
+
+.sync-toggle {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 20px; border: 1px solid #535353;
+  background: transparent; color: #a7a7a7; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.sync-toggle:hover { border-color: #fff; color: #fff; }
+.sync-toggle.active { background: #1db954; border-color: #1db954; color: #000; }
+
+.sync-now-btn {
+  flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
+  background: #282828; border: none; color: #a7a7a7;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.sync-now-btn:hover:not(:disabled) { background: #1db954; color: #000; }
+.sync-now-btn:disabled { opacity: 0.4; cursor: default; }
+
+.sync-bar-wrap {
+  height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-top: 2px;
+}
+.sync-bar { height: 100%; background: #1db954; border-radius: 2px; transition: width 0.3s; }
+.sync-status {
+  font-size: 11px;
+  color: #a7a7a7;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.sync-status:hover { color: #fff; text-decoration: underline; }
+.sync-done { color: #1db954; }
+.sync-error { color: #e9283e; }
 
 .icon-box {
   width: 26px; height: 26px;

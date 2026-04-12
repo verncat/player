@@ -34,4 +34,5 @@ rusty-chromaprint = "0.3"
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 mdns-sd = "0.11"
 hostname = "0.4"
+whoami = "1"
 

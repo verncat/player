@@ -17,7 +17,7 @@ android {
     compileSdk = 36
     namespace = "dev.verncat.player"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "dev.verncat.player"
         minSdk = 26
         targetSdk = 36
