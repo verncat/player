@@ -214,12 +214,24 @@ struct IndexProgress {
     total: usize,
     status: String, // indexing, done
     added: usize,
+    track_name: Option<String>,
 }
 
-fn emit_index_progress(app: &tauri::AppHandle, current: usize, total: usize, status: &str, added: usize) {
+fn emit_index_progress(
+    app: &tauri::AppHandle,
+    current: usize,
+    total: usize,
+    status: &str,
+    added: usize,
+    track_name: Option<String>,
+) {
     use tauri::Emitter;
     let _ = app.emit("index-progress", IndexProgress {
-        current, total, status: status.to_owned(), added,
+        current,
+        total,
+        status: status.to_owned(),
+        added,
+        track_name,
     });
 }
 
@@ -247,11 +259,21 @@ fn index_directory_async(
 
     for (i, path) in files.iter().enumerate() {
         let rel = rel_path(data_dir, path);
-        visited.insert(rel);
+        visited.insert(rel.clone());
 
         let conn = conn.lock().unwrap();
         match index_file(&conn, data_dir, path) {
-            Ok(true) => added += 1,
+            Ok(true) => {
+                added += 1;
+                emit_index_progress(
+                    app,
+                    i + 1,
+                    total,
+                    "added",
+                    added,
+                    Some(track_name_from_rel(&rel)),
+                );
+            }
             Err(e) => eprintln!("[library] failed to index {}: {e}", path.display()),
             _ => {}
         }
@@ -259,7 +281,7 @@ fn index_directory_async(
 
         // Emit progress every 5 files or at the end.
         if (i + 1) % 5 == 0 || i + 1 == total {
-            emit_index_progress(app, i + 1, total, "indexing", added);
+            emit_index_progress(app, i + 1, total, "indexing", added, None);
         }
     }
 
@@ -282,7 +304,7 @@ fn index_directory_async(
         }
     }
 
-    emit_index_progress(app, total, total, "done", added);
+    emit_index_progress(app, total, total, "done", added, None);
 
     use tauri::Emitter;
     let _ = app.emit("library-changed", ());
@@ -437,6 +459,15 @@ fn rel_path(data_dir: &Path, abs: &Path) -> String {
     abs.strip_prefix(data_dir)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| abs.to_string_lossy().to_string())
+}
+
+fn track_name_from_rel(rel: &str) -> String {
+    Path::new(rel)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(rel)
+        .to_string()
 }
 
 // ── Hashing & Gacha rarity ────────────────────────────────────────────────────
@@ -668,16 +699,27 @@ fn handle_fs_events_batch(
     let mut current: usize = 0;
 
     for path in &to_index {
+        let rel = rel_path(data_dir, path);
+        current += 1;
         let c = conn.lock().unwrap();
         match index_file(&c, data_dir, path) {
-            Ok(true) => added += 1,
+            Ok(true) => {
+                added += 1;
+                emit_index_progress(
+                    app_handle,
+                    current,
+                    total,
+                    "added",
+                    added,
+                    Some(track_name_from_rel(&rel)),
+                );
+            }
             Err(e) => eprintln!("[library] watcher: index error for {}: {e}", path.display()),
             _ => {}
         }
         drop(c);
-        current += 1;
         if current % 5 == 0 || current == total {
-            emit_index_progress(app_handle, current, total, "indexing", added);
+            emit_index_progress(app_handle, current, total, "indexing", added, None);
         }
     }
 
@@ -691,7 +733,7 @@ fn handle_fs_events_batch(
         current += 1;
     }
 
-    emit_index_progress(app_handle, total, total, "done", added);
+    emit_index_progress(app_handle, total, total, "done", added, None);
 
     use tauri::Emitter;
     let _ = app_handle.emit("library-changed", ());

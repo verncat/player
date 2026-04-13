@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -217,13 +217,32 @@ fn serve_file(
     }
 }
 
-// ── Minimal HTTP client (raw TCP, no runtime dependency) ────────────────────
+// ── Connection helpers ─────────────────────────────────────────────────────
+
+fn connect_to_peer(peer_host: &str, peer_addresses: &[String]) -> std::io::Result<TcpStream> {
+    // First try raw IP addresses from mDNS resolution, because on Android hostname
+    // resolution can be flaky for .local names.
+    for addr_text in peer_addresses {
+        if let Ok(ip) = addr_text.parse::<IpAddr>() {
+            let addr = SocketAddr::new(ip, SYNC_PORT);
+            if let Ok(stream) = TcpStream::connect(addr) {
+                return Ok(stream);
+            }
+        }
+    }
+    // Fallback to host resolution.
+    for addr in (peer_host, SYNC_PORT).to_socket_addrs()? {
+        if let Ok(stream) = TcpStream::connect(addr) {
+            return Ok(stream);
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::Other, "no reachable peer address"))
+}
 
 /// Perform a blocking HTTP/1.0 GET. Returns the response body on 2xx.
-fn http_get(host: &str, port: u16, path: &str) -> std::io::Result<Vec<u8>> {
-    let mut stream = TcpStream::connect((host, port))?;
+fn http_get(stream: &mut TcpStream, host_header: &str, path: &str) -> std::io::Result<Vec<u8>> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    write!(stream, "GET {path} HTTP/1.0\r\nHost: {host}:{port}\r\n\r\n")?;
+    write!(stream, "GET {path} HTTP/1.0\r\nHost: {host_header}\r\n\r\n")?;
     stream.flush()?;
 
     let mut raw = Vec::new();
@@ -238,7 +257,7 @@ fn http_get(host: &str, port: u16, path: &str) -> std::io::Result<Vec<u8>> {
     // Check status line ("HTTP/1.0 200 ...")
     let status_ok = raw.get(..12).map(|s| s[9..12] == *b"200").unwrap_or(false);
     if !status_ok {
-        return Err(std::io::Error::other("HTTP non-200"));
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, "HTTP non-200"));
     }
     Ok(raw[body_start..].to_vec())
 }
@@ -267,11 +286,19 @@ fn emit(
     );
 }
 
-fn do_sync(peer_host: String, peer_name: String, app: AppHandle) {
+fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, app: AppHandle) {
     emit(&app, &peer_name, None, "index", 0, 0, None);
 
+    let mut stream = match connect_to_peer(&peer_host, &peer_addresses) {
+        Ok(s) => s,
+        Err(e) => {
+            emit(&app, &peer_name, None, "error", 0, 0, Some(e.to_string()));
+            return;
+        }
+    };
+
     // 1 ── Fetch remote track list ─────────────────────────────────────────────
-    let index_bytes = match http_get(&peer_host, SYNC_PORT, "/tracks") {
+    let index_bytes = match http_get(&mut stream, &peer_host, "/tracks") {
         Ok(b) => b,
         Err(e) => {
             emit(&app, &peer_name, None, "error", 0, 0, Some(e.to_string()));
@@ -383,21 +410,9 @@ fn do_sync(peer_host: String, peer_name: String, app: AppHandle) {
         }
 
         let path = format!("/file/{}", track.hash);
-        // Use a longer timeout for potentially large audio files
-        if let Ok(mut stream) = TcpStream::connect((&*peer_host, SYNC_PORT)) {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(300)));
-            let _ = write!(stream, "GET {path} HTTP/1.0\r\nHost: {peer_host}:{SYNC_PORT}\r\n\r\n");
-            let _ = stream.flush();
-            let mut raw = Vec::new();
-            if stream.read_to_end(&mut raw).is_ok() {
-                let body_start = raw
-                    .windows(4)
-                    .position(|w| w == b"\r\n\r\n")
-                    .map(|p| p + 4)
-                    .unwrap_or(0);
-                if raw.get(9..12) == Some(b"200") {
-                    let _ = std::fs::write(&save_path, &raw[body_start..]);
-                }
+        if let Ok(mut stream) = connect_to_peer(&peer_host, &peer_addresses) {
+            if let Ok(bytes) = http_get(&mut stream, &peer_host, &path) {
+                let _ = std::fs::write(&save_path, &bytes);
             }
         }
 
@@ -468,12 +483,13 @@ pub fn sync_get_enabled(state: State<'_, SyncState>) -> bool {
 pub fn sync_with_peer(
     peer_host: String,
     peer_name: String,
+    peer_addresses: Vec<String>,
     state: State<'_, SyncState>,
     app: AppHandle,
 ) -> Result<(), String> {
     if !state.inner.lock().unwrap().enabled {
         return Err("Sync is disabled".to_string());
     }
-    thread::spawn(move || do_sync(peer_host, peer_name, app));
+    thread::spawn(move || do_sync(peer_host, peer_name, peer_addresses, app));
     Ok(())
 }

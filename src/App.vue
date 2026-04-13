@@ -129,7 +129,14 @@ const indexAdded = ref(0);
 const indexDone = ref(false);
 let indexDismissTimer: ReturnType<typeof setTimeout> | null = null;
 
-interface IndexLogItem { timestamp: number; type: 'index' | 'sync'; device?: string; count: number; status: 'done' | 'error'; message: string }
+interface IndexLogItem {
+  timestamp: number;
+  type: 'index' | 'sync';
+  device?: string;
+  trackName?: string;
+  status: 'added' | 'done' | 'error';
+  message: string;
+}
 const indexLog = ref<IndexLogItem[]>([]);
 const indexLogRef = ref<HTMLElement | null>(null);
 const indexLogOpen = ref(false);
@@ -164,13 +171,13 @@ async function toggleSync() {
   if (syncEnabled.value) {
     // Kick off sync with all currently known peers
     for (const peer of peers.value) {
-      invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name }).catch(() => {});
+      invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses }).catch(() => {});
     }
   }
 }
 
 function syncPeer(peer: Peer) {
-  invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name }).catch(() => {});
+  invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses }).catch(() => {});
 }
 
 const currentTrack = computed(() => {
@@ -536,7 +543,7 @@ onMounted(() => {
     if (syncEnabled.value) {
       for (const peer of e.payload) {
         if (!prev.has(peer.host)) {
-          invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name }).catch(() => {});
+          invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses }).catch(() => {});
         }
       }
     }
@@ -554,7 +561,6 @@ onMounted(() => {
         timestamp: Date.now(),
         type: 'sync',
         device: e.payload.device_name || e.payload.peer,
-        count: e.payload.done,
         status: e.payload.phase === 'done' ? 'done' : 'error',
         message: e.payload.message || e.payload.phase,
       });
@@ -581,18 +587,30 @@ onMounted(() => {
       }
     }
   };
-  listen<{current: number; total: number; status: string; added: number}>('index-progress', (e) => {
+  listen<{current: number; total: number; status: string; added: number; track_name?: string | null}>('index-progress', (e) => {
     const p = e.payload;
-    if (p.status === 'done') {
-      indexAdded.value += p.added;
+    if (p.status === 'added' && p.track_name) {
+      indexLog.value.push({
+        timestamp: Date.now(),
+        type: 'index',
+        trackName: p.track_name,
+        status: 'added',
+        message: 'Added from indexing',
+      });
+      nextTick(() => {
+        if (indexLogRef.value) {
+          indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight;
+        }
+      });
+    } else if (p.status === 'done') {
+      indexAdded.value = p.added;
       indexDone.value = true;
       indexRunning.value = true;
       indexLog.value.push({
         timestamp: Date.now(),
         type: 'index',
-        count: p.added,
         status: 'done',
-        message: `+${p.added} track(s)`,
+        message: 'Indexing complete',
       });
       nextTick(() => {
         if (indexLogRef.value) {
@@ -670,7 +688,7 @@ onUnmounted(() => {
         </a> -->
         <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="activeNav = 'discovery'" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
-          Устройства
+          Devices
           <span v-if="peers.length" class="peer-badge">{{ peers.length }}</span>
         </a>
         <a class="nav-item" href="#" @click.prevent="openDataDir">
@@ -832,9 +850,9 @@ onUnmounted(() => {
         <template v-else-if="activeNav === 'discovery'">
           <section>
             <div class="library-header">
-              <h2>Устройства в сети</h2>
+              <h2>Devices on Network</h2>
               <div style="display:flex; align-items:center; gap:12px">
-                <span style="color:#a7a7a7; font-size:12px">mDNS · автообнаружение</span>
+                <span style="color:#a7a7a7; font-size:12px">mDNS · auto discovery</span>
                 <button
                   class="sync-toggle"
                   :class="{ active: syncEnabled }"
@@ -848,8 +866,8 @@ onUnmounted(() => {
             </div>
             <div v-if="!peers.length" class="discovery-empty">
               <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" style="color:#535353"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
-              <p>Другие инстансы не найдены</p>
-              <p style="font-size:12px; color:#535353">Убедитесь что устройства в одной Wi-Fi сети</p>
+              <p>No other instances found</p>
+              <p style="font-size:12px; color:#535353">Make sure devices are on the same Wi-Fi network</p>
             </div>
             <div v-else class="peer-list">
               <div v-for="peer in peers" :key="peer.host" class="peer-item">
@@ -874,7 +892,7 @@ onUnmounted(() => {
                       />
                     </div>
                     <span class="sync-status" :class="'sync-' + syncProgress[peer.name].phase">
-                      <template v-if="syncProgress[peer.name].phase === 'index'">Загрузка индекса…</template>
+                      <template v-if="syncProgress[peer.name].phase === 'index'">Fetching index...</template>
                       <template v-else-if="syncProgress[peer.name].phase === 'download'">
                         Loading {{ syncProgress[peer.name].done }}/{{ syncProgress[peer.name].total }}
                       </template>
@@ -996,27 +1014,25 @@ onUnmounted(() => {
       <div v-if="indexLogOpen" class="modal-overlay" @click.self="indexLogOpen = false; indexRunning = false">
         <div class="modal identify-modal">
           <div class="modal-header">
-            <h3>Index & Sync History</h3>
+            <h3>Indexing tracks <span class="powered-by">activity timeline</span></h3>
             <button class="icon-btn" title="Close" @click="indexLogOpen = false; indexRunning = false">
               <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
           <div class="modal-body">
-            <div class="index-log" ref="indexLogRef">
-              <div v-for="(item, idx) in indexLog" :key="idx" class="log-item" :class="`log-${item.type} log-${item.status}`">
-                <span class="log-time">{{ new Date(item.timestamp).toLocaleTimeString() }}</span>
-                <!-- <span v-if="item.type === 'index'" class="log-type-badge log-index">local</span>
-                <span v-else class="log-type-badge log-sync">sync</span> -->
-                <div class="log-content">
-                  <div class="log-title">
-                    <span v-if="item.type === 'index'">Local Index</span>
-                    <span v-else>{{ item.device }}</span>
-                    <span class="log-count">{{ item.count }} files</span>
-                  </div>
-                  <div class="log-message">{{ item.message }}</div>
-                </div>
-                <span v-if="item.status === 'done'" class="log-status-icon">✓</span>
-                <span v-else class="log-status-icon log-error">✗</span>
+            <div class="identify-bar-wrap">
+              <div class="identify-bar-fill" :style="`width:${indexTotal > 0 ? (indexCurrent / indexTotal * 100) : 0}%`" />
+            </div>
+            <div class="identify-status">{{ indexCurrent }} / {{ indexTotal }}{{ indexDone ? ' — Done' : '' }}</div>
+            <div class="index-results" ref="indexLogRef">
+              <div v-for="(item, idx) in indexLog" :key="idx" class="index-result-item" :class="'ii-' + item.status">
+                <span class="ii-icon" v-if="item.status === 'added'">♪</span>
+                <span class="ii-icon" v-else-if="item.status === 'done'">✓</span>
+                <span class="ii-icon" v-else>✗</span>
+                <span class="ii-track" v-if="item.type === 'index' && item.trackName">{{ item.trackName }}</span>
+                <span class="ii-track" v-else-if="item.type === 'sync'">{{ item.device }}</span>
+                <span class="ii-text">{{ item.message }}</span>
+                <span class="ii-time">{{ new Date(item.timestamp).toLocaleTimeString() }}</span>
               </div>
               <div v-if="!indexLog.length" class="index-empty" style="padding: 40px 20px; text-align: center; color: #a7a7a7;">
                 No history yet
@@ -1900,70 +1916,55 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 
 /* ── Index & Sync log ── */
-.index-log {
-  max-height: 320px;
+.index-results {
+  max-height: 300px;
   overflow-y: auto;
   display: flex;
-  flex-direction: column-reverse;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
 }
-.index-log::-webkit-scrollbar { width: 6px; }
-.index-log::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
-.index-log::-webkit-scrollbar-track { background: transparent; }
-.log-item {
+.index-results::-webkit-scrollbar { width: 6px; }
+.index-results::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.index-results::-webkit-scrollbar-track { background: transparent; }
+.index-result-item {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
   border-radius: 4px;
-  font-size: 12px;
-  background: #1a1a1a;
-  border-left: 3px solid transparent;
-}
-.log-index { border-left-color: #4fc3f7; }
-.log-sync { border-left-color: #1db954; }
-.log-error { border-left-color: #e9283e; }
-.log-time {
-  font-size: 11px;
-  color: #888;
-  min-width: 50px;
-  flex-shrink: 0;
-}
-.log-type-badge {
-  flex-shrink: 0;
-  font-size: 14px;
-}
-.log-content {
-  flex: 1;
+  font-size: 13px;
   min-width: 0;
 }
-.log-title {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  color: #fff;
-  font-weight: 600;
-  font-size: 12px;
-}
-.log-count {
-  font-size: 11px;
-  color: #888;
-  font-weight: 400;
-}
-.log-message {
-  font-size: 11px;
-  color: #a7a7a7;
-  margin-top: 2px;
-}
-.log-status-icon {
+.ii-icon {
+  width: 16px;
+  text-align: center;
   flex-shrink: 0;
   font-size: 14px;
-  color: #1db954;
-  font-weight: bold;
 }
-.log-status-icon.log-error {
-  color: #e9283e;
+.ii-track {
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 170px;
+  flex-shrink: 0;
 }
+.ii-text {
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
+  flex: 1;
+  color: #a7a7a7;
+}
+.ii-time {
+  font-size: 11px;
+  color: #777;
+  flex-shrink: 0;
+}
+.ii-added { color: #4fc3f7; }
+.ii-done { color: #1db954; font-weight: 600; }
+.ii-error { color: #ff5252; }
 
 /* ── Responsive: tablets and small screens ── */
 @media (max-width: 768px) {
