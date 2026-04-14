@@ -191,7 +191,12 @@ const currentTrack = computed(() => {
   return { title: 'No track', artist: '', colors: ['#282828', '#181818'] };
 });
 
-const progressPercent = computed(() => (duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0));
+const mobileSeekActive = ref(false);
+const seekPreviewPos = ref<number | null>(null);
+const displayProgressPercent = computed(() => {
+  const pos = seekPreviewPos.value ?? currentTime.value;
+  return duration.value > 0 ? (pos / duration.value) * 100 : 0;
+});
 
 /** Return the full ordered list for a given source */
 function sourceList(src: QueueSource): Track[] {
@@ -234,6 +239,48 @@ function syncAndroid() {
   }
 }
 
+function seekPosFromEvent(e: MouseEvent | PointerEvent, el: HTMLElement): number {
+  const rect = el.getBoundingClientRect();
+  const ratio = (e.clientX - rect.left) / rect.width;
+  return Math.max(0, Math.min(1, ratio)) * duration.value;
+}
+
+function mobileSeekHoldStart(e: PointerEvent) {
+  const el = e.currentTarget as HTMLElement;
+  mobileSeekActive.value = true;
+  el.setPointerCapture?.(e.pointerId);
+  const pos = seekPosFromEvent(e, el);
+  seekPreviewPos.value = pos;
+  currentTime.value = Math.round(pos);
+}
+
+function mobileSeekHoldMove(e: PointerEvent) {
+  if (!mobileSeekActive.value) return;
+  const el = e.currentTarget as HTMLElement;
+  const pos = seekPosFromEvent(e, el);
+  seekPreviewPos.value = pos;
+  currentTime.value = Math.round(pos);
+}
+
+async function mobileSeekHoldEnd(e: PointerEvent) {
+  if (!mobileSeekActive.value) return;
+  const el = e.currentTarget as HTMLElement;
+  const pos = seekPosFromEvent(e, el);
+  seekPreviewPos.value = pos;
+  currentTime.value = Math.round(pos);
+  await invoke('playback_seek', { position: pos });
+  const st = await refreshPlaybackState();
+  if (st.playing) {
+    startTicker();
+  } else {
+    stopTicker();
+  }
+  syncAndroid();
+  seekPreviewPos.value = null;
+  mobileSeekActive.value = false;
+  el.releasePointerCapture?.(e.pointerId);
+}
+
 /** Start playing a specific track from a given source list at a given index */
 async function playTrackFrom(src: QueueSource, index: number) {
   const list = sourceList(src);
@@ -243,12 +290,12 @@ async function playTrackFrom(src: QueueSource, index: number) {
   nowPlaying.value = track;
   duration.value = track.duration_secs || 0;
   currentTime.value = 0;
-  isPlaying.value = true;
   // rebuild queue starting after this index
   queueSourceIndex.value = index;
   queue.value = [];
   refillQueue();
   await invoke('playback_play', { path: track.path });
+  await refreshPlaybackState();
   invoke('record_play', { id: track.id }).then(() => loadRecent());
   startTicker();
   syncAndroid();
@@ -268,10 +315,8 @@ async function playNext() {
   duration.value = next.duration_secs || 0;
   currentTime.value = 0;
   refillQueue();
-  if (!isPlaying.value) {
-    isPlaying.value = true;
-  }
   await invoke('playback_play', { path: next.path });
+  await refreshPlaybackState();
   invoke('record_play', { id: next.id }).then(() => loadRecent());
   startTicker();
   syncAndroid();
@@ -300,6 +345,14 @@ function jumpToQueueItem(index: number) {
 
 interface PlaybackStatus { playing: boolean; finished: boolean; position: number; duration: number; }
 
+async function refreshPlaybackState() {
+  const st = await invoke<PlaybackStatus>('playback_status');
+  isPlaying.value = st.playing;
+  currentTime.value = Math.floor(st.position);
+  if (st.duration > 0) duration.value = Math.floor(st.duration);
+  return st;
+}
+
 function formatTime(s: number) {
   const m = Math.floor(s / 60);
   return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -317,9 +370,7 @@ function startTicker() {
   androidSyncCounter = 0;
   ticker = setInterval(async () => {
     try {
-      const st = await invoke<PlaybackStatus>('playback_status');
-      currentTime.value = Math.floor(st.position);
-      if (st.duration > 0) duration.value = Math.floor(st.duration);
+      const st = await refreshPlaybackState();
       // sync Android notification progress ~every 4 ticks (≈1 s)
       if (++androidSyncCounter >= 4) { androidSyncCounter = 0; syncAndroid(); }
       if (st.finished) {
@@ -344,23 +395,28 @@ async function togglePlay() {
     }
     return;
   }
-  isPlaying.value = !isPlaying.value;
   if (isPlaying.value) {
-    await invoke('playback_resume');
-    startTicker();
-  } else {
     await invoke('playback_pause');
     stopTicker();
+  } else {
+    await invoke('playback_resume');
+    startTicker();
   }
+  await refreshPlaybackState();
   syncAndroid();
 }
 
 async function seek(e: MouseEvent) {
   const el = e.currentTarget as HTMLElement;
-  const ratio = (e.clientX - el.getBoundingClientRect().left) / el.offsetWidth;
-  const pos = Math.max(0, Math.min(1, ratio)) * duration.value;
+  const pos = seekPosFromEvent(e, el);
   currentTime.value = Math.round(pos);
   await invoke('playback_seek', { position: pos });
+  const st = await refreshPlaybackState();
+  if (st.playing) {
+    startTicker();
+  } else {
+    stopTicker();
+  }
   syncAndroid();
 }
 
@@ -535,6 +591,15 @@ onMounted(() => {
   document.addEventListener('click', onDocClick);
   loadLibrary();
   loadRecent();
+  
+  // Listen for app coming back to foreground (Android)
+  listen('tauri://resumed', async () => {
+    const st = await refreshPlaybackState();
+    if (st.playing && !ticker) {
+      startTicker();
+    }
+  });
+  
   listen('library-changed', () => { loadLibrary(); loadRecent(); });
   listen('beat', () => { startBeatAnimation(); });
   listen<Peer[]>('discovery-peers', (e) => {
@@ -1042,6 +1107,21 @@ onUnmounted(() => {
         </div>
       </div>
     </Transition>
+    <div class="mobile-seek-wrap" :class="{ active: mobileSeekActive }">
+      <div
+        class="mobile-seek-hit"
+        @pointerdown="mobileSeekHoldStart"
+        @pointermove="mobileSeekHoldMove"
+        @pointerup="mobileSeekHoldEnd"
+        @pointercancel="mobileSeekHoldEnd"
+      >
+        <div class="mobile-seek-track">
+          <div class="mobile-seek-fill" :style="`width:${displayProgressPercent}%`">
+            <div class="mobile-seek-thumb" />
+          </div>
+        </div>
+      </div>
+    </div>
     <footer class="player">
       <!-- Left: track info -->
       <div class="player-left">
@@ -1086,7 +1166,7 @@ onUnmounted(() => {
         <div class="progress-row">
           <span class="time">{{ formatTime(currentTime) }}</span>
           <div class="bar" @click="seek">
-            <div class="bar-fill" :style="`width:${progressPercent}%`">
+            <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
               <div class="bar-thumb" />
             </div>
           </div>
@@ -1966,11 +2046,14 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .ii-done { color: #1db954; font-weight: 600; }
 .ii-error { color: #ff5252; }
 
+/* Hidden on desktop; appears above footer on mobile/tablet */
+.mobile-seek-wrap { display: none; }
+
 /* ── Responsive: tablets and small screens ── */
 @media (max-width: 768px) {
   .app {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr 72px;
+    grid-template-rows: auto 1fr 130px;
   }
 
   .sidebar {
@@ -2021,19 +2104,86 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   .player {
     grid-column: 1;
     grid-row: 3 / 4;
-    grid-template-columns: 1fr auto 1fr;
-    padding: 0 10px;
+    display: flex;
+    flex-direction: column;
+    padding: 0px 10px;
+    justify-content: center;
     padding-bottom: env(safe-area-inset-bottom);
-    height: calc(72px + env(safe-area-inset-bottom));
+    gap: 8px;
   }
-  .player-left { justify-self: start; }
-  .player-right { justify-self: end; }
-  .player-left .thumb { width: 44px; height: 44px; }
-  .player-left .track-meta { display: none; }
-  .player-center { gap: 2px; padding: 6px 0; }
-  .ctrl-row { gap: 10px; }
+  .player-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-start;
+    order: -1;
+    min-width: 0;
+  }
+  .player-right { display: none; }
+  .player-left .thumb { width: 40px; height: 40px; }
+  .player-left .track-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .track-name { font-size: 12px; font-weight: 600; color: #fff; }
+  .track-artist { font-size: 10px; color: #a7a7a7; }
+  .player-center {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0;
+    align-items: stretch;
+    order: 0;
+  }
+  .ctrl-row { gap: 8px; justify-content: center; }
+  .icon-btn { padding: 6px; }
+  .play-btn { width: 40px; height: 40px; }
   .progress-row .time { display: none; }
   .player-right .vol-wrap { display: none; }
+  .progress-row { display: none; }
+  .bar { flex: 1; }
+
+  .mobile-seek-wrap {
+    display: block;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(120px + env(safe-area-inset-bottom));
+    z-index: 220;
+    padding: 0 10px;
+    pointer-events: none;
+  }
+  .mobile-seek-hit {
+    pointer-events: auto;
+    padding: 4px 0;
+  }
+  .mobile-seek-track {
+    height: 4px;
+    border-radius: 999px;
+    background: #3a3a3a;
+    overflow: hidden;
+    transition: height .15s ease;
+  }
+  .mobile-seek-wrap.active .mobile-seek-track {
+    height: 10px;
+  }
+  .mobile-seek-fill {
+    height: 100%;
+    background: #fff;
+    position: relative;
+  }
+  .mobile-seek-thumb {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translate(50%, -50%);
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #fff;
+    opacity: 0;
+    transition: opacity .15s ease;
+  }
+  .mobile-seek-wrap.active .mobile-seek-thumb {
+    opacity: 1;
+  }
 
   .status-pills { top: auto; bottom: calc(80px + env(safe-area-inset-bottom)); right: 14px; }
 
@@ -2057,12 +2207,22 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   .player {
     grid-template-columns: 1fr auto 1fr;
     padding: 0 8px;
-    height: 64px;
+    /* height: 64px; */
   }
   .player-left .thumb { width: 40px; height: 40px; }
   .ctrl-row { gap: 8px; }
-  .progress-row { display: none; }
 
   .player-right .device-menu-wrapper { display: none; }
+
+  .mobile-seek-wrap {
+    display: block;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(120px + env(safe-area-inset-bottom));
+    z-index: 220;
+    padding: 0 10px;
+    pointer-events: none;
+  }
 }
 </style>
