@@ -2118,10 +2118,12 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     justify-content: flex-start;
     order: -1;
     min-width: 0;
+    padding: 0 15px;
+    width: calc(100%);
   }
   .player-right { display: none; }
   .player-left .thumb { width: 40px; height: 40px; }
-  .player-left .track-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .player-left .track-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
   .track-name { font-size: 12px; font-weight: 600; color: #fff; }
   .track-artist { font-size: 10px; color: #a7a7a7; }
   .player-center {
@@ -2145,7 +2147,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(120px + env(safe-area-inset-bottom));
+    bottom: calc(125px + env(safe-area-inset-bottom));
     z-index: 220;
     padding: 0 10px;
     pointer-events: none;
@@ -2185,7 +2187,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     opacity: 1;
   }
 
-  .status-pills { top: auto; bottom: calc(80px + env(safe-area-inset-bottom)); right: 14px; }
+  .status-pills { top: auto; bottom: calc(150px + env(safe-area-inset-bottom)); right: 14px; flex-direction: column; align-items: end; }
 
   .modal { width: 95vw; }
   .identify-modal { width: 95vw; }
@@ -2209,7 +2211,9 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     padding: 0 8px;
     /* height: 64px; */
   }
+  .player-left { width: auto; }
   .player-left .thumb { width: 40px; height: 40px; }
+  .player-left .track-meta { flex-grow: unset; }
   .ctrl-row { gap: 8px; }
 
   .player-right .device-menu-wrapper { display: none; }
