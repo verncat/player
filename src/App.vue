@@ -150,12 +150,13 @@ const nowPlaying = ref<Track | null>(null);
 const recentTracks = ref<Track[]>([]);
 const showQueueMenu = ref(false);
 
-interface Peer { name: string; host: string; port: number; addresses: string[] }
+interface Peer { name: string; host: string; port: number; addresses: string[]; device_name?: string; device_emoji?: string }
 const peers = ref<Peer[]>([]);
 
 interface SyncProgress {
   peer: string;
   device_name?: string | null;
+  device_emoji?: string | null;
   phase: string;
   total: number;
   done: number;
@@ -164,6 +165,43 @@ interface SyncProgress {
 const syncEnabled = ref(false);
 const syncProgress = ref<Record<string, SyncProgress>>({});
 const peerDeviceNames = ref<Record<string, string>>({});
+const deviceEmoji = ref('🎵');
+const EMOJI_OPTIONS = ['🎵', '🎶', '🎤', '🎧', '🎼', '🎹', '🎸', '🥁', '📱', '💻', '🖥️', '⌚', '📻', '📡', '🔊', '🎺', '🎻', '🪕', '🎷', '🍕'];
+const settingsOpen = ref(false);
+const settingsEmoji = ref('🎵');
+const settingsDeviceName = ref('');
+const settingsSaving = ref(false);
+const settingsError = ref('');
+
+interface DeviceSettings {
+  emoji: string;
+  device_name: string;
+}
+
+async function openDeviceSettings() {
+  settingsError.value = '';
+  const cfg = await invoke<DeviceSettings>('get_device_settings');
+  settingsEmoji.value = cfg.emoji || '🎵';
+  settingsDeviceName.value = cfg.device_name || '';
+  settingsOpen.value = true;
+}
+
+async function saveDeviceSettings() {
+  settingsSaving.value = true;
+  settingsError.value = '';
+  try {
+    await invoke('set_device_settings', {
+      emoji: settingsEmoji.value,
+      deviceName: settingsDeviceName.value,
+    });
+    deviceEmoji.value = settingsEmoji.value;
+    settingsOpen.value = false;
+  } catch (e: any) {
+    settingsError.value = String(e ?? 'Failed to save settings');
+  } finally {
+    settingsSaving.value = false;
+  }
+}
 
 async function toggleSync() {
   syncEnabled.value = !syncEnabled.value;
@@ -591,6 +629,11 @@ onMounted(() => {
   document.addEventListener('click', onDocClick);
   loadLibrary();
   loadRecent();
+  invoke<DeviceSettings>('get_device_settings')
+    .then((cfg) => {
+      if (cfg?.emoji) deviceEmoji.value = cfg.emoji;
+    })
+    .catch(() => {});
   
   // Listen for app coming back to foreground (Android)
   listen('tauri://resumed', async () => {
@@ -917,6 +960,10 @@ onUnmounted(() => {
             <div class="library-header">
               <h2>Devices on Network</h2>
               <div style="display:flex; align-items:center; gap:12px">
+                <button class="sync-toggle" @click="openDeviceSettings" title="Device settings">
+                  <span style="font-size:16px; line-height:1">{{ deviceEmoji }}</span>
+                  Settings
+                </button>
                 <span style="color:#a7a7a7; font-size:12px">mDNS · auto discovery</span>
                 <button
                   class="sync-toggle"
@@ -936,13 +983,14 @@ onUnmounted(() => {
             </div>
             <div v-else class="peer-list">
               <div v-for="peer in peers" :key="peer.host" class="peer-item">
-                <div class="peer-icon">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 3h5v2h-5V7zm0 3h5v2h-5v-2zm0 3h3v2h-3v-2zM4 7h10v10H4V7z"/></svg>
-                </div>
+                <div class="peer-icon">{{ peer.device_emoji || syncProgress[peer.name]?.device_emoji || '🎵' }}</div>
                 <div class="peer-info">
-                  <span class="peer-name">{{ peerDeviceNames[peer.name] || peer.name }}</span>
+                  <span class="peer-name">{{ peer.device_name || peerDeviceNames[peer.name] || peer.name }}</span>
                   <span
-                    v-if="peerDeviceNames[peer.name] && peerDeviceNames[peer.name] !== peer.name"
+                    v-if="peer.device_name && peer.device_name !== peer.name"
+                    class="peer-alias"
+                  >{{ peer.name }}</span>
+                  <span v-else-if="peerDeviceNames[peer.name] && peerDeviceNames[peer.name] !== peer.name"
                     class="peer-alias"
                   >{{ peer.name }}</span>
                   <span class="peer-addr">{{ peer.host }}:{{ peer.port }}</span>
@@ -1018,6 +1066,45 @@ onUnmounted(() => {
           <div class="modal-footer">
             <button class="btn-secondary" @click="editingTrack = null">Cancel</button>
             <button class="btn-primary" @click="saveTrack">Save</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Device settings modal -->
+    <Transition name="modal">
+      <div v-if="settingsOpen" class="modal-overlay" @click.self="settingsOpen = false">
+        <div class="modal identify-modal">
+          <div class="modal-header">
+            <h3>Device settings</h3>
+            <button class="icon-btn" title="Close" @click="settingsOpen = false">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+          <div class="modal-body settings-body">
+            <label class="field">
+              <span>Device name</span>
+              <input v-model="settingsDeviceName" placeholder="My Player" />
+            </label>
+
+            <div class="settings-label">Emoji</div>
+            <div class="emoji-grid">
+              <button
+                v-for="emoji in EMOJI_OPTIONS"
+                :key="emoji"
+                class="emoji-cell"
+                :class="{ active: settingsEmoji === emoji }"
+                @click="settingsEmoji = emoji"
+              >{{ emoji }}</button>
+            </div>
+
+            <div v-if="settingsError" class="settings-error">{{ settingsError }}</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" @click="settingsOpen = false">Cancel</button>
+            <button class="btn-primary" :disabled="settingsSaving" @click="saveDeviceSettings">
+              {{ settingsSaving ? 'Saving...' : 'Save' }}
+            </button>
           </div>
         </div>
       </div>
@@ -1358,6 +1445,26 @@ a, button, [role="button"] {
 }
 .sync-toggle:hover { border-color: #fff; color: #fff; }
 .sync-toggle.active { background: #1db954; border-color: #1db954; color: #000; }
+
+.settings-body { gap: 12px; }
+.settings-label { font-size: 12px; font-weight: 700; color: #a7a7a7; margin-top: 2px; }
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+.emoji-cell {
+  border: 1px solid #3a3a3a;
+  border-radius: 8px;
+  height: 44px;
+  background: #181818;
+  color: #fff;
+  font-size: 24px;
+  cursor: pointer;
+}
+.emoji-cell:hover { border-color: #777; background: #242424; }
+.emoji-cell.active { border-color: #1db954; box-shadow: 0 0 0 1px #1db954 inset; }
+.settings-error { color: #e9283e; font-size: 12px; }
 
 .sync-now-btn {
   flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;

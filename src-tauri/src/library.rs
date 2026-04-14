@@ -54,6 +54,12 @@ pub struct Track {
     pub manually_edited: bool,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct DeviceSettings {
+    pub emoji: String,
+    pub device_name: String,
+}
+
 // ── Internal types ────────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -152,6 +158,65 @@ impl LibraryState {
             index_directory_async(&conn, &data_dir, &app);
         });
     }
+
+    pub fn get_device_settings(&self) -> Result<DeviceSettings, BoxError> {
+        let conn = self.conn.lock().unwrap();
+        let existing: Result<(String, String), _> = conn.query_row(
+            "SELECT emoji, COALESCE(device_name, '') FROM device_config WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+
+        match existing {
+            Ok((emoji, device_name)) => Ok(DeviceSettings {
+                emoji,
+                device_name,
+            }),
+            Err(_) => {
+                let emoji = random_emoji();
+                let device_name = whoami::devicename().trim().to_string();
+                conn.execute(
+                    "INSERT OR REPLACE INTO device_config (id, emoji, device_name) VALUES (1, ?1, ?2)",
+                    params![&emoji, &device_name],
+                )?;
+                Ok(DeviceSettings {
+                    emoji,
+                    device_name,
+                })
+            }
+        }
+    }
+
+    pub fn set_device_settings(&self, emoji: &str, device_name: &str) -> Result<(), BoxError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO device_config (id, emoji, device_name) VALUES (1, ?1, ?2)",
+            params![emoji, device_name],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_device_emoji(&self) -> Result<String, BoxError> {
+        Ok(self.get_device_settings()?.emoji)
+    }
+
+    pub fn set_device_emoji(&self, emoji: &str) -> Result<(), BoxError> {
+        let current = self.get_device_settings()?;
+        self.set_device_settings(emoji, &current.device_name)
+    }
+}
+
+fn random_emoji() -> String {
+    const EMOJIS: &[&str] = &[
+        "🎵", "🎶", "🎤", "🎧", "🎼", "🎹", "🎸", "🥁", "📱", "💻",
+        "🖥️", "⌚", "📻", "📡", "🔊", "🎺", "🎻", "🪕", "🎷", "🍕",
+    ];
+    let idx = {
+        use std::time::UNIX_EPOCH;
+        let duration = UNIX_EPOCH.elapsed().unwrap_or_default();
+        (duration.as_nanos() as usize) % EMOJIS.len()
+    };
+    EMOJIS[idx].to_string()
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
@@ -186,8 +251,14 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             track_id  INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
             played_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_played_at ON play_history(played_at DESC);",
+        CREATE INDEX IF NOT EXISTS idx_played_at ON play_history(played_at DESC);
+        CREATE TABLE IF NOT EXISTS device_config (
+            id        INTEGER PRIMARY KEY CHECK(id=1),
+            emoji     TEXT NOT NULL DEFAULT '🎵',
+            device_name TEXT NOT NULL DEFAULT ''
+        );",
     )?;
+    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
     Ok(())
 }
 
@@ -849,4 +920,33 @@ pub fn get_recent_tracks(
         .filter_map(|r| r.ok())
         .collect();
     Ok(tracks)
+}
+
+#[tauri::command]
+pub fn get_device_emoji(state: tauri::State<'_, LibraryState>) -> Result<String, String> {
+    state.get_device_emoji().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_device_emoji(
+    emoji: String,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    state.set_device_emoji(&emoji).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_device_settings(state: tauri::State<'_, LibraryState>) -> Result<DeviceSettings, String> {
+    state.get_device_settings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_device_settings(
+    emoji: String,
+    device_name: String,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    state
+        .set_device_settings(&emoji, device_name.trim())
+        .map_err(|e| e.to_string())
 }

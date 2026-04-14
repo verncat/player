@@ -14,7 +14,7 @@ use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 const SERVICE_TYPE: &str = "_player._tcp.local.";
 /// Port we advertise — does not need to be a real HTTP server for discovery.
@@ -28,6 +28,8 @@ pub struct Peer {
     pub host: String,  // resolved hostname or IP
     pub port: u16,
     pub addresses: Vec<String>,
+    pub device_name: Option<String>,  // device name from remote /tracks endpoint
+    pub device_emoji: Option<String>,  // device emoji from remote /tracks endpoint
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -64,6 +66,35 @@ fn own_instance_name() -> String {
         .unwrap_or_else(|| "Player".to_string())
 }
 
+fn fetch_remote_device_name(host: &str, port: u16) -> (Option<String>, Option<String>) {
+    use std::time::Duration;
+    
+    let url = format!("http://{}:{}/tracks", host, port);
+    
+    // Use blocking reqwest with short timeout
+    let resp = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .and_then(|client| client.get(&url).send())
+    {
+        Ok(r) => r,
+        Err(_) => return (None, None),
+    };
+    
+    match resp.json::<serde_json::Value>() {
+        Ok(val) => {
+            let device_name = val.get("device_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let device_emoji = val.get("device_emoji")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            (device_name, device_emoji)
+        },
+        Err(_) => (None, None),
+    }
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -94,13 +125,33 @@ pub fn discovery_start(
 
     daemon.register(service).map_err(|e| e.to_string())?;
 
-    // ── Browse for peers ─────────────────────────────────────────────────────
-    let receiver = daemon.browse(SERVICE_TYPE).map_err(|e| e.to_string())?;
-
     let peers_arc = Arc::clone(&state.inner);
     let own = instance_name.clone();
+    let daemon_clone = daemon.clone();
+    
     std::thread::spawn(move || {
-        while let Ok(event) = receiver.recv() {
+        let mut last_browse_time = std::time::Instant::now();
+        let mut receiver = match daemon_clone.browse(SERVICE_TYPE) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        loop {
+            // Try to receive an event with a 5 second timeout
+            let event = match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(event) => event,
+                Err(_) => {
+                    // Timeout occurred - periodically restart browse to rediscover peers
+                    if last_browse_time.elapsed() > std::time::Duration::from_secs(15) {
+                        if let Ok(new_receiver) = daemon_clone.browse(SERVICE_TYPE) {
+                            receiver = new_receiver;
+                            last_browse_time = std::time::Instant::now();
+                        }
+                    }
+                    continue;
+                }
+            };
+
             match event {
                 ServiceEvent::ServiceResolved(info) => {
                     let name = info.get_fullname().to_string();
@@ -113,11 +164,19 @@ pub fn discovery_start(
                         .iter()
                         .map(|a| a.to_string())
                         .collect();
+                    let host = addrs.first().cloned().unwrap_or_default();
+                    let port = info.get_port();
+                    
+                    // Try to fetch device_name and device_emoji from remote /tracks endpoint
+                    let (device_name, device_emoji) = fetch_remote_device_name(&host, port);
+                    
                     let peer = Peer {
                         name: info.get_hostname().trim_end_matches('.').to_string(),
-                        host: addrs.first().cloned().unwrap_or_default(),
-                        port: info.get_port(),
+                        host,
+                        port,
                         addresses: addrs,
+                        device_name,
+                        device_emoji,
                     };
                     {
                         let mut g = peers_arc.lock().unwrap();

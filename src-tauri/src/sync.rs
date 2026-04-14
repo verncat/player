@@ -42,6 +42,7 @@ pub struct RemoteTrack {
 pub struct TracksResponse {
     pub version: String,
     pub device_name: Option<String>,
+    pub device_emoji: Option<String>,
     pub tracks: Vec<RemoteTrack>,
 }
 
@@ -50,6 +51,7 @@ pub struct TracksResponse {
 pub struct SyncProgress {
     pub peer: String,
     pub device_name: Option<String>,
+    pub device_emoji: Option<String>,
     /// "index" | "download" | "reindex" | "done" | "error"
     pub phase: String,
     pub total: usize,
@@ -150,9 +152,26 @@ fn serve_tracks(mut stream: std::net::TcpStream, conn: &Arc<Mutex<Connection>>) 
                 .unwrap_or_default()
             })
             .unwrap_or_default();
+        let (device_name, device_emoji) = c
+            .query_row(
+                "SELECT COALESCE(device_name, ''), emoji FROM device_config WHERE id = 1",
+                [],
+                |row| {
+                    let name: String = row.get(0)?;
+                    let emoji: String = row.get(1)?;
+                    let name_opt = if name.trim().is_empty() {
+                        None
+                    } else {
+                        Some(name)
+                    };
+                    Ok((name_opt, Some(emoji)))
+                },
+            )
+            .unwrap_or((None, None));
         serde_json::to_vec(&TracksResponse {
             version: APP_VERSION.to_string(),
-            device_name: local_device_name(),
+            device_name,
+            device_emoji,
             tracks,
         })
         .unwrap_or_default()
@@ -163,16 +182,6 @@ fn serve_tracks(mut stream: std::net::TcpStream, conn: &Arc<Mutex<Connection>>) 
         body.len()
     );
     let _ = stream.write_all(&body);
-}
-
-fn local_device_name() -> Option<String> {
-    let name = whoami::devicename();
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 fn serve_file(
@@ -268,6 +277,7 @@ fn emit(
     app: &AppHandle,
     peer: &str,
     device_name: Option<&str>,
+    device_emoji: Option<&str>,
     phase: &str,
     total: usize,
     done: usize,
@@ -278,6 +288,7 @@ fn emit(
         SyncProgress {
             peer: peer.to_string(),
             device_name: device_name.map(|s| s.to_string()),
+            device_emoji: device_emoji.map(|s| s.to_string()),
             phase: phase.to_string(),
             total,
             done,
@@ -287,12 +298,12 @@ fn emit(
 }
 
 fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, app: AppHandle) {
-    emit(&app, &peer_name, None, "index", 0, 0, None);
+    emit(&app, &peer_name, None, None, "index", 0, 0, None);
 
     let mut stream = match connect_to_peer(&peer_host, &peer_addresses) {
         Ok(s) => s,
         Err(e) => {
-            emit(&app, &peer_name, None, "error", 0, 0, Some(e.to_string()));
+            emit(&app, &peer_name, None, None, "error", 0, 0, Some(e.to_string()));
             return;
         }
     };
@@ -301,20 +312,21 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
     let index_bytes = match http_get(&mut stream, &peer_host, "/tracks") {
         Ok(b) => b,
         Err(e) => {
-            emit(&app, &peer_name, None, "error", 0, 0, Some(e.to_string()));
+            emit(&app, &peer_name, None, None, "error", 0, 0, Some(e.to_string()));
             return;
         }
     };
-    let (remote_device_name, remote_tracks): (Option<String>, Vec<RemoteTrack>) =
+    let (remote_device_name, remote_device_emoji, remote_tracks): (Option<String>, Option<String>, Vec<RemoteTrack>) =
         match serde_json::from_slice::<TracksResponse>(&index_bytes) {
-            Ok(v) => (v.device_name, v.tracks),
+            Ok(v) => (v.device_name, v.device_emoji, v.tracks),
         Err(_) => match serde_json::from_slice::<Vec<RemoteTrack>>(&index_bytes) {
             // Backward compatibility with peers that still return plain array.
-            Ok(v) => (None, v),
+            Ok(v) => (None, None, v),
             Err(e) => {
                 emit(
                     &app,
                     &peer_name,
+                    None,
                     None,
                     "error",
                     0,
@@ -358,6 +370,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
             &app,
             &peer_name,
             remote_device_name.as_deref(),
+            remote_device_emoji.as_deref(),
             "done",
             0,
             0,
@@ -369,6 +382,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
         &app,
         &peer_name,
         remote_device_name.as_deref(),
+        remote_device_emoji.as_deref(),
         "download",
         total,
         0,
@@ -397,6 +411,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
                 &app,
                 &peer_name,
                 remote_device_name.as_deref(),
+                remote_device_emoji.as_deref(),
                 "download",
                 total,
                 done,
@@ -421,6 +436,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
             &app,
             &peer_name,
             remote_device_name.as_deref(),
+            remote_device_emoji.as_deref(),
             "download",
             total,
             done,
@@ -433,6 +449,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
         &app,
         &peer_name,
         remote_device_name.as_deref(),
+        remote_device_emoji.as_deref(),
         "reindex",
         total,
         done,
@@ -444,6 +461,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
         &app,
         &peer_name,
         remote_device_name.as_deref(),
+        remote_device_emoji.as_deref(),
         "done",
         total,
         done,
