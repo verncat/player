@@ -85,11 +85,19 @@ impl SyncState {
 
 fn start_http_server(conn: Arc<Mutex<Connection>>, data_dir: PathBuf) {
     thread::spawn(move || {
-        let listener = match TcpListener::bind(("0.0.0.0", SYNC_PORT)) {
+        // Try binding to IPv6 first (dual-stack). This is important on Android
+        // where IPv6 is often the primary/only stack.
+        let listener = match TcpListener::bind(("::", SYNC_PORT)) {
             Ok(l) => l,
-            Err(e) => {
-                eprintln!("[sync] cannot bind port {SYNC_PORT}: {e}");
-                return;
+            Err(_) => {
+                // IPv6 failed, fall back to IPv4
+                match TcpListener::bind(("0.0.0.0", SYNC_PORT)) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("[sync] cannot bind port {SYNC_PORT}: {e}");
+                        return;
+                    }
+                }
             }
         };
         eprintln!("[sync] HTTP server ready on :{SYNC_PORT}");
@@ -228,21 +236,31 @@ fn serve_file(
 
 // ── Connection helpers ─────────────────────────────────────────────────────
 
-fn connect_to_peer(peer_host: &str, peer_addresses: &[String]) -> std::io::Result<TcpStream> {
-    // First try raw IP addresses from mDNS resolution, because on Android hostname
-    // resolution can be flaky for .local names.
-    for addr_text in peer_addresses {
-        if let Ok(ip) = addr_text.parse::<IpAddr>() {
-            let addr = SocketAddr::new(ip, SYNC_PORT);
-            if let Ok(stream) = TcpStream::connect(addr) {
+fn connect_to_peer(peer_host: &str, peer_addresses: &[String], peer_port: u16) -> std::io::Result<TcpStream> {
+    // First try hostname resolution (.local may resolve to routable IPv4/IPv6).
+    // Use ok() instead of ? so we fall through to raw IPs when resolution fails
+    // (e.g. Android can't resolve .local mDNS hostnames via system DNS).
+    if let Ok(addrs) = (peer_host, peer_port).to_socket_addrs() {
+        for addr in addrs {
+            if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
                 return Ok(stream);
             }
         }
     }
-    // Fallback to host resolution.
-    for addr in (peer_host, SYNC_PORT).to_socket_addrs()? {
-        if let Ok(stream) = TcpStream::connect(addr) {
-            return Ok(stream);
+    // Then try raw IP addresses from mDNS.
+    for addr_text in peer_addresses {
+        if let Ok(ip) = addr_text.parse::<IpAddr>() {
+            // Link-local IPv6 needs an interface scope-id, which we don't have here.
+            // Skip it and rely on hostname resolution or other addresses.
+            if let IpAddr::V6(v6) = ip {
+                if v6.is_unicast_link_local() {
+                    continue;
+                }
+            }
+            let addr = SocketAddr::new(ip, peer_port);
+            if let Ok(stream) = TcpStream::connect(addr) {
+                return Ok(stream);
+            }
         }
     }
     Err(std::io::Error::new(std::io::ErrorKind::Other, "no reachable peer address"))
@@ -297,10 +315,10 @@ fn emit(
     );
 }
 
-fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, app: AppHandle) {
-    emit(&app, &peer_name, None, None, "index", 0, 0, None);
+fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, peer_port: u16, app: AppHandle) {
+    emit(&app, &peer_name, None, None, "index", 0, 0, Some("Connecting...".to_string()));
 
-    let mut stream = match connect_to_peer(&peer_host, &peer_addresses) {
+    let mut stream = match connect_to_peer(&peer_host, &peer_addresses, peer_port) {
         Ok(s) => s,
         Err(e) => {
             emit(&app, &peer_name, None, None, "error", 0, 0, Some(e.to_string()));
@@ -309,6 +327,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
     };
 
     // 1 ── Fetch remote track list ─────────────────────────────────────────────
+    emit(&app, &peer_name, None, None, "index", 0, 0, Some("Fetching index...".to_string()));
     let index_bytes = match http_get(&mut stream, &peer_host, "/tracks") {
         Ok(b) => b,
         Err(e) => {
@@ -339,6 +358,16 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
     };
 
     // 2 ── Collect local hashes (deduplication by blake3 hash) ────────────────
+    emit(
+        &app,
+        &peer_name,
+        remote_device_name.as_deref(),
+        remote_device_emoji.as_deref(),
+        "index",
+        0,
+        0,
+        Some("Comparing libraries...".to_string()),
+    );
     let conn = app.state::<crate::library::LibraryState>().conn();
     let data_dir = app
         .state::<crate::library::LibraryState>()
@@ -425,7 +454,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, ap
         }
 
         let path = format!("/file/{}", track.hash);
-        if let Ok(mut stream) = connect_to_peer(&peer_host, &peer_addresses) {
+        if let Ok(mut stream) = connect_to_peer(&peer_host, &peer_addresses, peer_port) {
             if let Ok(bytes) = http_get(&mut stream, &peer_host, &path) {
                 let _ = std::fs::write(&save_path, &bytes);
             }
@@ -502,12 +531,14 @@ pub fn sync_with_peer(
     peer_host: String,
     peer_name: String,
     peer_addresses: Vec<String>,
+    peer_port: Option<u16>,
     state: State<'_, SyncState>,
     app: AppHandle,
 ) -> Result<(), String> {
     if !state.inner.lock().unwrap().enabled {
         return Err("Sync is disabled".to_string());
     }
-    thread::spawn(move || do_sync(peer_host, peer_name, peer_addresses, app));
+    let port = peer_port.unwrap_or(SYNC_PORT);
+    thread::spawn(move || do_sync(peer_host, peer_name, peer_addresses, port, app));
     Ok(())
 }

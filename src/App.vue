@@ -209,13 +209,13 @@ async function toggleSync() {
   if (syncEnabled.value) {
     // Kick off sync with all currently known peers
     for (const peer of peers.value) {
-      invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses }).catch(() => {});
+      invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
     }
   }
 }
 
 function syncPeer(peer: Peer) {
-  invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses }).catch(() => {});
+  invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
 }
 
 const currentTrack = computed(() => {
@@ -303,7 +303,11 @@ function mobileSeekHoldMove(e: PointerEvent) {
 async function mobileSeekHoldEnd(e: PointerEvent) {
   if (!mobileSeekActive.value) return;
   const el = e.currentTarget as HTMLElement;
-  const pos = seekPosFromEvent(e, el);
+  // On pointercancel the browser reports clientX/clientY = 0, so use the last
+  // known preview position instead of recalculating from the (bogus) event.
+  const pos = e.type === 'pointercancel'
+    ? (seekPreviewPos.value ?? currentTime.value)
+    : seekPosFromEvent(e, el);
   seekPreviewPos.value = pos;
   currentTime.value = Math.round(pos);
   await invoke('playback_seek', { position: pos });
@@ -403,6 +407,18 @@ function stopTicker() {
   if (ticker) { clearInterval(ticker); ticker = null; }
 }
 
+async function handleFinishedPlayback() {
+  if (repeatMode.value === 2) {
+    if (nowPlaying.value) {
+      await invoke('playback_play', { path: nowPlaying.value.path });
+      startTicker();
+      syncAndroid();
+    }
+  } else {
+    await playNext();
+  }
+}
+
 function startTicker() {
   stopTicker();
   androidSyncCounter = 0;
@@ -412,15 +428,7 @@ function startTicker() {
       // sync Android notification progress ~every 4 ticks (≈1 s)
       if (++androidSyncCounter >= 4) { androidSyncCounter = 0; syncAndroid(); }
       if (st.finished) {
-        // track ended — advance
-        if (repeatMode.value === 2) {
-          // repeat-one
-          if (nowPlaying.value) {
-            await invoke('playback_play', { path: nowPlaying.value.path });
-          }
-        } else {
-          await playNext();
-        }
+        await handleFinishedPlayback();
       }
     } catch (_) { /* ignore polling errors */ }
   }, 250);
@@ -638,6 +646,10 @@ onMounted(() => {
   // Listen for app coming back to foreground (Android)
   listen('tauri://resumed', async () => {
     const st = await refreshPlaybackState();
+    if (st.finished) {
+      await handleFinishedPlayback();
+      return;
+    }
     if (st.playing && !ticker) {
       startTicker();
     }
@@ -651,7 +663,7 @@ onMounted(() => {
     if (syncEnabled.value) {
       for (const peer of e.payload) {
         if (!prev.has(peer.host)) {
-          invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses }).catch(() => {});
+          invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
         }
       }
     }
@@ -986,13 +998,6 @@ onUnmounted(() => {
                 <div class="peer-icon">{{ peer.device_emoji || syncProgress[peer.name]?.device_emoji || '🎵' }}</div>
                 <div class="peer-info">
                   <span class="peer-name">{{ peer.device_name || peerDeviceNames[peer.name] || peer.name }}</span>
-                  <span
-                    v-if="peer.device_name && peer.device_name !== peer.name"
-                    class="peer-alias"
-                  >{{ peer.name }}</span>
-                  <span v-else-if="peerDeviceNames[peer.name] && peerDeviceNames[peer.name] !== peer.name"
-                    class="peer-alias"
-                  >{{ peer.name }}</span>
                   <span class="peer-addr">{{ peer.host }}:{{ peer.port }}</span>
                   <!-- sync progress for this peer -->
                   <template v-if="syncProgress[peer.name]">
@@ -1005,7 +1010,7 @@ onUnmounted(() => {
                       />
                     </div>
                     <span class="sync-status" :class="'sync-' + syncProgress[peer.name].phase">
-                      <template v-if="syncProgress[peer.name].phase === 'index'">Fetching index...</template>
+                      <template v-if="syncProgress[peer.name].phase === 'index'">{{ syncProgress[peer.name].message || 'Fetching index...' }}</template>
                       <template v-else-if="syncProgress[peer.name].phase === 'download'">
                         Loading {{ syncProgress[peer.name].done }}/{{ syncProgress[peer.name].total }}
                       </template>
@@ -2316,6 +2321,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   .player {
     grid-template-columns: 1fr auto 1fr;
     padding: 0 8px;
+    padding-bottom: env(safe-area-inset-top);
     /* height: 64px; */
   }
   .player-left { width: auto; }

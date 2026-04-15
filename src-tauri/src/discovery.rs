@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 const SERVICE_TYPE: &str = "_player._tcp.local.";
-/// Port we advertise — does not need to be a real HTTP server for discovery.
-const SERVICE_PORT: u16 = 57321;
+/// Advertise the real sync HTTP port so peers can connect consistently.
+const SERVICE_PORT: u16 = crate::sync::SYNC_PORT;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -60,16 +60,31 @@ impl DiscoveryState {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn own_instance_name() -> String {
-    hostname::get()
+    let name = hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())
-        .unwrap_or_else(|| "Player".to_string())
+        .unwrap_or_else(|| "Player".to_string());
+    // On Android, hostname::get() often returns "localhost" which is useless
+    // for mDNS. Fall back to whoami::devicename() for a real device name.
+    if name == "localhost" {
+        let dev = whoami::devicename();
+        if !dev.is_empty() && dev != "localhost" {
+            return dev;
+        }
+        return "Android-Player".to_string();
+    }
+    name
 }
 
 fn fetch_remote_device_name(host: &str, port: u16) -> (Option<String>, Option<String>) {
     use std::time::Duration;
-    
-    let url = format!("http://{}:{}/tracks", host, port);
+
+    let host_for_url = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    let url = format!("http://{}:{}/tracks", host_for_url, port);
     
     // Use blocking reqwest with short timeout
     let resp = match reqwest::blocking::Client::builder()
@@ -111,7 +126,11 @@ pub fn discovery_start(
 
     // ── Register own service ─────────────────────────────────────────────────
     let instance_name = inner.own_instance.clone();
-    let host_name = format!("{}-player.local.", instance_name);
+    // Strip .local suffix from hostname to avoid double .local (e.g. "nica-mac-2.local" → "nica-mac-2")
+    let base_name = instance_name
+        .strip_suffix(".local")
+        .unwrap_or(&instance_name);
+    let host_name = format!("{base_name}-player.local.");
     let service = ServiceInfo::new(
         SERVICE_TYPE,
         &instance_name,
@@ -164,7 +183,7 @@ pub fn discovery_start(
                         .iter()
                         .map(|a| a.to_string())
                         .collect();
-                    let host = addrs.first().cloned().unwrap_or_default();
+                    let host = info.get_hostname().trim_end_matches('.').to_string();
                     let port = info.get_port();
                     
                     // Try to fetch device_name and device_emoji from remote /tracks endpoint
