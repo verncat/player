@@ -245,17 +245,23 @@ const showDetail = ref(false);
 // ── 3D cover card ──────────────────────────────────────────────────────────
 const cardRotX = ref(0);
 const cardRotY = ref(0);
+const cardTX = ref(0);   // translation X in px
+const cardTY = ref(0);   // translation Y in px
 const cardInteracting = ref(false);
+const cardDragging = ref(false);
 let cardAmbientRaf = 0;
 let cardSpringRaf = 0;
 
-const MAX_TILT = 18;     // max tilt degrees from interaction
+const MAX_TILT = 18;      // max tilt degrees from hover
+const MAX_TILT_DRAG = 4;  // max tilt degrees while dragging
+const MAX_TRANS = 100;    // max translate px from interaction
 const AMBIENT_R = 10;    // ambient rotation radius in degrees
 const AMBIENT_PERIOD = 8000; // ms for one ambient orbit
 
-const cardTransform = computed(() =>
-  `perspective(600px) rotateX(${cardRotX.value}deg) rotateY(${cardRotY.value}deg)`
-);
+const cardTransform = computed(() => {
+  const scale = cardDragging.value ? 1.06 : 1;
+  return `perspective(600px) translateX(${cardTX.value}px) translateY(${cardTY.value}px) scale(${scale}) rotateX(${cardRotX.value}deg) rotateY(${cardRotY.value}deg)`;
+});
 
 // Specular highlight — bright spot moves opposite to tilt direction
 const cardGloss = computed(() => {
@@ -350,11 +356,14 @@ function springBack() {
   function tick() {
     cardRotX.value *= (1 - FACTOR);
     cardRotY.value *= (1 - FACTOR);
-    if (Math.abs(cardRotX.value) > 0.05 || Math.abs(cardRotY.value) > 0.05) {
+    cardTX.value   *= (1 - FACTOR);
+    cardTY.value   *= (1 - FACTOR);
+    if (Math.abs(cardRotX.value) > 0.05 || Math.abs(cardRotY.value) > 0.05 ||
+        Math.abs(cardTX.value) > 0.05 || Math.abs(cardTY.value) > 0.05) {
       cardSpringRaf = requestAnimationFrame(tick);
     } else {
-      cardRotX.value = 0;
-      cardRotY.value = 0;
+      cardRotX.value = 0; cardRotY.value = 0;
+      cardTX.value = 0;   cardTY.value = 0;
     }
   }
   cardSpringRaf = requestAnimationFrame(tick);
@@ -364,11 +373,15 @@ function springBack() {
 // Plain (non-reactive) vars for pending mouse/touch values — flushed to refs via RAF
 let _pendX = 0;
 let _pendY = 0;
+let _pendTX = 0;
+let _pendTY = 0;
 let _mouseRafId = 0;
 
 function _flushCardRot() {
   cardRotX.value = _pendX;
   cardRotY.value = _pendY;
+  cardTX.value = _pendTX;
+  cardTY.value = _pendTY;
   _mouseRafId = 0;
 }
 
@@ -376,16 +389,34 @@ function _scheduleFlush() {
   if (!_mouseRafId) _mouseRafId = requestAnimationFrame(_flushCardRot);
 }
 
+let _mouseDown = false;
+
 function onCardMouseMove(e: MouseEvent) {
   const el = e.currentTarget as HTMLElement;
   const r = el.getBoundingClientRect();
-  _pendY = ((e.clientX - (r.left + r.width / 2)) / (r.width / 2)) * MAX_TILT;
-  _pendX = -((e.clientY - (r.top + r.height / 2)) / (r.height / 2)) * MAX_TILT;
+  const nx = (e.clientX - (r.left + r.width / 2)) / (r.width / 2);   // -1..1
+  const ny = (e.clientY - (r.top + r.height / 2)) / (r.height / 2);  // -1..1
+  const tiltMax = _mouseDown ? MAX_TILT_DRAG : MAX_TILT;
+  _pendY = nx * tiltMax;
+  _pendX = -ny * tiltMax;
+  _pendTX = _mouseDown ? nx * MAX_TRANS : 0;
+  _pendTY = _mouseDown ? ny * MAX_TRANS : 0;
   _scheduleFlush();
 }
 
+function onCardMouseDown() {
+  _mouseDown = true;
+  cardDragging.value = true;
+}
+
+function onCardMouseUp() {
+  _mouseDown = false;
+  cardDragging.value = false;
+}
 
 function onCardMouseLeave() {
+  _mouseDown = false;
+  cardDragging.value = false;
   cardInteracting.value = false;
   springBack();
 }
@@ -400,6 +431,7 @@ let cardTouchStartY = 0;
 
 function onCardTouchStart(e: TouchEvent) {
   cardInteracting.value = true;
+  cardDragging.value = true;
   cancelAnimationFrame(cardSpringRaf);
   cardTouchStartX = e.touches[0].clientX;
   cardTouchStartY = e.touches[0].clientY;
@@ -409,13 +441,16 @@ function onCardTouchMove(e: TouchEvent) {
   e.preventDefault();
   const dx = e.touches[0].clientX - cardTouchStartX;
   const dy = e.touches[0].clientY - cardTouchStartY;
-  _pendY = Math.max(-MAX_TILT, Math.min(MAX_TILT, dx * 0.4));
-  _pendX = Math.max(-MAX_TILT, Math.min(MAX_TILT, -dy * 0.4));
+  _pendY  = Math.max(-MAX_TILT_DRAG, Math.min(MAX_TILT_DRAG, dx * 0.1));
+  _pendX  = Math.max(-MAX_TILT_DRAG, Math.min(MAX_TILT_DRAG, -dy * 0.1));
+  _pendTX = Math.max(-MAX_TRANS, Math.min(MAX_TRANS, dx * 0.25));
+  _pendTY = Math.max(-MAX_TRANS, Math.min(MAX_TRANS, dy * 0.25));
   _scheduleFlush();
 }
 
 function onCardTouchEnd() {
   cardInteracting.value = false;
+  cardDragging.value = false;
   springBack();
 }
 
@@ -423,6 +458,8 @@ watch(showDetail, (open) => {
   if (open) {
     cardRotX.value = 0;
     cardRotY.value = 0;
+    cardTX.value = 0;
+    cardTY.value = 0;
     startAmbient();
   } else {
     stopAmbient();
@@ -1669,14 +1706,17 @@ onUnmounted(() => {
   <Teleport to="body">
     <Transition name="detail">
       <div v-if="showDetail && nowPlaying" class="player-detail" @click.self="showDetail = false">
-          <div class="detail-sheet">
+          <div class="detail-sheet" :style="cardDragging ? { overflow: 'visible' } : {}">
             <!-- drag handle -->
             <div class="detail-handle" @click="showDetail = false" />
             <!-- cover 3D card -->
             <div class="detail-cover-wrap"
+              :style="cardDragging ? { zIndex: 200, position: 'relative' } : {}"
               @mousemove="onCardMouseMove"
               @mouseenter="onCardMouseEnter"
               @mouseleave="onCardMouseLeave"
+              @mousedown="onCardMouseDown"
+              @mouseup="onCardMouseUp"
               @touchstart.passive="onCardTouchStart"
               @touchmove.prevent="onCardTouchMove"
               @touchend="onCardTouchEnd"
