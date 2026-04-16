@@ -240,6 +240,7 @@ const currentTrack = computed(() => {
 
 const mobileSeekActive = ref(false);
 const seekPreviewPos = ref<number | null>(null);
+const showDetail = ref(false);
 const displayProgressPercent = computed(() => {
   const pos = seekPreviewPos.value ?? currentTime.value;
   return duration.value > 0 ? (pos / duration.value) * 100 : 0;
@@ -1334,7 +1335,7 @@ onUnmounted(() => {
     </div>
     <footer class="player">
       <!-- Left: track info -->
-      <div class="player-left">
+      <div class="player-left" @click="nowPlaying && (showDetail = true)" style="cursor: pointer;">
         <div class="thumb" :style="{
           ...(nowPlaying && covers[nowPlaying.id]
             ? { backgroundImage: `url(${covers[nowPlaying.id]})`, backgroundSize: 'cover', backgroundPosition: 'center' }
@@ -1344,7 +1345,7 @@ onUnmounted(() => {
           willChange: 'transform',
         }" />
         <div class="track-meta">
-          <div class="track-name">{{ currentTrack.title }}</div>
+          <div class="track-name"><span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span></div>
           <div class="track-artist">{{ currentTrack.artist }}</div>
         </div>
         <button class="icon-btn" :class="{ green: isLiked }" @click="isLiked = !isLiked">
@@ -1466,6 +1467,71 @@ onUnmounted(() => {
       </div>
     </footer>
   </div>
+
+  <!-- Player detail overlay — teleported to body to escape footer stacking context -->
+  <Teleport to="body">
+    <Transition name="detail">
+      <div v-if="showDetail && nowPlaying" class="player-detail" @click.self="showDetail = false">
+          <div class="detail-sheet">
+            <!-- drag handle -->
+            <div class="detail-handle" @click="showDetail = false" />
+            <!-- cover -->
+            <div class="detail-cover" :style="covers[nowPlaying.id]
+              ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
+              : `background: linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})`"
+            />
+            <!-- track info -->
+            <div class="detail-info">
+              <div class="detail-track-name">
+                <span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span>
+              </div>
+              <div class="detail-track-artist">{{ currentTrack.artist }}</div>
+              <button class="icon-btn" :class="{ green: nowPlaying.is_liked }" @click.stop="toggleLike(nowPlaying!)" style="margin-left:auto;">
+                <svg v-if="nowPlaying.is_liked" viewBox="0 0 24 24" fill="#1db954" width="22" height="22"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+              </button>
+            </div>
+            <!-- seek -->
+            <div class="detail-seek-wrap">
+              <div class="detail-bar"
+                @pointerdown="mobileSeekHoldStart"
+                @pointermove="mobileSeekHoldMove"
+                @pointerup="mobileSeekHoldEnd"
+                @pointercancel="mobileSeekHoldEnd"
+              >
+                <div class="detail-bar-fill" :style="`width:${displayProgressPercent}%`">
+                  <div class="detail-bar-thumb" />
+                </div>
+              </div>
+              <div class="detail-time-row">
+                <span>{{ formatTime(currentTime) }}</span>
+                <span>{{ formatTime(duration) }}</span>
+              </div>
+            </div>
+            <!-- controls -->
+            <div class="detail-controls">
+              <button class="icon-btn" :class="{ green: isShuffled }" @click="isShuffled = !isShuffled">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+              </button>
+              <button class="icon-btn" @click="playPrev">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+              </button>
+              <button class="detail-play-btn" @click="togglePlay">
+                <svg v-if="!isPlaying" viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><path d="M8 5v14l11-7z"/></svg>
+                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+              </button>
+              <button class="icon-btn" @click="playNext">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+              </button>
+              <button class="icon-btn" :class="{ green: repeatMode > 0 }" @click="repeatMode = (repeatMode + 1) % 3">
+                <svg v-if="repeatMode < 2" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2v-5h-1l-2 1v1h1.5v3H13z"/></svg>
+              </button>
+            </div>
+          </div>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <style>
@@ -1783,7 +1849,9 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .track-meta { min-width: 0; }
 .track-name {
   font-size: 13px; font-weight: 600;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
 }
 .track-artist { font-size: 11px; color: #a7a7a7; margin-top: 3px; }
 
@@ -2462,5 +2530,173 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     padding: 0 10px;
     pointer-events: none;
   }
+}
+
+/* ── Player detail panel ───────────────────────────────────────────────── */
+.player-detail {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0,0,0,.45);
+  backdrop-filter: blur(4px);
+}
+
+.detail-sheet {
+  width: 100%;
+  max-width: 480px;
+  max-height: 95vh;
+  overflow-y: auto;
+  background: #121212;
+  border-radius: 20px 20px 0 0;
+  padding: 0 24px 36px;
+  padding-bottom: calc(36px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+}
+
+.detail-handle {
+  width: 36px; height: 4px;
+  border-radius: 999px;
+  background: #444;
+  margin: 12px auto 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.detail-cover {
+  width: 100%;
+  max-height: 40vh;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.detail-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.detail-track-name {
+  font-size: 18px; font-weight: 700; color: #fff;
+  overflow: hidden;
+  flex: 1;
+  mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
+}
+
+.marquee-text {
+  display: inline-block;
+  white-space: nowrap;
+  animation: marquee 14s linear 2s infinite;
+}
+
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  15%  { transform: translateX(0); }
+  85%  { transform: translateX(-50%); }
+  100% { transform: translateX(-50%); }
+}
+
+
+.detail-track-artist {
+  font-size: 14px; color: #a7a7a7;
+  flex: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.detail-seek-wrap { display: flex; flex-direction: column; gap: 6px; }
+
+.detail-bar {
+  height: 28px; display: flex; align-items: center; cursor: pointer;
+}
+
+.detail-bar::before {
+  content: '';
+  position: absolute; left: 24px; right: 24px; height: 4px;
+  background: #3a3a3a; border-radius: 999px;
+  pointer-events: none;
+}
+
+.detail-seek-wrap { position: relative; }
+
+.detail-bar {
+  position: relative;
+  height: 28px;
+}
+
+.detail-bar-fill {
+  position: absolute;
+  top: 50%; left: 0;
+  transform: translateY(-50%);
+  height: 4px;
+  background: #fff;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.detail-bar-thumb {
+  position: absolute;
+  right: -6px; top: 50%;
+  transform: translateY(-50%);
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.detail-bar-track {
+  position: absolute;
+  inset: 50% 0;
+  transform: translateY(-50%);
+  height: 4px;
+  background: #3a3a3a;
+  border-radius: 999px;
+}
+
+.detail-time-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #a7a7a7;
+}
+
+.detail-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.detail-play-btn {
+  width: 60px; height: 60px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  color: #000;
+}
+
+.detail-play-btn:hover { background: #e0e0e0; }
+
+/* slide-up transition */
+.detail-enter-active, .detail-leave-active {
+  transition: opacity .25s ease;
+}
+.detail-enter-from, .detail-leave-to {
+  opacity: 0;
+}
+.detail-enter-active .detail-sheet,
+.detail-leave-active .detail-sheet {
+  transition: transform .3s cubic-bezier(.4,0,.2,1);
+}
+.detail-enter-from .detail-sheet,
+.detail-leave-to .detail-sheet {
+  transform: translateY(100%);
 }
 </style>
