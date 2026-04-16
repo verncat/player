@@ -146,9 +146,10 @@ const indexLogRef = ref<HTMLElement | null>(null);
 const indexLogOpen = ref(false);
 
 /* ── Queue state ── */
-type QueueSource = 'recent' | 'library';
+type QueueSource = 'recent' | 'library' | 'playlist';
 const queueSource = ref<QueueSource>('library');
 const queueSourceIndex = ref(0);       // index into source list of the LAST item pushed
+const queuePlaylistTracks = ref<Track[]>([]); // tracks for 'playlist' source
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
 const recentTracks = ref<Track[]>([]);
@@ -679,10 +680,9 @@ const displayProgressPercent = computed(() => {
 /** Return the full ordered list for a given source */
 function sourceList(src: QueueSource): Track[] {
   if (src === 'recent') return recentTracks.value.length ? recentTracks.value : libraryTracks.value.slice(0, 12);
-  // 'library' – flattened in grouped order
-  const flat: Track[] = [];
-  for (const [, tracks] of groupedByArtist.value) flat.push(...tracks);
-  return flat.length ? flat : libraryTracks.value;
+  if (src === 'playlist') return queuePlaylistTracks.value;
+  // 'library' – flattened in grouped order (same as libraryFlatList)
+  return libraryFlatList.value;
 }
 
 /** Fill the queue up to 5 upcoming tracks from the source */
@@ -695,8 +695,14 @@ function refillQueue() {
   const list = sourceList(queueSource.value);
   if (!list.length) return;
   while (queue.value.length < 5) {
-    queueSourceIndex.value = (queueSourceIndex.value + 1) % list.length;
-    queue.value.push(list[queueSourceIndex.value]);
+    const nextIdx = queueSourceIndex.value + 1;
+    if (nextIdx >= list.length) {
+      if (queueSource.value === 'playlist' && repeatMode.value !== 1) break; // stop at end of playlist
+      queueSourceIndex.value = -1; // wrap (library or repeat-all)
+    } else {
+      queueSourceIndex.value = nextIdx;
+    }
+    if (queueSourceIndex.value >= 0) queue.value.push(list[queueSourceIndex.value]);
   }
 }
 
@@ -764,6 +770,11 @@ async function mobileSeekHoldEnd(e: PointerEvent) {
 }
 
 /** Start playing a specific track from a given source list at a given index */
+function playFromPlaylist(tracks: Track[], index: number) {
+  queuePlaylistTracks.value = [...tracks];
+  playTrackFrom('playlist', index);
+}
+
 async function playTrackFrom(src: QueueSource, index: number) {
   const list = sourceList(src);
   if (!list.length) return;
@@ -999,6 +1010,13 @@ const groupedByArtist = computed(() => {
     map.get(key)!.push(t);
   }
   return map;
+});
+
+// Flat ordered list matching sourceList('library') – used to get correct indices for playTrackFrom
+const libraryFlatList = computed<Track[]>(() => {
+  const flat: Track[] = [];
+  for (const [, tracks] of groupedByArtist.value) flat.push(...tracks);
+  return flat.length ? flat : libraryTracks.value;
 });
 
 async function loadLibrary() {
@@ -1307,7 +1325,7 @@ onUnmounted(() => {
         </a>
         <a class="nav-item" :class="{ active: activeNav === 'playlists' && playlistTab === 'smart' }" @click.prevent="activeNav = 'playlists'; playlistTab = 'smart'; playlistView = null; editingSP = null; smartView = null" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
-          Smart Playlists
+          Flexible Playlists
         </a>
       </nav>
 
@@ -1455,7 +1473,7 @@ onUnmounted(() => {
                   :key="track.id"
                   class="track-row" :class="rarityClass(track.rarity)"
                   :style="rarityVars(track.rarity)"
-                  @click="playTrackFrom('library', libraryTracks.indexOf(track))"
+                  @click="playTrackFrom('library', libraryFlatList.indexOf(track))"
                 >
                   <div class="track-cover-sm" :style="covers[track.id]
                     ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -1517,7 +1535,7 @@ onUnmounted(() => {
                 class="track-row"
                 :class="rarityClass(entry.track.rarity)"
                 :style="rarityVars(entry.track.rarity)"
-                @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === entry.track.id))"
+                @click="playTrackFrom('library', libraryFlatList.findIndex(t => t.id === entry.track.id))"
               >
                 <div class="track-cover-sm" :style="covers[entry.track.id]
                   ? `background-image: url(${covers[entry.track.id]}); background-size: cover; background-position: center`
@@ -1552,17 +1570,17 @@ onUnmounted(() => {
                     </button>
                     <h2 style="margin:0;">{{ playlistView.name }}</h2>
                   </div>
-                  <button v-if="playlistView.tracks.length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === playlistView!.tracks[0].id))">▶ Play</button>
+                  <button v-if="playlistView.tracks.length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playFromPlaylist(playlistView!.tracks, 0)">▶ Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
                   <div
-                    v-for="track in playlistView.tracks"
+                    v-for="(track, idx) in playlistView.tracks"
                     :key="track.id"
                     class="track-row"
                     :class="rarityClass(track.rarity)"
                     :style="rarityVars(track.rarity)"
-                    @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === track.id))"
+                    @click="playFromPlaylist(playlistView!.tracks, idx)"
                   >
                     <div class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -1623,7 +1641,13 @@ onUnmounted(() => {
                     <button class="icon-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
                       <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
                     </button>
-                    <h2 style="margin:0;">{{ editingSP.name }}</h2>
+                    <input
+                      class="library-search"
+                      style="font-size:16px; font-weight:600; min-width:140px; max-width:260px; padding:4px 10px;"
+                      v-model="editingSP.name"
+                      @input="saveSP()"
+                      @click.stop
+                    />
                   </div>
                   <span style="font-size:12px; color:#a7a7a7;">{{ smartPlaylistTracks(editingSP).length }} tracks</span>
                 </div>
@@ -1692,7 +1716,7 @@ onUnmounted(() => {
                     class="track-row"
                     :class="rarityClass(track.rarity)"
                     :style="rarityVars(track.rarity)"
-                    @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === track.id))"
+                    @click="playTrackFrom('library', libraryFlatList.findIndex(t => t.id === track.id))"
                   >
                     <div class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -1719,18 +1743,18 @@ onUnmounted(() => {
                   </div>
                   <div style="display:flex;gap:8px;">
                     <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
-                    <button v-if="smartPlaylistTracks(smartView).length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === smartPlaylistTracks(smartView!)[0].id))">▶ Play</button>
+                    <button v-if="smartPlaylistTracks(smartView).length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playFromPlaylist(smartPlaylistTracks(smartView!), 0)">▶ Play</button>
                   </div>
                 </div>
                 <div v-if="smartPlaylistTracks(smartView).length === 0" class="library-empty">No tracks match this smart playlist.</div>
                 <div v-else class="track-list">
                   <div
-                    v-for="track in smartPlaylistTracks(smartView)"
+                    v-for="(track, idx) in smartPlaylistTracks(smartView)"
                     :key="track.id"
                     class="track-row"
                     :class="rarityClass(track.rarity)"
                     :style="rarityVars(track.rarity)"
-                    @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === track.id))"
+                    @click="playFromPlaylist(smartPlaylistTracks(smartView!), idx)"
                   >
                     <div class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -1748,14 +1772,14 @@ onUnmounted(() => {
               <!-- Smart playlist list -->
               <template v-else>
                 <div class="library-header">
-                  <h2>Smart Playlists</h2>
+                  <h2>Flexible Playlists</h2>
                   <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="showNewSPInput = !showNewSPInput">+ New</button>
                 </div>
                 <div v-if="showNewSPInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input v-model="newSPName" class="library-search" placeholder="Smart playlist name…" style="flex:1;" @keydown.enter="createSmartPlaylist" @keydown.esc="showNewSPInput = false" />
                   <button class="icon-btn" style="padding:6px 14px;" @click="createSmartPlaylist">Create</button>
                 </div>
-                <div v-if="smartPlaylists.length === 0" class="library-empty">No smart playlists yet.</div>
+                <div v-if="smartPlaylists.length === 0" class="library-empty">No flexible playlists yet.</div>
                 <div v-else class="track-list">
                   <div v-for="sp in smartPlaylists" :key="sp.id" class="track-row" style="cursor:pointer;" @click="smartView = sp">
                     <div class="track-cover-sm" style="background: linear-gradient(135deg, #1a2a3a, #0d1b2a); display:flex; align-items:center; justify-content:center;">
