@@ -20,6 +20,8 @@ interface Track {
   manually_edited: boolean;
   is_liked: boolean;
   play_count: number;
+  year: number | null;
+  genre: string | null;
 }
 
 const rarityColors: Record<string, string> = {
@@ -96,8 +98,8 @@ let beatStartTime = 0;
 const BEAT_AMP = 0.10;    // max scale overshoot (1.10× at peak)
 const BEAT_TAU = 130;     // exponential decay time-constant in ms
 
-function startBeatAnimation() {
-  beatStartTime = performance.now();
+function startBeatAnimation(lagMs = 0) {
+  beatStartTime = performance.now() - lagMs;
   if (beatRafId !== null) return; // already running — just reset start time
   function tick() {
     const elapsed = performance.now() - beatStartTime;
@@ -218,6 +220,144 @@ async function removeTrackFromPlaylist(playlistId: number, trackId: number) {
 function openAddToPlaylistMenu(e: MouseEvent, track: Track) {
   e.stopPropagation();
   addToPlaylistMenu.value = { track, x: e.clientX, y: e.clientY };
+}
+
+// ── Smart Playlists ──────────────────────────────────────────────────────────
+type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'extension' | 'year' | 'play_count' | 'is_liked';
+type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false';
+interface SPRule { id: string; field: SPField; op: SPOp; value: string; }
+interface SmartPlaylist { id: string; name: string; match: 'all' | 'any'; rules: SPRule[]; }
+
+const smartPlaylists = ref<SmartPlaylist[]>([]);
+const smartView = ref<SmartPlaylist | null>(null);
+const editingSP = ref<SmartPlaylist | null>(null);
+const showNewSPInput = ref(false);
+const newSPName = ref('');
+const playlistTab = ref<'regular' | 'smart'>('regular');
+
+function loadSmartPlaylists() {
+  try { smartPlaylists.value = JSON.parse(localStorage.getItem('smart_playlists') || '[]'); }
+  catch { smartPlaylists.value = []; }
+}
+function saveSmartPlaylists() {
+  localStorage.setItem('smart_playlists', JSON.stringify(smartPlaylists.value));
+}
+function createSmartPlaylist() {
+  const name = newSPName.value.trim();
+  if (!name) return;
+  const sp: SmartPlaylist = { id: crypto.randomUUID(), name, match: 'all', rules: [] };
+  smartPlaylists.value.push(sp);
+  saveSmartPlaylists();
+  newSPName.value = '';
+  showNewSPInput.value = false;
+  editingSP.value = { ...sp };
+}
+function deleteSmartPlaylist(id: string) {
+  smartPlaylists.value = smartPlaylists.value.filter(sp => sp.id !== id);
+  saveSmartPlaylists();
+  if (editingSP.value?.id === id) editingSP.value = null;
+  if (smartView.value?.id === id) smartView.value = null;
+}
+function saveSP() {
+  if (!editingSP.value) return;
+  const idx = smartPlaylists.value.findIndex(p => p.id === editingSP.value!.id);
+  if (idx !== -1) smartPlaylists.value[idx] = { ...editingSP.value };
+  saveSmartPlaylists();
+}
+function addSPRule() {
+  if (!editingSP.value) return;
+  editingSP.value.rules.push({ id: crypto.randomUUID(), field: 'any', op: 'contains', value: '' });
+  saveSP();
+}
+function removeSPRule(ruleId: string) {
+  if (!editingSP.value) return;
+  editingSP.value.rules = editingSP.value.rules.filter(r => r.id !== ruleId);
+  saveSP();
+}
+function onSPRuleFieldChange(rule: SPRule) {
+  const f = rule.field;
+  if (f === 'is_liked') { rule.op = 'is_true'; rule.value = ''; }
+  else if (f === 'year' || f === 'play_count') { rule.op = 'gte'; rule.value = '0'; }
+  else if (f === 'genre' || f === 'extension' || f === 'artist' || f === 'album') { rule.op = 'in'; rule.value = '[]'; }
+  else { rule.op = 'contains'; rule.value = ''; }
+  saveSP();
+}
+function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool' {
+  if (field === 'is_liked') return 'bool';
+  if (field === 'year' || field === 'play_count') return 'number';
+  if (field === 'genre' || field === 'extension' || field === 'artist' || field === 'album') return 'multiselect';
+  return 'text';
+}
+function spUniqueValues(field: SPField): string[] {
+  const set = new Set<string>();
+  for (const t of libraryTracks.value) {
+    if (field === 'genre' && t.genre) set.add(t.genre);
+    else if (field === 'extension') { const e = t.path.split('.').pop()?.toLowerCase(); if (e) set.add(e); }
+    else if (field === 'artist' && t.artist) set.add(t.artist);
+    else if (field === 'album' && t.album) set.add(t.album);
+  }
+  return [...set].sort();
+}
+function spToggleValue(rule: SPRule, v: string) {
+  const sel: string[] = JSON.parse(rule.value || '[]');
+  const idx = sel.indexOf(v);
+  if (idx === -1) sel.push(v); else sel.splice(idx, 1);
+  rule.value = JSON.stringify(sel);
+  saveSP();
+}
+function spIsSelected(rule: SPRule, v: string): boolean {
+  try { return (JSON.parse(rule.value) as string[]).includes(v); } catch { return false; }
+}
+function matchesRule(track: Track, rule: SPRule): boolean {
+  switch (rule.field) {
+    case 'any': {
+      const q = rule.value.toLowerCase();
+      return !q || !!(track.title?.toLowerCase().includes(q) || track.artist?.toLowerCase().includes(q) ||
+        track.album?.toLowerCase().includes(q) || track.genre?.toLowerCase().includes(q) ||
+        track.path.toLowerCase().includes(q));
+    }
+    case 'title': return !rule.value || !!track.title?.toLowerCase().includes(rule.value.toLowerCase());
+    case 'artist': {
+      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.artist ?? ''); }
+      return !rule.value || !!track.artist?.toLowerCase().includes(rule.value.toLowerCase());
+    }
+    case 'album': {
+      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.album ?? ''); }
+      return !rule.value || !!track.album?.toLowerCase().includes(rule.value.toLowerCase());
+    }
+    case 'genre': {
+      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.genre ?? ''); }
+      return !rule.value || !!track.genre?.toLowerCase().includes(rule.value.toLowerCase());
+    }
+    case 'extension': {
+      const ext = track.path.split('.').pop()?.toLowerCase() || '';
+      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(ext); }
+      return ext.includes(rule.value.toLowerCase());
+    }
+    case 'year': {
+      if (track.year == null) return false;
+      const n = Number(rule.value);
+      if (rule.op === 'eq') return track.year === n;
+      if (rule.op === 'gte') return track.year >= n;
+      if (rule.op === 'lte') return track.year <= n;
+      return false;
+    }
+    case 'play_count': {
+      const n = Number(rule.value);
+      if (rule.op === 'eq') return track.play_count === n;
+      if (rule.op === 'gte') return track.play_count >= n;
+      if (rule.op === 'lte') return track.play_count <= n;
+      return false;
+    }
+    case 'is_liked': return rule.op === 'is_true' ? track.is_liked : !track.is_liked;
+    default: return true;
+  }
+}
+function smartPlaylistTracks(sp: SmartPlaylist): Track[] {
+  if (sp.rules.length === 0) return [];
+  return libraryTracks.value.filter(t =>
+    sp.match === 'all' ? sp.rules.every(r => matchesRule(t, r)) : sp.rules.some(r => matchesRule(t, r))
+  );
 }
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1002,6 +1142,7 @@ onMounted(() => {
   loadLibrary();
   loadRecent();
   loadPlaylists();
+  loadSmartPlaylists();
   invoke<DeviceSettings>('get_device_settings')
     .then((cfg) => {
       if (cfg?.emoji) deviceEmoji.value = cfg.emoji;
@@ -1021,7 +1162,10 @@ onMounted(() => {
   });
   
   listen('library-changed', () => { loadLibrary(); loadRecent(); });
-  listen('beat', () => { startBeatAnimation(); });
+  listen<number>('beat', (e) => {
+    const lag = Math.max(0, Date.now() - e.payload);
+    startBeatAnimation(lag);
+  });
   listen<Peer[]>('discovery-peers', (e) => {
     const prev = new Set(peers.value.map(p => p.host));
     peers.value = e.payload;
@@ -1157,9 +1301,13 @@ onUnmounted(() => {
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
           Your Library
         </a>
-        <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="activeNav = 'playlists'; playlistView = null" href="#">
+        <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="activeNav = 'playlists'; playlistView = null; playlistTab = 'regular'" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
           Playlists
+        </a>
+        <a class="nav-item" :class="{ active: activeNav === 'playlists' && playlistTab === 'smart' }" @click.prevent="activeNav = 'playlists'; playlistTab = 'smart'; playlistView = null; editingSP = null; smartView = null" href="#">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+          Smart Playlists
         </a>
       </nav>
 
@@ -1393,81 +1541,239 @@ onUnmounted(() => {
         <!-- Playlists view -->
         <template v-else-if="activeNav === 'playlists'">
           <section>
-            <!-- Playlist detail -->
-            <template v-if="playlistView">
-              <div class="library-header">
-                <div style="display:flex; align-items:center; gap:12px;">
-                  <button class="icon-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-                  </button>
-                  <h2 style="margin:0;">{{ playlistView.name }}</h2>
-                </div>
-                <button v-if="playlistView.tracks.length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === playlistView!.tracks[0].id))">▶ Play</button>
-              </div>
-              <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
-              <div v-else class="track-list">
-                <div
-                  v-for="track in playlistView.tracks"
-                  :key="track.id"
-                  class="track-row"
-                  :class="rarityClass(track.rarity)"
-                  :style="rarityVars(track.rarity)"
-                  @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === track.id))"
-                >
-                  <div class="track-cover-sm" :style="covers[track.id]
-                    ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                    : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                  />
-                  <div class="track-info">
-                    <span class="track-title">{{ track.title || track.path }}</span>
-                    <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}</span>
+            <!-- ── Regular playlists ─────────────────────────────────────── -->
+            <template v-if="playlistTab === 'regular'">
+              <!-- Playlist detail -->
+              <template v-if="playlistView">
+                <div class="library-header">
+                  <div style="display:flex; align-items:center; gap:12px;">
+                    <button class="icon-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    </button>
+                    <h2 style="margin:0;">{{ playlistView.name }}</h2>
                   </div>
-                  <button class="icon-btn" style="margin-right:8px;" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13H5v-2h14v2z"/></svg>
-                  </button>
-                  <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                  <button v-if="playlistView.tracks.length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === playlistView!.tracks[0].id))">▶ Play</button>
                 </div>
-              </div>
+                <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
+                <div v-else class="track-list">
+                  <div
+                    v-for="track in playlistView.tracks"
+                    :key="track.id"
+                    class="track-row"
+                    :class="rarityClass(track.rarity)"
+                    :style="rarityVars(track.rarity)"
+                    @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === track.id))"
+                  >
+                    <div class="track-cover-sm" :style="covers[track.id]
+                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                    />
+                    <div class="track-info">
+                      <span class="track-title">{{ track.title || track.path }}</span>
+                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}</span>
+                    </div>
+                    <button class="icon-btn" style="margin-right:8px;" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13H5v-2h14v2z"/></svg>
+                    </button>
+                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                  </div>
+                </div>
+              </template>
+              <!-- Playlist list -->
+              <template v-else>
+                <div class="library-header">
+                  <h2>Playlists</h2>
+                  <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
+                </div>
+                <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
+                  <input
+                    v-model="newPlaylistName"
+                    class="library-search"
+                    placeholder="Playlist name..."
+                    style="flex:1;"
+                    @keydown.enter="createPlaylist"
+                    @keydown.esc="showNewPlaylistInput = false"
+                  />
+                  <button class="icon-btn" style="padding:6px 14px;" @click="createPlaylist">Create</button>
+                </div>
+                <div v-if="playlists.length === 0" class="library-empty">No playlists yet.</div>
+                <div v-else class="track-list">
+                  <div v-for="pl in playlists" :key="pl.id" class="track-row" style="cursor:pointer;" @click="openPlaylist(pl)">
+                    <div class="track-cover-sm" style="background: linear-gradient(135deg, #333, #1a1a1a); display:flex; align-items:center; justify-content:center;">
+                      <svg viewBox="0 0 24 24" fill="#a7a7a7" width="20" height="20"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+                    </div>
+                    <div class="track-info">
+                      <span class="track-title">{{ pl.name }}</span>
+                      <span class="track-album">{{ pl.track_count }} track{{ pl.track_count !== 1 ? 's' : '' }}</span>
+                    </div>
+                    <button class="icon-btn" style="margin-right:8px;" title="Delete playlist" @click.stop="deletePlaylist(pl.id)">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </template>
             </template>
 
-            <!-- Playlist list -->
+            <!-- ── Smart playlists ─────────────────────────────────────────── -->
             <template v-else>
-              <div class="library-header">
-                <h2>Playlists</h2>
-                <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
-              </div>
-              <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
-                <input
-                  v-model="newPlaylistName"
-                  class="library-search"
-                  placeholder="Playlist name..."
-                  style="flex:1;"
-                  @keydown.enter="createPlaylist"
-                  @keydown.esc="showNewPlaylistInput = false"
-                />
-                <button class="icon-btn" style="padding:6px 14px;" @click="createPlaylist">Create</button>
-              </div>
-              <div v-if="playlists.length === 0" class="library-empty">No playlists yet.</div>
-              <div v-else class="track-list">
-                <div
-                  v-for="pl in playlists"
-                  :key="pl.id"
-                  class="track-row"
-                  style="cursor:pointer;"
-                  @click="openPlaylist(pl)"
-                >
-                  <div class="track-cover-sm" style="background: linear-gradient(135deg, #333, #1a1a1a); display:flex; align-items:center; justify-content:center;">
-                    <svg viewBox="0 0 24 24" fill="#a7a7a7" width="20" height="20"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+              <!-- Editing a smart playlist -->
+              <template v-if="editingSP">
+                <div class="library-header">
+                  <div style="display:flex; align-items:center; gap:12px;">
+                    <button class="icon-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    </button>
+                    <h2 style="margin:0;">{{ editingSP.name }}</h2>
                   </div>
-                  <div class="track-info">
-                    <span class="track-title">{{ pl.name }}</span>
-                    <span class="track-album">{{ pl.track_count }} track{{ pl.track_count !== 1 ? 's' : '' }}</span>
-                  </div>
-                  <button class="icon-btn" style="margin-right:8px;" title="Delete playlist" @click.stop="deletePlaylist(pl.id)">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-                  </button>
+                  <span style="font-size:12px; color:#a7a7a7;">{{ smartPlaylistTracks(editingSP).length }} tracks</span>
                 </div>
-              </div>
+
+                <!-- Match mode -->
+                <div class="sp-match-row">
+                  Match
+                  <button :class="['sp-match-btn', editingSP.match === 'all' && 'active']" @click="editingSP.match = 'all'; saveSP()">ALL</button>
+                  <button :class="['sp-match-btn', editingSP.match === 'any' && 'active']" @click="editingSP.match = 'any'; saveSP()">ANY</button>
+                  of the following rules:
+                </div>
+
+                <!-- Rules -->
+                <div class="sp-rules">
+                  <div v-for="rule in editingSP.rules" :key="rule.id" class="sp-rule-row">
+                    <select class="sp-select" :value="rule.field" @change="rule.field = ($event.target as HTMLSelectElement).value as SPField; onSPRuleFieldChange(rule)">
+                      <option value="any">Any field</option>
+                      <option value="title">Title</option>
+                      <option value="artist">Artist</option>
+                      <option value="album">Album</option>
+                      <option value="genre">Genre</option>
+                      <option value="extension">Extension</option>
+                      <option value="year">Year</option>
+                      <option value="play_count">Play count</option>
+                      <option value="is_liked">Is liked</option>
+                    </select>
+
+                    <template v-if="spFieldType(rule.field) === 'text'">
+                      <span class="sp-op-label">contains</span>
+                      <input class="library-search sp-text-input" v-model="rule.value" placeholder="search…" @input="saveSP()" />
+                    </template>
+                    <template v-else-if="spFieldType(rule.field) === 'number'">
+                      <select class="sp-select" :value="rule.op" @change="rule.op = ($event.target as HTMLSelectElement).value as SPOp; saveSP()">
+                        <option value="gte">≥</option>
+                        <option value="lte">≤</option>
+                        <option value="eq">=</option>
+                      </select>
+                      <input class="library-search sp-num-input" type="number" min="0" v-model="rule.value" @input="saveSP()" />
+                    </template>
+                    <template v-else-if="spFieldType(rule.field) === 'bool'">
+                      <button :class="['sp-match-btn', rule.op === 'is_true' && 'active']" @click="rule.op = 'is_true'; saveSP()">Yes</button>
+                      <button :class="['sp-match-btn', rule.op === 'is_false' && 'active']" @click="rule.op = 'is_false'; saveSP()">No</button>
+                    </template>
+                    <template v-else>
+                      <div class="sp-multiselect">
+                        <label v-for="v in spUniqueValues(rule.field)" :key="v" class="sp-chip" :class="{ selected: spIsSelected(rule, v) }" @click="spToggleValue(rule, v)">{{ v }}</label>
+                        <span v-if="spUniqueValues(rule.field).length === 0" style="color:#777; font-size:12px;">No values in library</span>
+                      </div>
+                    </template>
+
+                    <button class="icon-btn" style="margin-left:auto; flex-shrink:0;" @click="removeSPRule(rule.id)" title="Remove rule">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    </button>
+                  </div>
+                  <button class="sp-add-rule-btn" @click="addSPRule()">+ Add rule</button>
+                </div>
+
+                <!-- Preview -->
+                <div class="sp-preview-header">Preview ({{ smartPlaylistTracks(editingSP).length }} tracks)</div>
+                <div v-if="editingSP.rules.length === 0" class="library-empty">Add rules above to filter your library.</div>
+                <div v-else-if="smartPlaylistTracks(editingSP).length === 0" class="library-empty">No tracks match the current rules.</div>
+                <div v-else class="track-list sp-preview">
+                  <div
+                    v-for="track in smartPlaylistTracks(editingSP).slice(0, 50)"
+                    :key="track.id"
+                    class="track-row"
+                    :class="rarityClass(track.rarity)"
+                    :style="rarityVars(track.rarity)"
+                    @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === track.id))"
+                  >
+                    <div class="track-cover-sm" :style="covers[track.id]
+                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                    />
+                    <div class="track-info">
+                      <span class="track-title">{{ track.title || track.path }}</span>
+                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.year ? ' · ' + track.year : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
+                    </div>
+                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                  </div>
+                  <div v-if="smartPlaylistTracks(editingSP).length > 50" class="library-empty" style="padding:12px 0;">… and {{ smartPlaylistTracks(editingSP).length - 50 }} more</div>
+                </div>
+              </template>
+
+              <!-- Viewing a smart playlist (read-only) -->
+              <template v-else-if="smartView">
+                <div class="library-header">
+                  <div style="display:flex; align-items:center; gap:12px;">
+                    <button class="icon-btn" style="padding:4px;" @click="smartView = null">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    </button>
+                    <h2 style="margin:0;">{{ smartView.name }}</h2>
+                  </div>
+                  <div style="display:flex;gap:8px;">
+                    <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
+                    <button v-if="smartPlaylistTracks(smartView).length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === smartPlaylistTracks(smartView!)[0].id))">▶ Play</button>
+                  </div>
+                </div>
+                <div v-if="smartPlaylistTracks(smartView).length === 0" class="library-empty">No tracks match this smart playlist.</div>
+                <div v-else class="track-list">
+                  <div
+                    v-for="track in smartPlaylistTracks(smartView)"
+                    :key="track.id"
+                    class="track-row"
+                    :class="rarityClass(track.rarity)"
+                    :style="rarityVars(track.rarity)"
+                    @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === track.id))"
+                  >
+                    <div class="track-cover-sm" :style="covers[track.id]
+                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                    />
+                    <div class="track-info">
+                      <span class="track-title">{{ track.title || track.path }}</span>
+                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.year ? ' · ' + track.year : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
+                    </div>
+                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Smart playlist list -->
+              <template v-else>
+                <div class="library-header">
+                  <h2>Smart Playlists</h2>
+                  <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="showNewSPInput = !showNewSPInput">+ New</button>
+                </div>
+                <div v-if="showNewSPInput" style="display:flex; gap:8px; padding: 0 0 14px;">
+                  <input v-model="newSPName" class="library-search" placeholder="Smart playlist name…" style="flex:1;" @keydown.enter="createSmartPlaylist" @keydown.esc="showNewSPInput = false" />
+                  <button class="icon-btn" style="padding:6px 14px;" @click="createSmartPlaylist">Create</button>
+                </div>
+                <div v-if="smartPlaylists.length === 0" class="library-empty">No smart playlists yet.</div>
+                <div v-else class="track-list">
+                  <div v-for="sp in smartPlaylists" :key="sp.id" class="track-row" style="cursor:pointer;" @click="smartView = sp">
+                    <div class="track-cover-sm" style="background: linear-gradient(135deg, #1a2a3a, #0d1b2a); display:flex; align-items:center; justify-content:center;">
+                      <svg viewBox="0 0 24 24" fill="#4fc3f7" width="20" height="20"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+                    </div>
+                    <div class="track-info">
+                      <span class="track-title">{{ sp.name }}</span>
+                      <span class="track-album">{{ sp.rules.length }} rule{{ sp.rules.length !== 1 ? 's' : '' }} · {{ smartPlaylistTracks(sp).length }} tracks</span>
+                    </div>
+                    <button class="icon-btn" style="margin-right:4px;" title="Edit" @click.stop="editingSP = { ...sp }; smartView = null">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
+                    </button>
+                    <button class="icon-btn" style="margin-right:8px;" title="Delete" @click.stop="deleteSmartPlaylist(sp.id)">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </template>
             </template>
           </section>
         </template>
@@ -1886,7 +2192,12 @@ onUnmounted(() => {
             <div class="detail-handle" @click="showDetail = false" />
             <!-- cover 3D card -->
             <div class="detail-cover-wrap"
-              :style="cardDragging ? { zIndex: 200, position: 'relative' } : {}"
+              :style="{
+                ...(cardDragging ? { zIndex: 200, position: 'relative' } : {}),
+                transform: `scale(${beatScale})`,
+                transformOrigin: 'center center',
+                willChange: 'transform',
+              }"
               @mousemove="onCardMouseMove"
               @mouseenter="onCardMouseEnter"
               @mouseleave="onCardMouseLeave"
@@ -2389,6 +2700,61 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   font-size: 13px; padding: 9px 14px; cursor: pointer;
 }
 .playlist-menu-item:hover { background: #333; }
+
+/* Smart Playlists */
+.sp-match-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: #a7a7a7; padding: 0 0 14px;
+}
+.sp-match-btn {
+  background: transparent; border: 1px solid #535353; color: #a7a7a7;
+  border-radius: 20px; padding: 4px 12px; font-size: 12px;
+  font-weight: 600; cursor: pointer; transition: all .15s;
+}
+.sp-match-btn.active, .sp-match-btn:hover { background: #1db954; border-color: #1db954; color: #000; }
+.sp-rules { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.sp-rule-row {
+  display: flex; align-items: center; gap: 8px;
+  background: #1e1e1e; border-radius: 12px; padding: 8px 12px;
+  flex-wrap: wrap;
+}
+.sp-select {
+  background: #282828; border: 1px solid #535353; border-radius: 20px;
+  color: #a7a7a7; font-size: 13px; padding: 5px 28px 5px 12px; cursor: pointer;
+  appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  outline: none; transition: border-color .15s, color .15s;
+}
+.sp-select:focus { border-color: #fff; color: #fff; }
+.sp-select:hover { border-color: #fff; color: #fff; }
+.sp-op-label { font-size: 12px; color: #a7a7a7; white-space: nowrap; }
+.sp-text-input { flex: 1; min-width: 100px; }
+.sp-num-input { width: 80px; }
+.sp-add-rule-btn {
+  background: transparent; border: 1px solid #535353; color: #a7a7a7;
+  border-radius: 20px; padding: 5px 14px; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+  align-self: flex-start;
+}
+.sp-add-rule-btn:hover { border-color: #fff; color: #fff; }
+.sp-multiselect {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1;
+}
+.sp-chip {
+  background: #282828; border: 1px solid #444; color: #a7a7a7;
+  border-radius: 20px; padding: 3px 10px; font-size: 12px;
+  cursor: pointer; transition: background .12s, color .12s, border-color .12s;
+  user-select: none;
+}
+.sp-chip.selected { background: #1db954; border-color: #1db954; color: #000; font-weight: 600; }
+.sp-chip:hover:not(.selected) { border-color: #888; color: #e0e0e0; }
+.sp-preview-header {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: #a7a7a7;
+  padding: 0 0 10px; border-bottom: 1px solid #282828; margin-bottom: 8px;
+}
+.sp-preview { opacity: 0.9; }
 .track-groups { display: flex; flex-direction: column; gap: 24px; }
 .group-artist {
   font-size: 13px; font-weight: 700; color: #a7a7a7;
@@ -3025,12 +3391,10 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 
 .detail-cover-wrap {
-  aspect-ratio: 1;
-  flex-shrink: 1;
-  min-height: 0;
-  height: 28vh;
-  max-height: 260px;
-  width: auto;
+  aspect-ratio: 1 / 1;
+  flex-shrink: 0;
+  width: min(28vh, 260px, 80vw);
+  height: auto;
   align-self: center;
   perspective: 600px;
   cursor: grab;

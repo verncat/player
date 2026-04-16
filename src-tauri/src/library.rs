@@ -54,6 +54,8 @@ pub struct Track {
     pub manually_edited: bool,
     pub is_liked: bool,
     pub play_count: i64,
+    pub year: Option<i64>,
+    pub genre: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -77,6 +79,8 @@ struct Meta {
     album: Option<String>,
     track_number: Option<i64>,
     duration_secs: Option<f64>,
+    year: Option<i64>,
+    genre: Option<String>,
     /// Raw bytes of the embedded cover image.
     cover_data: Option<Vec<u8>>,
     cover_mime: Option<String>,
@@ -130,7 +134,7 @@ impl LibraryState {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre
                FROM tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
@@ -147,7 +151,7 @@ impl LibraryState {
     pub fn all_tracks(&self) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre
                FROM tracks
               ORDER BY artist, album, track_number, title",
         )?;
@@ -255,6 +259,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN is_liked INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN year INTEGER");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN genre TEXT");
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS play_history (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,6 +305,8 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         manually_edited: row.get::<_, i64>(9).unwrap_or(0) != 0,
         is_liked: row.get::<_, i64>(10).unwrap_or(0) != 0,
         play_count: row.get::<_, i64>(11).unwrap_or(0),
+        year: row.get(12).unwrap_or(None),
+        genre: row.get(13).unwrap_or(None),
     })
 }
 
@@ -519,8 +527,8 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
 
     conn.execute(
         "INSERT INTO tracks
-             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, file_hash, rarity)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, file_hash, rarity, year, genre)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(path) DO UPDATE SET
              title         = excluded.title,
              artist        = excluded.artist,
@@ -531,7 +539,9 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
              cover_data    = excluded.cover_data,
              cover_mime    = excluded.cover_mime,
              file_hash     = excluded.file_hash,
-             rarity        = excluded.rarity",
+             rarity        = excluded.rarity,
+             year          = excluded.year,
+             genre         = excluded.genre",
         params![
             rel,
             meta.title,
@@ -544,6 +554,8 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
             meta.cover_mime,
             file_hash,
             rarity,
+            meta.year,
+            meta.genre,
         ],
     )?;
 
@@ -627,6 +639,8 @@ fn read_audio_meta(path: &Path) -> Meta {
         album: tag.album().as_deref().map(str::to_owned),
         track_number: tag.track().map(|n| n as i64),
         duration_secs,
+        year: tag.date().map(|ts| ts.year as i64),
+        genre: tag.genre().as_deref().map(str::to_owned),
         cover_data,
         cover_mime,
     }
@@ -941,7 +955,7 @@ pub fn get_recent_tracks(
     let lim = limit.unwrap_or(12) as i64;
     let mut stmt = conn.prepare(
         "SELECT DISTINCT t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre
            FROM play_history h
            JOIN tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
@@ -964,7 +978,7 @@ pub fn get_play_history(
     let lim = limit.unwrap_or(500) as i64;
     let mut stmt = conn.prepare(
         "SELECT h.played_at, t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre
            FROM play_history h
            JOIN tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
@@ -986,6 +1000,8 @@ pub fn get_play_history(
                 manually_edited: row.get::<_, i64>(10).unwrap_or(0) != 0,
                 is_liked: row.get::<_, i64>(11).unwrap_or(0) != 0,
                 play_count: row.get::<_, i64>(12).unwrap_or(0),
+                year: row.get(13).unwrap_or(None),
+                genre: row.get(14).unwrap_or(None),
             };
             Ok(PlayHistoryEntry { played_at, track })
         })
@@ -1105,7 +1121,7 @@ pub fn get_playlist_tracks(playlist_id: i64, state: tauri::State<'_, LibraryStat
     let mut stmt = conn.prepare(
         "SELECT t.id, t.path, t.title, t.artist, t.album, t.track_number,
                 t.duration_secs, t.file_hash, t.rarity, t.manually_edited,
-                t.is_liked, t.play_count
+                t.is_liked, t.play_count, t.year, t.genre
          FROM tracks t
          JOIN playlist_tracks pt ON pt.track_id = t.id
          WHERE pt.playlist_id = ?1

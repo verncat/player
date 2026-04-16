@@ -481,7 +481,7 @@ fn check_beat(shared: &Shared, beat: &mut BeatState, mono: f32) {
         if now >= beat.last_beat_ms + BEAT_COOLDOWN_MS {
             beat.last_beat_ms = now;
             use tauri::Emitter;
-            let _ = shared.app_handle.emit("beat", ());
+            let _ = shared.app_handle.emit("beat", now);
         }
     }
 }
