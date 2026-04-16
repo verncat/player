@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -241,6 +241,196 @@ const currentTrack = computed(() => {
 const mobileSeekActive = ref(false);
 const seekPreviewPos = ref<number | null>(null);
 const showDetail = ref(false);
+
+// ── 3D cover card ──────────────────────────────────────────────────────────
+const cardRotX = ref(0);
+const cardRotY = ref(0);
+const cardInteracting = ref(false);
+let cardAmbientRaf = 0;
+let cardSpringRaf = 0;
+
+const MAX_TILT = 18;     // max tilt degrees from interaction
+const AMBIENT_R = 10;    // ambient rotation radius in degrees
+const AMBIENT_PERIOD = 8000; // ms for one ambient orbit
+
+const cardTransform = computed(() =>
+  `perspective(600px) rotateX(${cardRotX.value}deg) rotateY(${cardRotY.value}deg)`
+);
+
+// Specular highlight — bright spot moves opposite to tilt direction
+const cardGloss = computed(() => {
+  const rx = cardRotX.value;
+  const ry = cardRotY.value;
+  const sx = 50 - ry * 2.8;
+  const sy = 50 + rx * 2.8;
+  const intensity = Math.hypot(rx, ry) / MAX_TILT;
+  const alpha = (0.1 + intensity * 0.25).toFixed(2);
+  return `radial-gradient(ellipse 60% 55% at ${sx}% ${sy}%, rgba(255,255,255,${alpha}) 0%, rgba(255,255,255,0.03) 55%, transparent 75%)`;
+});
+
+// Glossy sheen — white bands of light sweep across the card as it tilts,
+// tinted subtly by rarity color. Like light reflecting off a glossy surface.
+const cardRainbow = computed(() => {
+  const rx = cardRotX.value / MAX_TILT; // -1..1
+  const ry = cardRotY.value / MAX_TILT;
+  const intensity = Math.min(Math.hypot(rx, ry), 1);
+
+  const rarity = nowPlaying.value?.rarity ?? null;
+  const baseColor = rarityColors[rarity ?? ''] ?? '#ffffff';
+  const r = parseInt(baseColor.slice(1, 3), 16);
+  const g = parseInt(baseColor.slice(3, 5), 16);
+  const b = parseInt(baseColor.slice(5, 7), 16);
+
+  const sweep = ry * 0.9 - rx * 0.3;
+  const band1 = 15 + sweep * 75;  // primary band sweeps 15%→90%
+  const band2 = band1 + 30;       // secondary band
+  const angle = 132 + ry * 18;
+
+  // White gloss alpha — strong enough to be clearly visible
+  const gloss1 = (0.3 + intensity * 0.55).toFixed(2);
+  const gloss2 = (0.15 + intensity * 0.30).toFixed(2);
+  // Rarity tint mixed in at the edge of each band (very subtle)
+  const tint1  = (0.20 + intensity * 0.35).toFixed(2);
+  const tint2  = (0.10 + intensity * 0.18).toFixed(2);
+
+  const W1 = 12; // primary band half-width %
+  const W2 = 8;  // secondary band half-width %
+
+  // Band: hard edge → rarity tint → pure white hotspot → rarity tint → hard edge
+  const glossBand = (cx: number, w: number, gA: string, tA: string) => {
+    const e0 = (cx - w).toFixed(1);
+    const e1 = (cx + w).toFixed(1);
+    const t0 = (cx - w * 0.55).toFixed(1);
+    const t1 = (cx + w * 0.55).toFixed(1);
+    return [
+      `transparent ${e0}%`,
+      `rgba(${r},${g},${b},${tA}) ${e0}%`,
+      `rgba(255,255,255,${gA}) ${t0}%`,
+      `rgba(255,255,255,${gA}) ${t1}%`,
+      `rgba(${r},${g},${b},${tA}) ${e1}%`,
+      `transparent ${e1}%`,
+    ].join(', ');
+  };
+
+  return `linear-gradient(${angle.toFixed(0)}deg,
+    ${glossBand(band1, W1, gloss1, tint1)},
+    ${glossBand(band2, W2, gloss2, tint2)}
+  )`;
+});
+
+// Shadow shifts with tilt — card appears to lift off the surface
+const cardShadow = computed(() => {
+  const rx = cardRotX.value;
+  const ry = cardRotY.value;
+  const sx = (ry * 1.8).toFixed(1);
+  const sy = (-rx * 1.8 + 16).toFixed(1);
+  const blur = (40 + Math.hypot(rx, ry) * 1.2).toFixed(0);
+  return `${sx}px ${sy}px ${blur}px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.35)`;
+});
+
+function startAmbient() {
+  const t0 = performance.now();
+  function tick(now: number) {
+    if (cardInteracting.value) { cardAmbientRaf = requestAnimationFrame(tick); return; }
+    const phase = ((now - t0) / AMBIENT_PERIOD) * Math.PI * 2;
+    cardRotY.value = AMBIENT_R * Math.sin(phase);
+    cardRotX.value = AMBIENT_R * 0.5 * Math.sin(phase * 2);
+    cardAmbientRaf = requestAnimationFrame(tick);
+  }
+  cardAmbientRaf = requestAnimationFrame(tick);
+}
+
+function stopAmbient() {
+  cancelAnimationFrame(cardAmbientRaf);
+}
+
+function springBack() {
+  cancelAnimationFrame(cardSpringRaf);
+  const FACTOR = 0.15;
+  function tick() {
+    cardRotX.value *= (1 - FACTOR);
+    cardRotY.value *= (1 - FACTOR);
+    if (Math.abs(cardRotX.value) > 0.05 || Math.abs(cardRotY.value) > 0.05) {
+      cardSpringRaf = requestAnimationFrame(tick);
+    } else {
+      cardRotX.value = 0;
+      cardRotY.value = 0;
+    }
+  }
+  cardSpringRaf = requestAnimationFrame(tick);
+}
+
+
+// Plain (non-reactive) vars for pending mouse/touch values — flushed to refs via RAF
+let _pendX = 0;
+let _pendY = 0;
+let _mouseRafId = 0;
+
+function _flushCardRot() {
+  cardRotX.value = _pendX;
+  cardRotY.value = _pendY;
+  _mouseRafId = 0;
+}
+
+function _scheduleFlush() {
+  if (!_mouseRafId) _mouseRafId = requestAnimationFrame(_flushCardRot);
+}
+
+function onCardMouseMove(e: MouseEvent) {
+  const el = e.currentTarget as HTMLElement;
+  const r = el.getBoundingClientRect();
+  _pendY = ((e.clientX - (r.left + r.width / 2)) / (r.width / 2)) * MAX_TILT;
+  _pendX = -((e.clientY - (r.top + r.height / 2)) / (r.height / 2)) * MAX_TILT;
+  _scheduleFlush();
+}
+
+
+function onCardMouseLeave() {
+  cardInteracting.value = false;
+  springBack();
+}
+
+function onCardMouseEnter() {
+  cancelAnimationFrame(cardSpringRaf);
+  cardInteracting.value = true;
+}
+
+let cardTouchStartX = 0;
+let cardTouchStartY = 0;
+
+function onCardTouchStart(e: TouchEvent) {
+  cardInteracting.value = true;
+  cancelAnimationFrame(cardSpringRaf);
+  cardTouchStartX = e.touches[0].clientX;
+  cardTouchStartY = e.touches[0].clientY;
+}
+
+function onCardTouchMove(e: TouchEvent) {
+  e.preventDefault();
+  const dx = e.touches[0].clientX - cardTouchStartX;
+  const dy = e.touches[0].clientY - cardTouchStartY;
+  _pendY = Math.max(-MAX_TILT, Math.min(MAX_TILT, dx * 0.4));
+  _pendX = Math.max(-MAX_TILT, Math.min(MAX_TILT, -dy * 0.4));
+  _scheduleFlush();
+}
+
+function onCardTouchEnd() {
+  cardInteracting.value = false;
+  springBack();
+}
+
+watch(showDetail, (open) => {
+  if (open) {
+    cardRotX.value = 0;
+    cardRotY.value = 0;
+    startAmbient();
+  } else {
+    stopAmbient();
+    cancelAnimationFrame(cardSpringRaf);
+  }
+});
+// ────────────────────────────────────────────────────────────────────────────
+
 const displayProgressPercent = computed(() => {
   const pos = seekPreviewPos.value ?? currentTime.value;
   return duration.value > 0 ? (pos / duration.value) * 100 : 0;
@@ -337,6 +527,7 @@ async function mobileSeekHoldEnd(e: PointerEvent) {
 async function playTrackFrom(src: QueueSource, index: number) {
   const list = sourceList(src);
   if (!list.length) return;
+  const wasPlaying = isPlaying.value;
   queueSource.value = src;
   const track = list[index];
   nowPlaying.value = track;
@@ -347,10 +538,16 @@ async function playTrackFrom(src: QueueSource, index: number) {
   queue.value = [];
   refillQueue();
   await invoke('playback_play', { path: track.path });
-  await refreshPlaybackState();
-  track.play_count++;
-  invoke('record_play', { id: track.id }).then(() => loadRecent());
-  startTicker();
+  if (!wasPlaying) {
+    await invoke('playback_pause');
+    isPlaying.value = false;
+    stopTicker();
+  } else {
+    await refreshPlaybackState();
+    track.play_count++;
+    invoke('record_play', { id: track.id }).then(() => loadRecent());
+    startTicker();
+  }
   syncAndroid();
 }
 
@@ -1475,17 +1672,35 @@ onUnmounted(() => {
           <div class="detail-sheet">
             <!-- drag handle -->
             <div class="detail-handle" @click="showDetail = false" />
-            <!-- cover -->
-            <div class="detail-cover" :style="covers[nowPlaying.id]
-              ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
-              : `background: linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})`"
-            />
+            <!-- cover 3D card -->
+            <div class="detail-cover-wrap"
+              @mousemove="onCardMouseMove"
+              @mouseenter="onCardMouseEnter"
+              @mouseleave="onCardMouseLeave"
+              @touchstart.passive="onCardTouchStart"
+              @touchmove.prevent="onCardTouchMove"
+              @touchend="onCardTouchEnd"
+            >
+              <div class="detail-cover detail-cover-3d"
+                :style="[
+                  covers[nowPlaying.id]
+                    ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
+                    : `background: linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})`,
+                  { transform: cardTransform, boxShadow: cardShadow }
+                ]"
+              >
+                <div class="card-gloss" :style="{ background: cardGloss }" />
+                <div class="card-rainbow" :style="{ background: cardRainbow }" />
+              </div>
+            </div>
             <!-- track info -->
             <div class="detail-info">
               <div class="detail-track-name">
                 <span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span>
               </div>
-              <div class="detail-track-artist">{{ currentTrack.artist }}</div>
+              <div class="detail-track-artist">
+                <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
+              </div>
               <button class="icon-btn" :class="{ green: nowPlaying.is_liked }" @click.stop="toggleLike(nowPlaying!)" style="margin-left:auto;">
                 <svg v-if="nowPlaying.is_liked" viewBox="0 0 24 24" fill="#1db954" width="22" height="22"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
                 <svg v-else viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
@@ -2551,12 +2766,12 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   overflow-y: auto;
   background: #121212;
   border-radius: 20px 20px 0 0;
-  padding: 0 24px 36px;
-  padding-bottom: calc(36px + env(safe-area-inset-bottom));
+  padding: 0 24px 24px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 20px;
+  gap: 14px;
 }
 
 .detail-handle {
@@ -2568,19 +2783,57 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   flex-shrink: 0;
 }
 
+.detail-cover-wrap {
+  aspect-ratio: 1;
+  flex-shrink: 1;
+  min-height: 0;
+  height: 28vh;
+  max-height: 260px;
+  width: auto;
+  align-self: center;
+  perspective: 600px;
+  cursor: grab;
+  user-select: none;
+}
+
 .detail-cover {
   width: 100%;
-  max-height: 40vh;
-  aspect-ratio: 1;
+  height: 100%;
   border-radius: 12px;
-  flex-shrink: 0;
   object-fit: cover;
+  position: relative;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.detail-cover-3d {
+  transform-origin: center center;
+}
+
+.card-gloss {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  z-index: 1;
+}
+
+.card-rainbow {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  z-index: 2;
 }
 
 .detail-info {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
 }
 
 .detail-track-name {
@@ -2608,10 +2861,12 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .detail-track-artist {
   font-size: 14px; color: #a7a7a7;
   flex: 1;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
 }
 
-.detail-seek-wrap { display: flex; flex-direction: column; gap: 6px; }
+.detail-seek-wrap { display: flex; flex-direction: column; gap: 6px; width: 100%; }
 
 .detail-bar {
   height: 28px; display: flex; align-items: center; cursor: pointer;
@@ -2670,6 +2925,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
 }
 
 .detail-play-btn {
@@ -2720,13 +2976,17 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   }
 
   /* cover spans all rows on the left */
-  .detail-cover {
+  .detail-cover-wrap {
     grid-column: 1;
     grid-row: 1 / 5;
     max-height: none;
     width: 100%;
     aspect-ratio: 1;
     align-self: center;
+  }
+
+  .detail-cover {
+    max-height: none;
   }
 
   /* handle hidden on desktop — click backdrop to close */
