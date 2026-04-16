@@ -500,6 +500,24 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
+function onKeyDown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+    return; // Don't trigger if typing
+  }
+
+  if (e.code === 'Space') {
+    e.preventDefault();
+    togglePlay();
+  } else if (e.code === 'ArrowLeft') {
+    e.preventDefault();
+    playPrev();
+  } else if (e.code === 'ArrowRight') {
+    e.preventDefault();
+    playNext();
+  }
+}
+
 const filteredTracks = computed(() => {
   const q = searchQuery.value.toLowerCase();
   if (!q) return libraryTracks.value;
@@ -635,6 +653,7 @@ function identifyStatusIcon(status: string) {
 
 onMounted(() => {
   document.addEventListener('click', onDocClick);
+  document.addEventListener('keydown', onKeyDown);
   loadLibrary();
   loadRecent();
   invoke<DeviceSettings>('get_device_settings')
@@ -763,6 +782,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
+  document.removeEventListener('keydown', onKeyDown);
   stopTicker();
 });
 </script>
