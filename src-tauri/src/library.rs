@@ -266,7 +266,20 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             id        INTEGER PRIMARY KEY CHECK(id=1),
             emoji     TEXT NOT NULL DEFAULT '🎵',
             device_name TEXT NOT NULL DEFAULT ''
-        );",
+        );
+        CREATE TABLE IF NOT EXISTS playlists (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        );
+        CREATE TABLE IF NOT EXISTS playlist_tracks (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+            track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            position    INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(playlist_id, track_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pt_playlist ON playlist_tracks(playlist_id, position);",
     )?;
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
     Ok(())
@@ -1028,4 +1041,102 @@ pub fn toggle_like(id: i64, state: tauri::State<'_, LibraryState>) -> Result<boo
     ).map_err(|e| e.to_string())?;
     
     Ok(new_liked != 0)
+}
+
+// ── Playlists ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Clone)]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+    pub track_count: i64,
+}
+
+#[tauri::command]
+pub fn get_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<Playlist>, String> {
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.name, p.created_at, COUNT(pt.id) as track_count
+         FROM playlists p
+         LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+         GROUP BY p.id ORDER BY p.created_at DESC",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| Ok(Playlist {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        created_at: row.get(2)?,
+        track_count: row.get(3)?,
+    })).map_err(|e| e.to_string())?;
+    rows.map(|r| r.map_err(|e| e.to_string())).collect()
+}
+
+#[tauri::command]
+pub fn create_playlist(name: String, state: tauri::State<'_, LibraryState>) -> Result<i64, String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute(
+        "INSERT INTO playlists (name) VALUES (?1)",
+        params![name],
+    ).map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[tauri::command]
+pub fn rename_playlist(id: i64, name: String, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute(
+        "UPDATE playlists SET name = ?1 WHERE id = ?2",
+        params![name, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_playlist(id: i64, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute("DELETE FROM playlists WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_playlist_tracks(playlist_id: i64, state: tauri::State<'_, LibraryState>) -> Result<Vec<Track>, String> {
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.path, t.title, t.artist, t.album, t.track_number,
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited,
+                t.is_liked, t.play_count
+         FROM tracks t
+         JOIN playlist_tracks pt ON pt.track_id = t.id
+         WHERE pt.playlist_id = ?1
+         ORDER BY pt.position, pt.id",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params![playlist_id], row_to_track)
+        .map_err(|e| e.to_string())?;
+    rows.map(|r| r.map_err(|e| e.to_string())).collect()
+}
+
+#[tauri::command]
+pub fn add_track_to_playlist(playlist_id: i64, track_id: i64, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    let max_pos: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = ?1",
+        params![playlist_id],
+        |row| row.get(0),
+    ).unwrap_or(-1);
+    conn.execute(
+        "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+        params![playlist_id, track_id, max_pos + 1],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_track_from_playlist(playlist_id: i64, track_id: i64, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute(
+        "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+        params![playlist_id, track_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
 }

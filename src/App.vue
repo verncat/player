@@ -159,6 +159,69 @@ interface PlayHistoryEntry {
 const historyEntries = ref<PlayHistoryEntry[]>([]);
 const historyLoading = ref(false);
 
+// ── Playlists ──────────────────────────────────────────────────────────────
+interface Playlist {
+  id: number;
+  name: string;
+  created_at: number;
+  track_count: number;
+}
+const playlists = ref<Playlist[]>([]);
+const playlistView = ref<{ id: number; name: string; tracks: Track[] } | null>(null);
+const showNewPlaylistInput = ref(false);
+const newPlaylistName = ref('');
+// context menu for "add to playlist"
+const addToPlaylistMenu = ref<{ track: Track; x: number; y: number } | null>(null);
+
+async function loadPlaylists() {
+  playlists.value = await invoke<Playlist[]>('get_playlists');
+}
+
+async function createPlaylist() {
+  const name = newPlaylistName.value.trim();
+  if (!name) return;
+  await invoke('create_playlist', { name });
+  newPlaylistName.value = '';
+  showNewPlaylistInput.value = false;
+  await loadPlaylists();
+}
+
+async function deletePlaylist(id: number) {
+  await invoke('delete_playlist', { id });
+  if (playlistView.value?.id === id) playlistView.value = null;
+  await loadPlaylists();
+}
+
+async function openPlaylist(pl: Playlist) {
+  const tracks = await invoke<Track[]>('get_playlist_tracks', { playlistId: pl.id });
+  playlistView.value = { id: pl.id, name: pl.name, tracks };
+}
+
+async function addTrackToPlaylist(playlistId: number, trackId: number) {
+  await invoke('add_track_to_playlist', { playlistId, trackId });
+  await loadPlaylists();
+  if (playlistView.value?.id === playlistId) {
+    const tracks = await invoke<Track[]>('get_playlist_tracks', { playlistId });
+    playlistView.value = { ...playlistView.value, tracks };
+  }
+  addToPlaylistMenu.value = null;
+}
+
+async function removeTrackFromPlaylist(playlistId: number, trackId: number) {
+  await invoke('remove_track_from_playlist', { playlistId, trackId });
+  if (playlistView.value?.id === playlistId) {
+    playlistView.value.tracks = playlistView.value.tracks.filter(t => t.id !== trackId);
+  }
+  await loadPlaylists();
+}
+
+function openAddToPlaylistMenu(e: MouseEvent, track: Track) {
+  e.stopPropagation();
+  addToPlaylistMenu.value = { track, x: e.clientX, y: e.clientY };
+}
+// ────────────────────────────────────────────────────────────────────────────
+
+
 interface Peer { name: string; host: string; port: number; addresses: string[]; device_name?: string; device_emoji?: string }
 const peers = ref<Peer[]>([]);
 
@@ -938,6 +1001,7 @@ onMounted(() => {
   document.addEventListener('keydown', onKeyDown);
   loadLibrary();
   loadRecent();
+  loadPlaylists();
   invoke<DeviceSettings>('get_device_settings')
     .then((cfg) => {
       if (cfg?.emoji) deviceEmoji.value = cfg.emoji;
@@ -1092,6 +1156,10 @@ onUnmounted(() => {
         <a class="nav-item" :class="{ active: activeNav === 'library' }" @click.prevent="activeNav = 'library'" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
           Your Library
+        </a>
+        <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="activeNav = 'playlists'; playlistView = null" href="#">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+          Playlists
         </a>
       </nav>
 
@@ -1263,6 +1331,9 @@ onUnmounted(() => {
                     <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
                     <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
                   </button>
+                  <button class="icon-btn edit-btn" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
+                  </button>
                   <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                 </div>
               </div>
@@ -1316,6 +1387,88 @@ onUnmounted(() => {
                 <span class="track-dur">{{ formatDuration(entry.track.duration_secs) }}</span>
               </div>
             </div>
+          </section>
+        </template>
+
+        <!-- Playlists view -->
+        <template v-else-if="activeNav === 'playlists'">
+          <section>
+            <!-- Playlist detail -->
+            <template v-if="playlistView">
+              <div class="library-header">
+                <div style="display:flex; align-items:center; gap:12px;">
+                  <button class="icon-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                  </button>
+                  <h2 style="margin:0;">{{ playlistView.name }}</h2>
+                </div>
+                <button v-if="playlistView.tracks.length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === playlistView!.tracks[0].id))">▶ Play</button>
+              </div>
+              <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
+              <div v-else class="track-list">
+                <div
+                  v-for="track in playlistView.tracks"
+                  :key="track.id"
+                  class="track-row"
+                  :class="rarityClass(track.rarity)"
+                  :style="rarityVars(track.rarity)"
+                  @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === track.id))"
+                >
+                  <div class="track-cover-sm" :style="covers[track.id]
+                    ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                    : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                  />
+                  <div class="track-info">
+                    <span class="track-title">{{ track.title || track.path }}</span>
+                    <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}</span>
+                  </div>
+                  <button class="icon-btn" style="margin-right:8px;" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13H5v-2h14v2z"/></svg>
+                  </button>
+                  <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                </div>
+              </div>
+            </template>
+
+            <!-- Playlist list -->
+            <template v-else>
+              <div class="library-header">
+                <h2>Playlists</h2>
+                <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
+              </div>
+              <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
+                <input
+                  v-model="newPlaylistName"
+                  class="library-search"
+                  placeholder="Playlist name..."
+                  style="flex:1;"
+                  @keydown.enter="createPlaylist"
+                  @keydown.esc="showNewPlaylistInput = false"
+                />
+                <button class="icon-btn" style="padding:6px 14px;" @click="createPlaylist">Create</button>
+              </div>
+              <div v-if="playlists.length === 0" class="library-empty">No playlists yet.</div>
+              <div v-else class="track-list">
+                <div
+                  v-for="pl in playlists"
+                  :key="pl.id"
+                  class="track-row"
+                  style="cursor:pointer;"
+                  @click="openPlaylist(pl)"
+                >
+                  <div class="track-cover-sm" style="background: linear-gradient(135deg, #333, #1a1a1a); display:flex; align-items:center; justify-content:center;">
+                    <svg viewBox="0 0 24 24" fill="#a7a7a7" width="20" height="20"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+                  </div>
+                  <div class="track-info">
+                    <span class="track-title">{{ pl.name }}</span>
+                    <span class="track-album">{{ pl.track_count }} track{{ pl.track_count !== 1 ? 's' : '' }}</span>
+                  </div>
+                  <button class="icon-btn" style="margin-right:8px;" title="Delete playlist" @click.stop="deletePlaylist(pl.id)">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                  </button>
+                </div>
+              </div>
+            </template>
           </section>
         </template>
 
@@ -1392,6 +1545,28 @@ onUnmounted(() => {
         </template>
       </div>
     </main>
+
+    <!-- Add to playlist menu -->
+    <Teleport to="body">
+      <div v-if="addToPlaylistMenu" class="playlist-menu-backdrop" @click="addToPlaylistMenu = null">
+        <div
+          class="playlist-menu"
+          :style="{ top: addToPlaylistMenu.y + 'px', left: addToPlaylistMenu.x + 'px' }"
+          @click.stop
+        >
+          <div class="playlist-menu-header">Add to playlist</div>
+          <div v-if="playlists.length === 0" class="playlist-menu-empty">No playlists. Create one first.</div>
+          <button
+            v-for="pl in playlists"
+            :key="pl.id"
+            class="playlist-menu-item"
+            @click="addTrackToPlaylist(pl.id, addToPlaylistMenu!.track.id); addToPlaylistMenu = null"
+          >
+            {{ pl.name }}
+          </button>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Edit modal -->
     <Transition name="modal">
@@ -2188,6 +2363,32 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .library-empty {
   color: #a7a7a7; font-size: 14px; padding: 32px 0;
 }
+/* Playlist menu */
+.playlist-menu-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+}
+.playlist-menu {
+  position: fixed; z-index: 1001;
+  background: #282828; border: 1px solid #3a3a3a; border-radius: 8px;
+  min-width: 180px; max-width: 240px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  overflow: hidden;
+}
+.playlist-menu-header {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: #a7a7a7;
+  padding: 10px 14px 6px;
+  border-bottom: 1px solid #333;
+}
+.playlist-menu-empty {
+  font-size: 12px; color: #777; padding: 10px 14px;
+}
+.playlist-menu-item {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; color: #e0e0e0;
+  font-size: 13px; padding: 9px 14px; cursor: pointer;
+}
+.playlist-menu-item:hover { background: #333; }
 .track-groups { display: flex; flex-direction: column; gap: 24px; }
 .group-artist {
   font-size: 13px; font-weight: 700; color: #a7a7a7;
