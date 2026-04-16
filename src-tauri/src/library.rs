@@ -52,12 +52,20 @@ pub struct Track {
     pub file_hash: Option<String>,
     pub rarity: Option<String>,
     pub manually_edited: bool,
+    pub is_liked: bool,
+    pub play_count: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct DeviceSettings {
     pub emoji: String,
     pub device_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PlayHistoryEntry {
+    pub played_at: i64,
+    pub track: Track,
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -122,7 +130,7 @@ impl LibraryState {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count
                FROM tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
@@ -139,7 +147,7 @@ impl LibraryState {
     pub fn all_tracks(&self) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count
                FROM tracks
               ORDER BY artist, album, track_number, title",
         )?;
@@ -245,6 +253,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN rarity TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN is_liked INTEGER NOT NULL DEFAULT 0");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0");
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS play_history (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,6 +284,8 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         file_hash: row.get(7)?,
         rarity: row.get(8)?,
         manually_edited: row.get::<_, i64>(9).unwrap_or(0) != 0,
+        is_liked: row.get::<_, i64>(10).unwrap_or(0) != 0,
+        play_count: row.get::<_, i64>(11).unwrap_or(0),
     })
 }
 
@@ -873,6 +885,10 @@ pub fn update_track(
         params![title, artist, album, track_number, id],
     )
     .map_err(|e| e.to_string())?;
+    let _ = conn.execute(
+        "UPDATE tracks SET play_count = play_count + 1 WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -896,6 +912,10 @@ pub fn record_play(
         params![id, now],
     )
     .map_err(|e| e.to_string())?;
+    let _ = conn.execute(
+        "UPDATE tracks SET play_count = play_count + 1 WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -908,7 +928,7 @@ pub fn get_recent_tracks(
     let lim = limit.unwrap_or(12) as i64;
     let mut stmt = conn.prepare(
         "SELECT DISTINCT t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count
            FROM play_history h
            JOIN tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
@@ -920,6 +940,46 @@ pub fn get_recent_tracks(
         .filter_map(|r| r.ok())
         .collect();
     Ok(tracks)
+}
+
+#[tauri::command]
+pub fn get_play_history(
+    limit: Option<usize>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Vec<PlayHistoryEntry>, String> {
+    let conn = state.conn.lock().unwrap();
+    let lim = limit.unwrap_or(500) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT h.played_at, t.id, t.path, t.title, t.artist, t.album, t.track_number,
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count
+           FROM play_history h
+           JOIN tracks t ON t.id = h.track_id
+          ORDER BY h.played_at DESC
+          LIMIT ?1",
+    ).map_err(|e| e.to_string())?;
+    let entries = stmt
+        .query_map(params![lim], |row| {
+            let played_at: i64 = row.get(0)?;
+            let track = Track {
+                id: row.get(1)?,
+                path: row.get(2)?,
+                title: row.get(3)?,
+                artist: row.get(4)?,
+                album: row.get(5)?,
+                track_number: row.get(6)?,
+                duration_secs: row.get(7)?,
+                file_hash: row.get(8)?,
+                rarity: row.get(9)?,
+                manually_edited: row.get::<_, i64>(10).unwrap_or(0) != 0,
+                is_liked: row.get::<_, i64>(11).unwrap_or(0) != 0,
+                play_count: row.get::<_, i64>(12).unwrap_or(0),
+            };
+            Ok(PlayHistoryEntry { played_at, track })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -949,4 +1009,23 @@ pub fn set_device_settings(
     state
         .set_device_settings(&emoji, device_name.trim())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn toggle_like(id: i64, state: tauri::State<'_, LibraryState>) -> Result<bool, String> {
+    let conn = state.conn.lock().unwrap();
+    let current_liked: i64 = conn.query_row(
+        "SELECT is_liked FROM tracks WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    
+    let new_liked = if current_liked == 0 { 1 } else { 0 };
+    
+    conn.execute(
+        "UPDATE tracks SET is_liked = ?1 WHERE id = ?2",
+        rusqlite::params![new_liked, id],
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(new_liked != 0)
 }

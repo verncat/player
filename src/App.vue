@@ -18,6 +18,8 @@ interface Track {
   file_hash: string | null;
   rarity: string | null;
   manually_edited: boolean;
+  is_liked: boolean;
+  play_count: number;
 }
 
 const rarityColors: Record<string, string> = {
@@ -149,6 +151,13 @@ const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
 const recentTracks = ref<Track[]>([]);
 const showQueueMenu = ref(false);
+
+interface PlayHistoryEntry {
+  played_at: number; // unix timestamp (seconds)
+  track: Track;
+}
+const historyEntries = ref<PlayHistoryEntry[]>([]);
+const historyLoading = ref(false);
 
 interface Peer { name: string; host: string; port: number; addresses: string[]; device_name?: string; device_emoji?: string }
 const peers = ref<Peer[]>([]);
@@ -338,6 +347,7 @@ async function playTrackFrom(src: QueueSource, index: number) {
   refillQueue();
   await invoke('playback_play', { path: track.path });
   await refreshPlaybackState();
+  track.play_count++;
   invoke('record_play', { id: track.id }).then(() => loadRecent());
   startTicker();
   syncAndroid();
@@ -359,6 +369,7 @@ async function playNext() {
   refillQueue();
   await invoke('playback_play', { path: next.path });
   await refreshPlaybackState();
+  next.play_count++;
   invoke('record_play', { id: next.id }).then(() => loadRecent());
   startTicker();
   syncAndroid();
@@ -450,6 +461,20 @@ async function togglePlay() {
   }
   await refreshPlaybackState();
   syncAndroid();
+}
+
+async function toggleLike(track: Track, e?: Event) {
+  if (e) e.stopPropagation();
+  try {
+    const isLiked = await invoke<boolean>('toggle_like', { id: track.id });
+    track.is_liked = isLiked;
+    // Update the nowPlaying reference as well if it's the same track
+    if (nowPlaying.value && nowPlaying.value.id === track.id) {
+      nowPlaying.value.is_liked = isLiked;
+    }
+  } catch (error) {
+    console.error('Failed to toggle like', error);
+  }
 }
 
 async function seek(e: MouseEvent) {
@@ -555,6 +580,28 @@ async function loadRecent() {
     recentTracks.value = await invoke<Track[]>('get_recent_tracks', { limit: 12 });
     fetchCovers(recentTracks.value);
   } catch (_) {}
+}
+
+async function loadHistory() {
+  historyLoading.value = true;
+  try {
+    historyEntries.value = await invoke<PlayHistoryEntry[]>('get_play_history');
+    fetchCovers(historyEntries.value.map(e => e.track));
+  } catch (_) {} finally {
+    historyLoading.value = false;
+  }
+}
+
+function formatHistoryDate(ts: number): string {
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const isYesterday = d.toDateString() === yesterday.toDateString();
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (isToday) return `Today, ${time}`;
+  if (isYesterday) return `Yesterday, ${time}`;
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ', ' + time;
 }
 
 async function fetchCovers(tracks: Track[]) {
@@ -886,7 +933,10 @@ onUnmounted(() => {
         <!-- Home view -->
         <template v-if="activeNav === 'home'">
           <section>
-            <h2>Recently played</h2>
+            <div class="section-head">
+              <h2>Recently played</h2>
+              <a class="show-all" href="#" @click.prevent="activeNav = 'history'; loadHistory()">Show all</a>
+            </div>
             <div v-if="recentTracks.length === 0 && libraryTracks.length === 0" class="library-empty">No tracks yet.</div>
             <div v-else class="card-list">
               <div v-for="(track, idx) in (recentTracks.length ? recentTracks : libraryTracks.slice(0, 12))" :key="track.id + '-' + idx"
@@ -971,6 +1021,13 @@ onUnmounted(() => {
                   <button class="icon-btn edit-btn" title="Edit" @click.stop="openEditor(track)">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
                   </button>
+                  <span title="Play Count" v-if="track.play_count > 0" style="margin-right: 8px; font-size: 13px; color: #a7a7a7; user-select: none;">
+                    ▶ {{ track.play_count }}
+                  </span>
+                  <button class="icon-btn like-btn" @click.stop="toggleLike(track)" style="margin-right: 8px;">
+                    <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                    <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                  </button>
                   <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                 </div>
               </div>
@@ -983,6 +1040,47 @@ onUnmounted(() => {
           <section>
             <h2>Search</h2>
             <p style="color:#a7a7a7">Search coming soon.</p>
+          </section>
+        </template>
+
+        <!-- History view -->
+        <template v-else-if="activeNav === 'history'">
+          <section>
+            <div class="library-header">
+              <div style="display:flex; align-items:center; gap:12px;">
+                <button class="icon-btn" style="padding:4px;" @click="activeNav = 'home'">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                </button>
+                <h2 style="margin:0;">Play History</h2>
+              </div>
+            </div>
+            <div v-if="historyLoading" class="library-empty">Loading...</div>
+            <div v-else-if="historyEntries.length === 0" class="library-empty">No history yet.</div>
+            <div v-else class="history-list">
+              <div
+                v-for="(entry, idx) in historyEntries"
+                :key="idx"
+                class="track-row"
+                :class="rarityClass(entry.track.rarity)"
+                :style="rarityVars(entry.track.rarity)"
+                @click="playTrackFrom('library', libraryTracks.findIndex(t => t.id === entry.track.id))"
+              >
+                <div class="track-cover-sm" :style="covers[entry.track.id]
+                  ? `background-image: url(${covers[entry.track.id]}); background-size: cover; background-position: center`
+                  : `background: linear-gradient(135deg, ${hashToColors(entry.track.file_hash)[0]}, ${hashToColors(entry.track.file_hash)[1]})`"
+                />
+                <div class="track-info">
+                  <span class="track-title">{{ entry.track.title || entry.track.path }}</span>
+                  <span class="track-album">{{ entry.track.artist || 'Unknown' }}{{ entry.track.album ? ' · ' + entry.track.album : '' }}</span>
+                </div>
+                <span style="font-size:12px; color:#a7a7a7; margin-right:12px; white-space:nowrap;">{{ formatHistoryDate(entry.played_at) }}</span>
+                <button class="icon-btn like-btn" @click.stop="toggleLike(entry.track)" style="margin-right:8px;">
+                  <svg v-if="entry.track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                </button>
+                <span class="track-dur">{{ formatDuration(entry.track.duration_secs) }}</span>
+              </div>
+            </div>
           </section>
         </template>
 
@@ -1602,6 +1700,9 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   margin-bottom: 16px;
 }
 .section-head h2 { margin-bottom: 0; }
+.history-list {
+  display: flex; flex-direction: column; gap: 2px;
+}
 .show-all {
   font-size: 11px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .08em;
