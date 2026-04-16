@@ -2699,4 +2699,52 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .detail-leave-to .detail-sheet {
   transform: translateY(100%);
 }
+
+/* ── Desktop override: centered dialog ──────────────────────────────────── */
+@media (min-width: 769px) {
+  .player-detail {
+    align-items: center;
+  }
+
+  .detail-sheet {
+    max-width: 680px;
+    max-height: 80vh;
+    border-radius: 16px;
+    padding: 32px;
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    grid-template-rows: auto auto auto auto;
+    column-gap: 32px;
+    row-gap: 20px;
+    align-items: start;
+  }
+
+  /* cover spans all rows on the left */
+  .detail-cover {
+    grid-column: 1;
+    grid-row: 1 / 5;
+    max-height: none;
+    width: 100%;
+    aspect-ratio: 1;
+    align-self: center;
+  }
+
+  /* handle hidden on desktop — click backdrop to close */
+  .detail-handle { display: none; }
+
+  .detail-info    { grid-column: 2; grid-row: 1; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .detail-seek-wrap { grid-column: 2; grid-row: 2; }
+  .detail-controls  { grid-column: 2; grid-row: 3; }
+
+  .detail-track-name  { font-size: 22px; }
+  .detail-track-artist { font-size: 15px; }
+
+  .detail-play-btn { width: 52px; height: 52px; }
+
+  /* scale-in transition for desktop instead of slide-up */
+  .detail-enter-from .detail-sheet,
+  .detail-leave-to .detail-sheet {
+    transform: scale(0.92);
+  }
+}
 </style>
