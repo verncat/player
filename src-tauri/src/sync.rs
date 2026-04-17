@@ -59,6 +59,56 @@ pub struct SyncProgress {
     pub message: Option<String>,
 }
 
+// ── Sync-data payload (metadata, playlists, history) ─────────────────────────
+
+/// Per-track metadata synced by hash.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncTrackMeta {
+    pub hash: String,
+    pub is_liked: bool,
+    pub play_count: i64,
+    pub rarity: Option<String>,
+    pub manually_edited: bool,
+    // Fields that matter only when manually_edited
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub track_number: Option<i64>,
+}
+
+/// Playlist in sync payload — tracks referenced by hash.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncPlaylist {
+    pub name: String,
+    pub track_hashes: Vec<String>,
+}
+
+/// Smart playlist in sync payload.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncSmartPlaylist {
+    pub id: String,
+    pub name: String,
+    pub match_mode: String,
+    pub rules_json: String,
+    pub updated_at: i64,
+}
+
+/// Play history entry.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncHistoryEntry {
+    pub hash: String,
+    pub played_at: i64,
+}
+
+/// Full sync-data response.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncData {
+    pub track_meta: Vec<SyncTrackMeta>,
+    pub playlists: Vec<SyncPlaylist>,
+    pub smart_playlists: Vec<SyncSmartPlaylist>,
+    pub history: Vec<SyncHistoryEntry>,
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 pub struct SyncState {
@@ -107,6 +157,8 @@ fn handle_request(request: tiny_http::Request, conn: Arc<Mutex<Connection>>, dat
     let url = request.url().to_string();
     if url == "/tracks" {
         serve_tracks(request, &conn);
+    } else if url == "/sync-data" {
+        serve_sync_data(request, &conn);
     } else if let Some(hash) = url.strip_prefix("/file/") {
         let hash = hash.to_string();
         serve_file(request, &hash, &conn, &data_dir);
@@ -190,6 +242,118 @@ fn serve_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Connecti
             let _ = request.respond(tiny_http::Response::empty(404));
         }
     }
+}
+
+fn serve_sync_data(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
+    let c = conn.lock().unwrap();
+
+    // 1. Track metadata
+    let track_meta: Vec<SyncTrackMeta> = c
+        .prepare(
+            "SELECT file_hash, is_liked, play_count, rarity, manually_edited,
+                    title, artist, album, track_number
+             FROM tracks WHERE file_hash IS NOT NULL",
+        )
+        .map(|mut s| {
+            s.query_map([], |row| {
+                Ok(SyncTrackMeta {
+                    hash: row.get(0)?,
+                    is_liked: row.get::<_, i64>(1).unwrap_or(0) != 0,
+                    play_count: row.get::<_, i64>(2).unwrap_or(0),
+                    rarity: row.get(3)?,
+                    manually_edited: row.get::<_, i64>(4).unwrap_or(0) != 0,
+                    title: row.get(5)?,
+                    artist: row.get(6)?,
+                    album: row.get(7)?,
+                    track_number: row.get(8)?,
+                })
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    // 2. Regular playlists (name + track hashes in order)
+    let playlists: Vec<SyncPlaylist> = c
+        .prepare("SELECT id, name FROM playlists ORDER BY created_at")
+        .map(|mut s| {
+            s.query_map([], |row| {
+                let pid: i64 = row.get(0)?;
+                let name: String = row.get(1)?;
+                Ok((pid, name))
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(pid, name)| {
+            let hashes: Vec<String> = c
+                .prepare(
+                    "SELECT t.file_hash FROM playlist_tracks pt
+                     JOIN tracks t ON t.id = pt.track_id
+                     WHERE pt.playlist_id = ?1 AND t.file_hash IS NOT NULL
+                     ORDER BY pt.position, pt.id",
+                )
+                .and_then(|mut s| {
+                    s.query_map(params![pid], |row| row.get::<_, String>(0))
+                        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                })
+                .unwrap_or_default();
+            SyncPlaylist { name, track_hashes: hashes }
+        })
+        .collect();
+
+    // 3. Smart playlists
+    let smart_playlists: Vec<SyncSmartPlaylist> = c
+        .prepare("SELECT id, name, match_mode, rules_json, updated_at FROM smart_playlists")
+        .map(|mut s| {
+            s.query_map([], |row| {
+                Ok(SyncSmartPlaylist {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    match_mode: row.get(2)?,
+                    rules_json: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    // 4. Play history (hash + timestamp)
+    let history: Vec<SyncHistoryEntry> = c
+        .prepare(
+            "SELECT t.file_hash, ph.played_at
+             FROM play_history ph
+             JOIN tracks t ON t.id = ph.track_id
+             WHERE t.file_hash IS NOT NULL
+             ORDER BY ph.played_at",
+        )
+        .map(|mut s| {
+            s.query_map([], |row| {
+                Ok(SyncHistoryEntry {
+                    hash: row.get(0)?,
+                    played_at: row.get(1)?,
+                })
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    drop(c);
+
+    let body = serde_json::to_vec(&SyncData {
+        track_meta,
+        playlists,
+        smart_playlists,
+        history,
+    })
+    .unwrap_or_default();
+    let ct = Header::from_bytes(b"Content-Type", b"application/json").unwrap();
+    let _ = request.respond(tiny_http::Response::from_data(body).with_header(ct));
 }
 
 // ── HTTP client helpers ───────────────────────────────────────────────────────
@@ -395,6 +559,9 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         // Guard: if a file already exists at that path, skip (e.g. re-sync after crash)
         if save_path.exists() {
             done += 1;
+            let label = track.title.as_deref()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| track.path.rsplit('/').next().unwrap_or(track.path.as_str()));
             emit(
                 &app,
                 &peer_name,
@@ -403,7 +570,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
                 "download",
                 total,
                 done,
-                None,
+                Some(label.to_string()),
             );
             continue;
         }
@@ -418,6 +585,9 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         }
 
         done += 1;
+        let label = track.title.as_deref()
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| track.path.rsplit('/').next().unwrap_or(track.path.as_str()));
         emit(
             &app,
             &peer_name,
@@ -426,7 +596,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             "download",
             total,
             done,
-            None,
+            Some(label.to_string()),
         );
     }
 
@@ -443,6 +613,23 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
     );
     app.state::<crate::library::LibraryState>().reindex(&app);
 
+    // 5 ── Sync metadata, playlists, smart playlists, history ─────────────────
+    emit(
+        &app,
+        &peer_name,
+        remote_device_name.as_deref(),
+        remote_device_emoji.as_deref(),
+        "merging",
+        total,
+        done,
+        Some("Merging metadata…".to_string()),
+    );
+    if let Ok(sd_bytes) = peer_get(&client, &base_urls, "/sync-data") {
+        if let Ok(remote) = serde_json::from_slice::<SyncData>(&sd_bytes) {
+            merge_sync_data(&app, remote);
+        }
+    }
+
     emit(
         &app,
         &peer_name,
@@ -453,6 +640,145 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         done,
         Some(format!("{done} new track(s) added")),
     );
+}
+
+// ── Merge helpers ─────────────────────────────────────────────────────────────
+
+fn merge_sync_data(app: &AppHandle, remote: SyncData) {
+    let conn = app.state::<crate::library::LibraryState>().conn();
+    let c = conn.lock().unwrap();
+
+    // Build hash → local track id map
+    let mut hash_to_id: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    if let Ok(mut stmt) = c.prepare("SELECT file_hash, id FROM tracks WHERE file_hash IS NOT NULL") {
+        if let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))) {
+            for r in rows.flatten() {
+                hash_to_id.insert(r.0, r.1);
+            }
+        }
+    }
+
+    // ── Track metadata merge ────────────────────────────────────────────────
+    // is_liked: OR (liked anywhere → liked everywhere)
+    // play_count: MAX (take whichever is higher)
+    // rarity: keep remote if local is NULL
+    // manually_edited metadata: if remote is manually_edited and local is not, adopt remote edits
+    for tm in &remote.track_meta {
+        let Some(&tid) = hash_to_id.get(&tm.hash) else { continue };
+
+        // Read current local state for this track
+        let local: Option<(bool, i64, Option<String>, bool)> = c
+            .query_row(
+                "SELECT is_liked, play_count, rarity, manually_edited FROM tracks WHERE id = ?1",
+                params![tid],
+                |row| Ok((
+                    row.get::<_, i64>(0).unwrap_or(0) != 0,
+                    row.get::<_, i64>(1).unwrap_or(0),
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3).unwrap_or(0) != 0,
+                )),
+            )
+            .ok();
+        let Some((local_liked, local_pc, local_rarity, local_edited)) = local else { continue };
+
+        let merged_liked = local_liked || tm.is_liked;
+        let merged_pc = local_pc.max(tm.play_count);
+        let merged_rarity = local_rarity.or_else(|| tm.rarity.clone());
+
+        let _ = c.execute(
+            "UPDATE tracks SET is_liked = ?1, play_count = ?2, rarity = ?3 WHERE id = ?4",
+            params![merged_liked as i64, merged_pc, merged_rarity, tid],
+        );
+
+        // If remote has manual edits and we don't, adopt them
+        if tm.manually_edited && !local_edited {
+            let _ = c.execute(
+                "UPDATE tracks SET title = ?1, artist = ?2, album = ?3, track_number = ?4, manually_edited = 1 WHERE id = ?5",
+                params![tm.title, tm.artist, tm.album, tm.track_number, tid],
+            );
+        }
+    }
+
+    // ── Playlist merge ──────────────────────────────────────────────────────
+    // By name: if playlist exists locally, union track hashes; if not, create it.
+    for rp in &remote.playlists {
+        let existing_id: Option<i64> = c
+            .query_row("SELECT id FROM playlists WHERE name = ?1", params![rp.name], |row| row.get(0))
+            .ok();
+        let pid = match existing_id {
+            Some(id) => id,
+            None => {
+                let _ = c.execute("INSERT INTO playlists (name) VALUES (?1)", params![rp.name]);
+                c.last_insert_rowid()
+            }
+        };
+        // Get current max position
+        let max_pos: i64 = c
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = ?1",
+                params![pid],
+                |row| row.get(0),
+            )
+            .unwrap_or(-1);
+        let mut pos = max_pos + 1;
+        for hash in &rp.track_hashes {
+            if let Some(&tid) = hash_to_id.get(hash) {
+                // Insert only if not already in this playlist
+                let r = c.execute(
+                    "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+                    params![pid, tid, pos],
+                );
+                if r.map(|n| n > 0).unwrap_or(false) {
+                    pos += 1;
+                }
+            }
+        }
+    }
+
+    // ── Smart playlist merge ────────────────────────────────────────────────
+    // By UUID: if same id exists, take whichever has higher updated_at.
+    // If id doesn't exist, insert.
+    for rsp in &remote.smart_playlists {
+        let local_updated: Option<i64> = c
+            .query_row("SELECT updated_at FROM smart_playlists WHERE id = ?1", params![rsp.id], |row| row.get(0))
+            .ok();
+        match local_updated {
+            Some(lu) if lu >= rsp.updated_at => {} // local is newer, skip
+            _ => {
+                // Remote is newer or doesn't exist locally — upsert
+                let _ = c.execute(
+                    "INSERT INTO smart_playlists (id, name, match_mode, rules_json, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(id) DO UPDATE SET
+                       name = excluded.name,
+                       match_mode = excluded.match_mode,
+                       rules_json = excluded.rules_json,
+                       updated_at = excluded.updated_at",
+                    params![rsp.id, rsp.name, rsp.match_mode, rsp.rules_json, rsp.updated_at],
+                );
+            }
+        }
+    }
+
+    // ── Play history merge ──────────────────────────────────────────────────
+    // Union: insert (track_id, played_at) pairs that don't exist yet.
+    // Dedup by exact (track, timestamp) — same second = same event.
+    for rh in &remote.history {
+        let Some(&tid) = hash_to_id.get(&rh.hash) else { continue };
+        let exists: bool = c
+            .query_row(
+                "SELECT 1 FROM play_history WHERE track_id = ?1 AND played_at = ?2",
+                params![tid, rh.played_at],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !exists {
+            let _ = c.execute(
+                "INSERT INTO play_history (track_id, played_at) VALUES (?1, ?2)",
+                params![tid, rh.played_at],
+            );
+        }
+    }
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────

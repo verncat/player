@@ -288,6 +288,16 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_pt_playlist ON playlist_tracks(playlist_id, position);",
     )?;
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
+    // Smart (flexible) playlists — previously in localStorage, now in DB for sync.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS smart_playlists (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            match_mode TEXT NOT NULL DEFAULT 'all',
+            rules_json TEXT NOT NULL DEFAULT '[]',
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        );",
+    )?;
     Ok(())
 }
 
@@ -1154,5 +1164,62 @@ pub fn remove_track_from_playlist(playlist_id: i64, track_id: i64, state: tauri:
         "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
         params![playlist_id, track_id],
     ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Smart (flexible) Playlists ───────────────────────────────────────────────
+
+#[derive(Debug, Serialize, serde::Deserialize, Clone)]
+pub struct SmartPlaylistRow {
+    pub id: String,
+    pub name: String,
+    pub match_mode: String, // "all" | "any"
+    pub rules_json: String, // JSON array of rule objects
+    pub updated_at: i64,
+}
+
+#[tauri::command]
+pub fn get_smart_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<SmartPlaylistRow>, String> {
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id, name, match_mode, rules_json, updated_at FROM smart_playlists ORDER BY name",
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| Ok(SmartPlaylistRow {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        match_mode: row.get(2)?,
+        rules_json: row.get(3)?,
+        updated_at: row.get(4)?,
+    })).map_err(|e| e.to_string())?;
+    rows.map(|r| r.map_err(|e| e.to_string())).collect()
+}
+
+#[tauri::command]
+pub fn save_smart_playlist(
+    id: String,
+    name: String,
+    match_mode: String,
+    rules_json: String,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute(
+        "INSERT INTO smart_playlists (id, name, match_mode, rules_json, updated_at)
+         VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           match_mode = excluded.match_mode,
+           rules_json = excluded.rules_json,
+           updated_at = strftime('%s','now')",
+        params![id, name, match_mode, rules_json],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_smart_playlist(id: String, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute("DELETE FROM smart_playlists WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }

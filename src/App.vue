@@ -133,15 +133,23 @@ const indexAdded = ref(0);
 const indexDone = ref(false);
 let indexDismissTimer: ReturnType<typeof setTimeout> | null = null;
 
-interface IndexLogItem {
-  timestamp: number;
-  type: 'index' | 'sync';
+interface LogSession {
+  id: string;           // unique per session
+  kind: 'local' | 'sync';
+  // local
+  addedCount: number;
+  // sync
   device?: string;
-  trackName?: string;
-  status: 'added' | 'done' | 'error';
-  message: string;
+  emoji?: string;
+  filesAdded: number;
+  files: string[];
+  // shared
+  startedAt: number;
+  finishedAt?: number;
+  status: 'running' | 'done' | 'error';
+  errorMsg?: string;
 }
-const indexLog = ref<IndexLogItem[]>([]);
+const indexLog = ref<LogSession[]>([]);
 const indexLogRef = ref<HTMLElement | null>(null);
 const indexLogOpen = ref(false);
 
@@ -236,26 +244,42 @@ const showNewSPInput = ref(false);
 const newSPName = ref('');
 const playlistTab = ref<'regular' | 'smart'>('regular');
 
-function loadSmartPlaylists() {
-  try { smartPlaylists.value = JSON.parse(localStorage.getItem('smart_playlists') || '[]'); }
-  catch { smartPlaylists.value = []; }
+async function loadSmartPlaylists() {
+  try {
+    // Migrate from localStorage to DB (one-time)
+    const old = localStorage.getItem('smart_playlists');
+    if (old) {
+      const arr: SmartPlaylist[] = JSON.parse(old);
+      for (const sp of arr) {
+        await invoke('save_smart_playlist', {
+          id: sp.id, name: sp.name, matchMode: sp.match,
+          rulesJson: JSON.stringify(sp.rules),
+        });
+      }
+      localStorage.removeItem('smart_playlists');
+    }
+    const rows = await invoke<{ id: string; name: string; match_mode: string; rules_json: string }[]>('get_smart_playlists');
+    smartPlaylists.value = rows.map(r => ({
+      id: r.id, name: r.name, match: r.match_mode as 'all' | 'any',
+      rules: JSON.parse(r.rules_json || '[]'),
+    }));
+  } catch { smartPlaylists.value = []; }
 }
-function saveSmartPlaylists() {
-  localStorage.setItem('smart_playlists', JSON.stringify(smartPlaylists.value));
-}
-function createSmartPlaylist() {
+async function createSmartPlaylist() {
   const name = newSPName.value.trim();
   if (!name) return;
   const sp: SmartPlaylist = { id: crypto.randomUUID(), name, match: 'all', rules: [] };
+  await invoke('save_smart_playlist', {
+    id: sp.id, name: sp.name, matchMode: sp.match, rulesJson: '[]',
+  });
   smartPlaylists.value.push(sp);
-  saveSmartPlaylists();
   newSPName.value = '';
   showNewSPInput.value = false;
   editingSP.value = { ...sp };
 }
-function deleteSmartPlaylist(id: string) {
+async function deleteSmartPlaylist(id: string) {
+  await invoke('delete_smart_playlist', { id });
   smartPlaylists.value = smartPlaylists.value.filter(sp => sp.id !== id);
-  saveSmartPlaylists();
   if (editingSP.value?.id === id) editingSP.value = null;
   if (smartView.value?.id === id) smartView.value = null;
 }
@@ -263,7 +287,11 @@ function saveSP() {
   if (!editingSP.value) return;
   const idx = smartPlaylists.value.findIndex(p => p.id === editingSP.value!.id);
   if (idx !== -1) smartPlaylists.value[idx] = { ...editingSP.value };
-  saveSmartPlaylists();
+  const sp = editingSP.value;
+  invoke('save_smart_playlist', {
+    id: sp.id, name: sp.name, matchMode: sp.match,
+    rulesJson: JSON.stringify(sp.rules),
+  });
 }
 function addSPRule() {
   if (!editingSP.value) return;
@@ -1195,28 +1223,49 @@ onMounted(() => {
       }
     }
   });
+  const syncSessions: Record<string, LogSession> = {};
+
   listen<SyncProgress>('sync-progress', (e) => {
-    syncProgress.value = { ...syncProgress.value, [e.payload.peer]: e.payload };
-    if (e.payload.device_name) {
-      peerDeviceNames.value = {
-        ...peerDeviceNames.value,
-        [e.payload.peer]: e.payload.device_name,
+    const p = e.payload;
+    syncProgress.value = { ...syncProgress.value, [p.peer]: p };
+    if (p.device_name) peerDeviceNames.value = { ...peerDeviceNames.value, [p.peer]: p.device_name! };
+
+    // Create a session entry on first event for this peer
+    if (!syncSessions[p.peer]) {
+      const session: LogSession = {
+        id: crypto.randomUUID(), kind: 'sync',
+        device: p.device_name || p.peer, emoji: p.device_emoji || undefined,
+        addedCount: 0, filesAdded: 0, files: [],
+        startedAt: Date.now(), status: 'running',
       };
+      syncSessions[p.peer] = session;
+      indexLog.value.push(session);
     }
-    if (e.payload.phase === 'done' || e.payload.phase === 'error') {
-      indexLog.value.push({
-        timestamp: Date.now(),
-        type: 'sync',
-        device: e.payload.device_name || e.payload.peer,
-        status: e.payload.phase === 'done' ? 'done' : 'error',
-        message: e.payload.message || e.payload.phase,
-      });
-      nextTick(() => {
-        if (indexLogRef.value) {
-          indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight;
-        }
-      });
+    const session = syncSessions[p.peer];
+
+    // Update device label once we get it
+    if (p.device_name) { session.device = p.device_name; session.emoji = p.device_emoji || undefined; }
+
+    if (p.phase === 'download') {
+      session.filesAdded = p.done;
+      if (p.message) session.files.push(p.message);
+      indexLog.value = [...indexLog.value]; // trigger reactivity
+    } else if (p.phase === 'done') {
+      session.filesAdded = p.done;
+      session.addedCount = p.done;
+      session.status = 'done';
+      session.finishedAt = Date.now();
+      indexLog.value = [...indexLog.value];
+      delete syncSessions[p.peer];
+      loadLibrary(); loadPlaylists(); loadSmartPlaylists(); loadHistory();
+    } else if (p.phase === 'error') {
+      session.status = 'error';
+      session.errorMsg = p.message || 'Connection failed';
+      session.finishedAt = Date.now();
+      indexLog.value = [...indexLog.value];
+      delete syncSessions[p.peer];
     }
+    nextTick(() => { if (indexLogRef.value) indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight; });
   });
 
   // Android media controls: _mediaControl is called by the native notification buttons
@@ -1234,43 +1283,45 @@ onMounted(() => {
       }
     }
   };
+  let localSession: LogSession | null = null;
+
   listen<{current: number; total: number; status: string; added: number; track_name?: string | null}>('index-progress', (e) => {
     const p = e.payload;
-    if (p.status === 'added' && p.track_name) {
-      indexLog.value.push({
-        timestamp: Date.now(),
-        type: 'index',
-        trackName: p.track_name,
-        status: 'added',
-        message: 'Added from indexing',
-      });
-      nextTick(() => {
-        if (indexLogRef.value) {
-          indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight;
-        }
-      });
-    } else if (p.status === 'done') {
-      indexAdded.value = p.added;
-      indexDone.value = true;
-      indexRunning.value = true;
-      indexLog.value.push({
-        timestamp: Date.now(),
-        type: 'index',
-        status: 'done',
-        message: 'Indexing complete',
-      });
-      nextTick(() => {
-        if (indexLogRef.value) {
-          indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight;
-        }
-      });
-    } else {
+    const ensureLocalSession = () => {
+      if (!localSession) {
+        localSession = { id: crypto.randomUUID(), kind: 'local', addedCount: 0, filesAdded: 0, files: [], startedAt: Date.now(), status: 'running' };
+        indexLog.value.push(localSession);
+      }
+    };
+    if (p.status === 'indexing' || p.status === 'scanning') {
+      ensureLocalSession();
       indexCurrent.value = p.current;
       indexTotal.value = p.total;
       indexRunning.value = true;
       indexDone.value = false;
       if (indexDismissTimer) { clearTimeout(indexDismissTimer); indexDismissTimer = null; }
+    } else if (p.status === 'added') {
+      ensureLocalSession();
+      localSession!.addedCount++;
+      localSession!.filesAdded++;
+      if (p.track_name) localSession!.files.push(p.track_name);
+      // trigger reactivity
+      indexLog.value = [...indexLog.value];
+    } else if (p.status === 'done') {
+      indexAdded.value = p.added;
+      indexDone.value = true;
+      indexRunning.value = true;
+      ensureLocalSession();
+      if (localSession) {
+        localSession.addedCount = p.added;
+        localSession.filesAdded = p.added;
+        localSession.status = 'done';
+        localSession.finishedAt = Date.now();
+        indexLog.value = [...indexLog.value];
+        localSession = null;
+      }
     }
+    nextTick(() => { if (indexLogRef.value) indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight; });
   });
   listen<{current: number; total: number; track_id: number; track_name: string | null; status: string; message: string | null}>('identify-progress', (e) => {
     const p = e.payload;
@@ -2029,28 +2080,55 @@ onUnmounted(() => {
       <div v-if="indexLogOpen" class="modal-overlay" @click.self="indexLogOpen = false; indexRunning = false">
         <div class="modal identify-modal">
           <div class="modal-header">
-            <h3>Indexing tracks <span class="powered-by">activity timeline</span></h3>
+            <h3>Activity <span class="powered-by">library &amp; sync history</span></h3>
             <button class="icon-btn" title="Close" @click="indexLogOpen = false; indexRunning = false">
               <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
           <div class="modal-body">
-            <div class="identify-bar-wrap">
-              <div class="identify-bar-fill" :style="`width:${indexTotal > 0 ? (indexCurrent / indexTotal * 100) : 0}%`" />
+            <!-- Active local indexing progress bar -->
+            <div v-if="indexRunning && !indexDone" class="log-progress-wrap">
+              <div class="log-progress-bar" :style="`width:${indexTotal > 0 ? (indexCurrent / indexTotal * 100) : 0}%`" />
+              <span class="log-progress-label">Scanning {{ indexCurrent }}/{{ indexTotal }}</span>
             </div>
-            <div class="identify-status">{{ indexCurrent }} / {{ indexTotal }}{{ indexDone ? ' — Done' : '' }}</div>
+
             <div class="index-results" ref="indexLogRef">
-              <div v-for="(item, idx) in indexLog" :key="idx" class="index-result-item" :class="'ii-' + item.status">
-                <span class="ii-icon" v-if="item.status === 'added'">♪</span>
-                <span class="ii-icon" v-else-if="item.status === 'done'">✓</span>
-                <span class="ii-icon" v-else>✗</span>
-                <span class="ii-track" v-if="item.type === 'index' && item.trackName">{{ item.trackName }}</span>
-                <span class="ii-track" v-else-if="item.type === 'sync'">{{ item.device }}</span>
-                <span class="ii-text">{{ item.message }}</span>
-                <span class="ii-time">{{ new Date(item.timestamp).toLocaleTimeString() }}</span>
-              </div>
-              <div v-if="!indexLog.length" class="index-empty" style="padding: 40px 20px; text-align: center; color: #a7a7a7;">
-                No history yet
+              <div v-if="!indexLog.length" class="index-empty">No activity yet</div>
+              <div v-for="session in [...indexLog].reverse()" :key="session.id" class="log-session" :class="`ls-${session.status} ls-${session.kind}`">
+                <!-- Icon + source label -->
+                <div class="ls-header">
+                  <span class="ls-icon">
+                    <span v-if="session.kind === 'local'">💿</span>
+                    <span v-else>{{ session.emoji || '📱' }}</span>
+                  </span>
+                  <span class="ls-source">
+                    <template v-if="session.kind === 'local'">Local library</template>
+                    <template v-else>{{ session.device || 'Unknown device' }}</template>
+                  </span>
+                  <span class="ls-badge" v-if="session.status === 'running'">
+                    <span class="ls-spinner" />
+                    <template v-if="session.kind === 'sync' && session.filesAdded > 0">{{ session.filesAdded }} files…</template>
+                    <template v-else>scanning…</template>
+                  </span>
+                  <span class="ls-badge ls-badge-done" v-else-if="session.status === 'done'">
+                    <svg viewBox="0 0 24 24" fill="#1db954" width="12" height="12"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                    <template v-if="session.filesAdded > 0">+{{ session.filesAdded }} files</template>
+                    <template v-else>up to date</template>
+                  </span>
+                  <span class="ls-badge ls-badge-err" v-else>
+                    <svg viewBox="0 0 24 24" fill="#ff5252" width="12" height="12"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    error
+                  </span>
+                  <span class="ls-time">{{ new Date(session.finishedAt || session.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
+                </div>
+                <!-- Error detail -->
+                <div v-if="session.status === 'error' && session.errorMsg" class="ls-error-msg">{{ session.errorMsg }}</div>
+                <!-- File list -->
+                <div v-if="session.files.length" class="ls-files">
+                  <div v-for="(f, i) in session.files" :key="i" class="ls-file-item">
+                    <span class="ls-file-icon">♪</span>{{ f }}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -3144,54 +3222,105 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 
 /* ── Index & Sync log ── */
 .index-results {
-  max-height: 300px;
+  max-height: 320px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  padding: 2px 0;
 }
 .index-results::-webkit-scrollbar { width: 6px; }
 .index-results::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
 .index-results::-webkit-scrollbar-track { background: transparent; }
-.index-result-item {
+.index-empty { padding: 40px 20px; text-align: center; color: #a7a7a7; font-size: 14px; }
+
+/* Progress bar shown above the list while scanning */
+.log-progress-wrap {
+  position: relative;
+  height: 4px;
+  background: #333;
+  border-radius: 2px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.log-progress-bar {
+  height: 100%;
+  background: #1db954;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+.log-progress-label {
+  position: absolute;
+  right: 0;
+  top: 7px;
+  font-size: 11px;
+  color: #a7a7a7;
+}
+
+/* Session card */
+.log-session {
+  background: #1a1a1a;
+  border-radius: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid #333;
+}
+.ls-local  { border-left-color: #4fc3f7; }
+.ls-sync   { border-left-color: #1db954; }
+.ls-error  { border-left-color: #ff5252; }
+
+.ls-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: 4px;
   font-size: 13px;
-  min-width: 0;
 }
-.ii-icon {
-  width: 16px;
-  text-align: center;
+.ls-icon { font-size: 16px; flex-shrink: 0; }
+.ls-source { font-weight: 600; color: #fff; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-time { font-size: 11px; color: #666; flex-shrink: 0; }
+
+.ls-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #a7a7a7;
+  white-space: nowrap;
   flex-shrink: 0;
-  font-size: 14px;
 }
-.ii-track {
-  color: #fff;
-  font-weight: 600;
+.ls-badge-done { color: #1db954; }
+.ls-badge-err  { color: #ff5252; }
+
+.ls-spinner {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border: 2px solid #555;
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.ls-error-msg {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #ff7070;
+  word-break: break-all;
+}
+.ls-files {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ls-file-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #ccc;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 170px;
-  flex-shrink: 0;
 }
-.ii-text {
-  white-space: pre-wrap;
-  word-break: break-all;
-  min-width: 0;
-  flex: 1;
-  color: #a7a7a7;
-}
-.ii-time {
-  font-size: 11px;
-  color: #777;
-  flex-shrink: 0;
-}
-.ii-added { color: #4fc3f7; }
-.ii-done { color: #1db954; font-weight: 600; }
-.ii-error { color: #ff5252; }
+.ls-file-icon { color: #777; flex-shrink: 0; font-style: normal; }
 
 /* Hidden on desktop; appears above footer on mobile/tablet */
 .mobile-seek-wrap { display: none; }
@@ -3359,7 +3488,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     padding-bottom: env(safe-area-inset-top);
     /* height: 64px; */
   }
-  /* .player-left { width: auto; } */
+  .player-left { width: 100%; }
   .player-left .thumb { width: 40px; height: 40px; }
   /* .player-left .track-meta { flex-grow: unset; } */
   .ctrl-row { gap: 8px; }
