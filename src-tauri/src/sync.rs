@@ -74,6 +74,7 @@ pub struct SyncTrackMeta {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub track_number: Option<i64>,
+    pub date_added: Option<i64>,
 }
 
 /// Playlist in sync payload — tracks referenced by hash.
@@ -251,7 +252,7 @@ fn serve_sync_data(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
     let track_meta: Vec<SyncTrackMeta> = c
         .prepare(
             "SELECT file_hash, is_liked, play_count, rarity, manually_edited,
-                    title, artist, album, track_number
+                    title, artist, album, track_number, date_added
              FROM tracks WHERE file_hash IS NOT NULL",
         )
         .map(|mut s| {
@@ -266,6 +267,7 @@ fn serve_sync_data(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
                     artist: row.get(6)?,
                     album: row.get(7)?,
                     track_number: row.get(8)?,
+                    date_added: row.get(9)?,
                 })
             })
             .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
@@ -667,27 +669,34 @@ fn merge_sync_data(app: &AppHandle, remote: SyncData) {
         let Some(&tid) = hash_to_id.get(&tm.hash) else { continue };
 
         // Read current local state for this track
-        let local: Option<(bool, i64, Option<String>, bool)> = c
+        let local: Option<(bool, i64, Option<String>, bool, Option<i64>)> = c
             .query_row(
-                "SELECT is_liked, play_count, rarity, manually_edited FROM tracks WHERE id = ?1",
+                "SELECT is_liked, play_count, rarity, manually_edited, date_added FROM tracks WHERE id = ?1",
                 params![tid],
                 |row| Ok((
                     row.get::<_, i64>(0).unwrap_or(0) != 0,
                     row.get::<_, i64>(1).unwrap_or(0),
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, i64>(3).unwrap_or(0) != 0,
+                    row.get::<_, Option<i64>>(4)?,
                 )),
             )
             .ok();
-        let Some((local_liked, local_pc, local_rarity, local_edited)) = local else { continue };
+        let Some((local_liked, local_pc, local_rarity, local_edited, local_date_added)) = local else { continue };
 
         let merged_liked = local_liked || tm.is_liked;
         let merged_pc = local_pc.max(tm.play_count);
         let merged_rarity = local_rarity.or_else(|| tm.rarity.clone());
+        // Keep earliest date_added (the original local indexation date wins)
+        let merged_date_added = match (local_date_added, tm.date_added) {
+            (Some(l), Some(r)) => Some(l.min(r)),
+            (Some(l), None) => Some(l),
+            (None, r) => r,
+        };
 
         let _ = c.execute(
-            "UPDATE tracks SET is_liked = ?1, play_count = ?2, rarity = ?3 WHERE id = ?4",
-            params![merged_liked as i64, merged_pc, merged_rarity, tid],
+            "UPDATE tracks SET is_liked = ?1, play_count = ?2, rarity = ?3, date_added = COALESCE(?5, date_added) WHERE id = ?4",
+            params![merged_liked as i64, merged_pc, merged_rarity, tid, merged_date_added],
         );
 
         // If remote has manual edits and we don't, adopt them

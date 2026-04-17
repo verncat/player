@@ -22,6 +22,7 @@ interface Track {
   play_count: number;
   year: number | null;
   genre: string | null;
+  date_added: number | null;
 }
 
 const rarityColors: Record<string, string> = {
@@ -232,7 +233,7 @@ function openAddToPlaylistMenu(e: MouseEvent, track: Track) {
 }
 
 // ── Smart Playlists ──────────────────────────────────────────────────────────
-type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'extension' | 'year' | 'play_count' | 'is_liked';
+type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'extension' | 'year' | 'play_count' | 'is_liked' | 'date_added';
 type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false';
 interface SPRule { id: string; field: SPField; op: SPOp; value: string; }
 interface SmartPlaylist { id: string; name: string; match: 'all' | 'any'; rules: SPRule[]; }
@@ -307,13 +308,15 @@ function onSPRuleFieldChange(rule: SPRule) {
   const f = rule.field;
   if (f === 'is_liked') { rule.op = 'is_true'; rule.value = ''; }
   else if (f === 'year' || f === 'play_count') { rule.op = 'gte'; rule.value = '0'; }
+  else if (f === 'date_added') { rule.op = 'gte'; rule.value = new Date().toISOString().slice(0, 10); }
   else if (f === 'genre' || f === 'extension' || f === 'artist' || f === 'album') { rule.op = 'in'; rule.value = '[]'; }
   else { rule.op = 'contains'; rule.value = ''; }
   saveSP();
 }
-function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool' {
+function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool' | 'date' {
   if (field === 'is_liked') return 'bool';
   if (field === 'year' || field === 'play_count') return 'number';
+  if (field === 'date_added') return 'date';
   if (field === 'genre' || field === 'extension' || field === 'artist' || field === 'album') return 'multiselect';
   return 'text';
 }
@@ -379,6 +382,15 @@ function matchesRule(track: Track, rule: SPRule): boolean {
       return false;
     }
     case 'is_liked': return rule.op === 'is_true' ? track.is_liked : !track.is_liked;
+    case 'date_added': {
+      if (track.date_added == null) return false;
+      if (!rule.value) return true;
+      const dayStart = new Date(rule.value).getTime() / 1000;
+      if (rule.op === 'gte') return track.date_added >= dayStart;
+      if (rule.op === 'lte') return track.date_added < dayStart + 86400;
+      if (rule.op === 'eq') return track.date_added >= dayStart && track.date_added < dayStart + 86400;
+      return false;
+    }
     default: return true;
   }
 }
@@ -845,7 +857,9 @@ async function playNext() {
   currentTime.value = 0;
   refillQueue();
   await invoke('playback_play', { path: next.path });
+  isPlaying.value = true;
   await refreshPlaybackState();
+  isPlaying.value = true;
   next.play_count++;
   invoke('record_play', { id: next.id }).then(() => loadRecent());
   startTicker();
@@ -863,7 +877,21 @@ async function playPrev() {
   if (!list.length) return;
   const curIdx = list.findIndex(t => t.id === nowPlaying.value?.id);
   const prevIdx = curIdx > 0 ? curIdx - 1 : list.length - 1;
-  await playTrackFrom(queueSource.value, prevIdx);
+  const track = list[prevIdx];
+  nowPlaying.value = track;
+  duration.value = track.duration_secs || 0;
+  currentTime.value = 0;
+  queueSourceIndex.value = prevIdx;
+  queue.value = [];
+  refillQueue();
+  isPlaying.value = true;
+  await invoke('playback_play', { path: track.path });
+  await refreshPlaybackState();
+  isPlaying.value = true;
+  track.play_count++;
+  invoke('record_play', { id: track.id }).then(() => loadRecent());
+  startTicker();
+  syncAndroid();
 }
 
 function jumpToQueueItem(index: number) {
@@ -1724,6 +1752,7 @@ onUnmounted(() => {
                       <option value="year">Year</option>
                       <option value="play_count">Play count</option>
                       <option value="is_liked">Is liked</option>
+                      <option value="date_added">Date added</option>
                     </select>
 
                     <template v-if="spFieldType(rule.field) === 'text'">
@@ -1741,6 +1770,14 @@ onUnmounted(() => {
                     <template v-else-if="spFieldType(rule.field) === 'bool'">
                       <button :class="['sp-match-btn', rule.op === 'is_true' && 'active']" @click="rule.op = 'is_true'; saveSP()">Yes</button>
                       <button :class="['sp-match-btn', rule.op === 'is_false' && 'active']" @click="rule.op = 'is_false'; saveSP()">No</button>
+                    </template>
+                    <template v-else-if="spFieldType(rule.field) === 'date'">
+                      <select class="sp-select" :value="rule.op" @change="rule.op = ($event.target as HTMLSelectElement).value as SPOp; saveSP()">
+                        <option value="gte">after</option>
+                        <option value="lte">before</option>
+                        <option value="eq">on</option>
+                      </select>
+                      <input class="library-search sp-text-input" type="date" v-model="rule.value" @change="saveSP()" />
                     </template>
                     <template v-else>
                       <div class="sp-multiselect">

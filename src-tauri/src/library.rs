@@ -56,6 +56,7 @@ pub struct Track {
     pub play_count: i64,
     pub year: Option<i64>,
     pub genre: Option<String>,
+    pub date_added: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -134,7 +135,7 @@ impl LibraryState {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added
                FROM tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
@@ -151,7 +152,7 @@ impl LibraryState {
     pub fn all_tracks(&self) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added
                FROM tracks
               ORDER BY artist, album, track_number, title",
         )?;
@@ -261,6 +262,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN year INTEGER");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN genre TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN date_added INTEGER");
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS play_history (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -317,6 +319,7 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         play_count: row.get::<_, i64>(11).unwrap_or(0),
         year: row.get(12).unwrap_or(None),
         genre: row.get(13).unwrap_or(None),
+        date_added: row.get(14).unwrap_or(None),
     })
 }
 
@@ -535,10 +538,15 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
     let file_hash = hash_file(abs);
     let rarity = file_hash.as_deref().map(rarity_from_hash);
 
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
     conn.execute(
         "INSERT INTO tracks
-             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, file_hash, rarity, year, genre)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, file_hash, rarity, year, genre, date_added)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(path) DO UPDATE SET
              title         = excluded.title,
              artist        = excluded.artist,
@@ -566,6 +574,7 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
             rarity,
             meta.year,
             meta.genre,
+            now_secs,
         ],
     )?;
 
@@ -988,7 +997,7 @@ pub fn get_play_history(
     let lim = limit.unwrap_or(500) as i64;
     let mut stmt = conn.prepare(
         "SELECT h.played_at, t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added
            FROM play_history h
            JOIN tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
@@ -1012,6 +1021,7 @@ pub fn get_play_history(
                 play_count: row.get::<_, i64>(12).unwrap_or(0),
                 year: row.get(13).unwrap_or(None),
                 genre: row.get(14).unwrap_or(None),
+                date_added: row.get(15).unwrap_or(None),
             };
             Ok(PlayHistoryEntry { played_at, track })
         })
