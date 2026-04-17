@@ -3359,9 +3359,9 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     padding-bottom: env(safe-area-inset-top);
     /* height: 64px; */
   }
-  .player-left { width: auto; }
+  /* .player-left { width: auto; } */
   .player-left .thumb { width: 40px; height: 40px; }
-  .player-left .track-meta { flex-grow: unset; }
+  /* .player-left .track-meta { flex-grow: unset; } */
   .ctrl-row { gap: 8px; }
 
   .player-right .device-menu-wrapper { display: none; }
