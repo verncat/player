@@ -3255,7 +3255,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     flex-direction: column;
     padding: 0px 10px;
     justify-content: center;
-    padding-bottom: env(safe-area-inset-bottom);
+    /* padding-bottom: env(safe-area-inset-bottom); */
     gap: 8px;
   }
   .player-left {
@@ -3294,7 +3294,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(125px + env(safe-area-inset-bottom));
+    bottom: 125px;
     z-index: 220;
     padding: 0 10px;
     pointer-events: none;
