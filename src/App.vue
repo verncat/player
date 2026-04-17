@@ -3621,7 +3621,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   /* handle hidden on desktop — click backdrop to close */
   .detail-handle { display: none; }
 
-  .detail-info    { grid-column: 2; grid-row: 1; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .detail-info    { grid-column: 2; grid-row: 1; flex-direction: column; align-items: flex-start; gap: 4px; overflow: hidden;}
   .detail-seek-wrap { grid-column: 2; grid-row: 2; }
   .detail-controls  { grid-column: 2; grid-row: 3; }
 
