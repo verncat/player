@@ -11,8 +11,7 @@
 //!   { peer, phase: "index"|"download"|"reindex"|"done"|"error", total, done, message }
 
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,6 +20,7 @@ use std::time::Duration;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tiny_http::Header;
 
 pub const SYNC_PORT: u16 = 57322;
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -85,60 +85,37 @@ impl SyncState {
 
 fn start_http_server(conn: Arc<Mutex<Connection>>, data_dir: PathBuf) {
     thread::spawn(move || {
-        // Try binding to IPv6 first (dual-stack). This is important on Android
-        // where IPv6 is often the primary/only stack.
-        let listener = match TcpListener::bind(("::", SYNC_PORT)) {
-            Ok(l) => l,
-            Err(_) => {
-                // IPv6 failed, fall back to IPv4
-                match TcpListener::bind(("0.0.0.0", SYNC_PORT)) {
-                    Ok(l) => l,
-                    Err(e) => {
-                        eprintln!("[sync] cannot bind port {SYNC_PORT}: {e}");
-                        return;
-                    }
-                }
+        let server = match tiny_http::Server::http(format!("[::]:{SYNC_PORT}"))
+            .or_else(|_| tiny_http::Server::http(format!("0.0.0.0:{SYNC_PORT}")))
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[sync] cannot bind port {SYNC_PORT}: {e}");
+                return;
             }
         };
         eprintln!("[sync] HTTP server ready on :{SYNC_PORT}");
-        for stream in listener.incoming().flatten() {
+        for request in server.incoming_requests() {
             let conn = Arc::clone(&conn);
             let dir = data_dir.clone();
-            thread::spawn(move || handle_http(stream, conn, dir));
+            thread::spawn(move || handle_request(request, conn, dir));
         }
     });
 }
 
-fn handle_http(stream: std::net::TcpStream, conn: Arc<Mutex<Connection>>, data_dir: PathBuf) {
-    let mut reader = BufReader::new(&stream);
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() {
-        return;
-    }
-    // Drain headers
-    loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => break,
-            _ if line == "\r\n" || line == "\n" => break,
-            _ => {}
-        }
-    }
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-    if parts.len() < 2 {
-        return;
-    }
-    match parts[1] {
-        "/tracks" => serve_tracks(stream, &conn),
-        p if p.starts_with("/file/") => serve_file(stream, &p[6..], &conn, &data_dir),
-        _ => {
-            let mut s = stream;
-            let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
-        }
+fn handle_request(request: tiny_http::Request, conn: Arc<Mutex<Connection>>, data_dir: PathBuf) {
+    let url = request.url().to_string();
+    if url == "/tracks" {
+        serve_tracks(request, &conn);
+    } else if let Some(hash) = url.strip_prefix("/file/") {
+        let hash = hash.to_string();
+        serve_file(request, &hash, &conn, &data_dir);
+    } else {
+        let _ = request.respond(tiny_http::Response::empty(404));
     }
 }
 
-fn serve_tracks(mut stream: std::net::TcpStream, conn: &Arc<Mutex<Connection>>) {
+fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
     let body = {
         let c = conn.lock().unwrap();
         let tracks: Vec<RemoteTrack> = c
@@ -167,11 +144,7 @@ fn serve_tracks(mut stream: std::net::TcpStream, conn: &Arc<Mutex<Connection>>) 
                 |row| {
                     let name: String = row.get(0)?;
                     let emoji: String = row.get(1)?;
-                    let name_opt = if name.trim().is_empty() {
-                        None
-                    } else {
-                        Some(name)
-                    };
+                    let name_opt = if name.trim().is_empty() { None } else { Some(name) };
                     Ok((name_opt, Some(emoji)))
                 },
             )
@@ -184,20 +157,11 @@ fn serve_tracks(mut stream: std::net::TcpStream, conn: &Arc<Mutex<Connection>>) 
         })
         .unwrap_or_default()
     };
-    let _ = write!(
-        stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(&body);
+    let content_type = Header::from_bytes(b"Content-Type", b"application/json").unwrap();
+    let _ = request.respond(tiny_http::Response::from_data(body).with_header(content_type));
 }
 
-fn serve_file(
-    mut stream: std::net::TcpStream,
-    hash: &str,
-    conn: &Arc<Mutex<Connection>>,
-    data_dir: &Path,
-) {
+fn serve_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Connection>>, data_dir: &Path) {
     let rel: Option<String> = conn
         .lock()
         .unwrap()
@@ -208,87 +172,78 @@ fn serve_file(
         )
         .ok();
     let Some(rel) = rel else {
-        let mut s = stream;
-        let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        let _ = request.respond(tiny_http::Response::empty(404));
         return;
     };
-    // Reconstruct absolute path (DB stores forward-slash relative paths).
     let abs: PathBuf = rel.split('/').fold(data_dir.to_path_buf(), |mut p, s| {
         p.push(s);
         p
     });
     match std::fs::read(&abs) {
         Ok(data) => {
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
-                data.len()
-            );
-            let _ = stream.write_all(&data);
+            let content_type =
+                Header::from_bytes(b"Content-Type", b"application/octet-stream").unwrap();
+            let _ = request
+                .respond(tiny_http::Response::from_data(data).with_header(content_type));
         }
         Err(_) => {
-            let _ = stream.write_all(
-                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
-            );
+            let _ = request.respond(tiny_http::Response::empty(404));
         }
     }
 }
 
-// ── Connection helpers ─────────────────────────────────────────────────────
+// ── HTTP client helpers ───────────────────────────────────────────────────────
 
-fn connect_to_peer(peer_host: &str, peer_addresses: &[String], peer_port: u16) -> std::io::Result<TcpStream> {
-    // First try hostname resolution (.local may resolve to routable IPv4/IPv6).
-    // Use ok() instead of ? so we fall through to raw IPs when resolution fails
-    // (e.g. Android can't resolve .local mDNS hostnames via system DNS).
-    if let Ok(addrs) = (peer_host, peer_port).to_socket_addrs() {
-        for addr in addrs {
-            if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
-                return Ok(stream);
-            }
-        }
+/// Build the list of URLs to try for a peer, in priority order.
+fn peer_base_urls(peer_host: &str, peer_addresses: &[String], port: u16) -> Vec<String> {
+    // If peer_host is already a resolved IP (set by best_addr during discovery),
+    // use it directly — no need to iterate peer_addresses as fallback.
+    if let Ok(ip) = peer_host.parse::<IpAddr>() {
+        let formatted = if matches!(ip, IpAddr::V6(_)) {
+            format!("http://[{}]:{}", peer_host, port)
+        } else {
+            format!("http://{}:{}", peer_host, port)
+        };
+        return vec![formatted];
     }
-    // Then try raw IP addresses from mDNS.
-    for addr_text in peer_addresses {
-        if let Ok(ip) = addr_text.parse::<IpAddr>() {
-            // Link-local IPv6 needs an interface scope-id, which we don't have here.
-            // Skip it and rely on hostname resolution or other addresses.
+    // peer_host is a hostname (.local etc.) — try it first, then fall back to
+    // raw IPs from mDNS in case hostname resolution is broken on this platform.
+    let mut urls = vec![format!("http://{}:{}", peer_host, port)];
+    for addr_str in peer_addresses {
+        if let Ok(ip) = addr_str.parse::<IpAddr>() {
+            // Skip link-local IPv6 — no scope-id available.
             if let IpAddr::V6(v6) = ip {
                 if v6.is_unicast_link_local() {
                     continue;
                 }
-            }
-            let addr = SocketAddr::new(ip, peer_port);
-            if let Ok(stream) = TcpStream::connect(addr) {
-                return Ok(stream);
+                urls.push(format!("http://[{}]:{}", ip, port));
+            } else {
+                urls.push(format!("http://{}:{}", ip, port));
             }
         }
     }
-    Err(std::io::Error::new(std::io::ErrorKind::Other, "no reachable peer address"))
+    urls
 }
 
-/// Perform a blocking HTTP/1.0 GET. Returns the response body on 2xx.
-fn http_get(stream: &mut TcpStream, host_header: &str, path: &str) -> std::io::Result<Vec<u8>> {
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    write!(stream, "GET {path} HTTP/1.0\r\nHost: {host_header}\r\n\r\n")?;
-    stream.flush()?;
-
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw)?;
-
-    // Split header / body at \r\n\r\n
-    let body_start = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
-        .unwrap_or(0);
-    // Check status line ("HTTP/1.0 200 ...")
-    let status_ok = raw.get(..12).map(|s| s[9..12] == *b"200").unwrap_or(false);
-    if !status_ok {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "HTTP non-200"));
+/// GET `path` from the first reachable peer URL. Returns the response body on 2xx.
+fn peer_get(client: &reqwest::blocking::Client, base_urls: &[String], path: &str) -> Result<Vec<u8>, String> {
+    let mut last_err = String::from("no reachable peer address");
+    for base in base_urls {
+        let url = format!("{}{}", base, path);
+        match client.get(&url).send() {
+            Ok(resp) if resp.status().is_success() => {
+                return resp.bytes().map(|b| b.to_vec()).map_err(|e| e.to_string());
+            }
+            Ok(resp) => {
+                last_err = format!("HTTP {}", resp.status());
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
     }
-    Ok(raw[body_start..].to_vec())
+    Err(last_err)
 }
-
 // ── Sync worker ───────────────────────────────────────────────────────────────
 
 fn emit(
@@ -318,17 +273,21 @@ fn emit(
 fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, peer_port: u16, app: AppHandle) {
     emit(&app, &peer_name, None, None, "index", 0, 0, Some("Connecting...".to_string()));
 
-    let mut stream = match connect_to_peer(&peer_host, &peer_addresses, peer_port) {
-        Ok(s) => s,
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
         Err(e) => {
             emit(&app, &peer_name, None, None, "error", 0, 0, Some(e.to_string()));
             return;
         }
     };
+    let base_urls = peer_base_urls(&peer_host, &peer_addresses, peer_port);
 
-    // 1 ── Fetch remote track list ─────────────────────────────────────────────
+    // 1 ── Fetch remote track list ───────────────────────────────────────────────────
     emit(&app, &peer_name, None, None, "index", 0, 0, Some("Fetching index...".to_string()));
-    let index_bytes = match http_get(&mut stream, &peer_host, "/tracks") {
+    let index_bytes = match peer_get(&client, &base_urls, "/tracks") {
         Ok(b) => b,
         Err(e) => {
             emit(&app, &peer_name, None, None, "error", 0, 0, Some(e.to_string()));
@@ -454,10 +413,8 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         }
 
         let path = format!("/file/{}", track.hash);
-        if let Ok(mut stream) = connect_to_peer(&peer_host, &peer_addresses, peer_port) {
-            if let Ok(bytes) = http_get(&mut stream, &peer_host, &path) {
-                let _ = std::fs::write(&save_path, &bytes);
-            }
+        if let Ok(bytes) = peer_get(&client, &base_urls, &path) {
+            let _ = std::fs::write(&save_path, &bytes);
         }
 
         done += 1;

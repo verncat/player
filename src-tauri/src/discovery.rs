@@ -178,19 +178,20 @@ pub fn discovery_start(
                     if name.starts_with(&own) {
                         continue;
                     }
-                    let addrs: Vec<String> = info
-                        .get_addresses()
-                        .iter()
-                        .map(|a| a.to_string())
-                        .collect();
-                    let host = info.get_hostname().trim_end_matches('.').to_string();
+                    let raw_addrs = info.get_addresses();
+                    let addrs: Vec<String> = raw_addrs.iter().map(|a| a.to_string()).collect();
+                    let hostname = info.get_hostname().trim_end_matches('.').to_string();
                     let port = info.get_port();
-                    
+                    // Use a pre-resolved IP as host so every subsequent connection
+                    // skips mDNS re-resolution entirely. Fall back to the .local
+                    // hostname only when no IP was returned by the daemon.
+                    let host = best_addr(raw_addrs).unwrap_or_else(|| hostname.clone());
+
                     // Try to fetch device_name and device_emoji from remote /tracks endpoint
                     let (device_name, device_emoji) = fetch_remote_device_name(&host, port);
-                    
+
                     let peer = Peer {
-                        name: info.get_hostname().trim_end_matches('.').to_string(),
+                        name: hostname,
                         host,
                         port,
                         addresses: addrs,
@@ -243,4 +244,15 @@ pub fn discovery_peers(state: State<'_, DiscoveryState>) -> Vec<Peer> {
 fn emit_peers(app: &AppHandle, peers: &HashMap<String, Peer>) {
     let list: Vec<&Peer> = peers.values().collect();
     let _ = app.emit("discovery-peers", list);
+}
+
+/// Pick the most connectable IP from a set of resolved addresses.
+/// Prefers routable IPv4; falls back to non-link-local IPv6 (raw, no brackets).
+fn best_addr(addrs: &std::collections::HashSet<std::net::IpAddr>) -> Option<String> {
+    if let Some(ip) = addrs.iter().find(|a| matches!(a, std::net::IpAddr::V4(_))) {
+        return Some(ip.to_string());
+    }
+    addrs.iter().find(|a| {
+        if let std::net::IpAddr::V6(v6) = a { !v6.is_unicast_link_local() } else { false }
+    }).map(|ip| ip.to_string())
 }
