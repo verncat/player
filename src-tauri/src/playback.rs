@@ -375,6 +375,7 @@ impl PlaybackState {
         self.inner
             .position_ms
             .store((position_secs * 1000.0) as u64, Ordering::SeqCst);
+        let was_playing = self.inner.playing.load(Ordering::SeqCst);
         // For now, seeking requires restarting decode from the position.
         // We'll implement this by stopping and replaying from offset.
         let file = self.inner.current_file.lock().unwrap().clone();
@@ -385,7 +386,7 @@ impl PlaybackState {
 
             self.inner.stop.store(false, Ordering::SeqCst);
             self.inner.finished.store(false, Ordering::SeqCst);
-            self.inner.playing.store(true, Ordering::SeqCst);
+            self.inner.playing.store(was_playing, Ordering::SeqCst);
             {
                 let mut ring = self.inner.ring.lock().unwrap();
                 *ring = RingBuf::new(ring.buf.len());
