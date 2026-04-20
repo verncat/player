@@ -104,6 +104,7 @@ pub fn run() {
             playback::playback_stop,
             playback::playback_seek,
             playback::playback_set_volume,
+            playback::playback_spectrum,
             playback::playback_status,
             identify::identify_tracks,
             discovery::discovery_start,

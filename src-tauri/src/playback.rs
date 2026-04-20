@@ -6,6 +6,7 @@
 //! yanked-dep release (0.1.2) currently can't be used as a Cargo dependency.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rustfft::{num_complex::Complex32, Fft, FftPlanner};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -32,6 +33,142 @@ const BEAT_SENSITIVITY: f32 = 1.5;
 const BEAT_MIN_ENERGY: f32 = 0.0008;
 /// Minimum gap between consecutive beat events (ms).
 const BEAT_COOLDOWN_MS: u64 = 280;
+
+const SPECTRUM_BANDS: usize = 32;
+const SPECTRUM_WIN_SIZE: usize = 1024;
+const SPECTRUM_HOP_SIZE: usize = SPECTRUM_WIN_SIZE / 2;
+const SPECTRUM_EMIT_INTERVAL_MS: u64 = 45;
+const SPECTRUM_MIN_HZ: f32 = 32.0;
+const SPECTRUM_MAX_HZ: f32 = 16_000.0;
+
+struct SpectrumAnalyzer {
+    buffer: Vec<f32>,
+    fft: Arc<dyn Fft<f32>>,
+    scratch: Vec<Complex32>,
+    fft_buffer: Vec<Complex32>,
+    window: Vec<f32>,
+    band_ranges: Vec<(usize, usize)>,
+    band_peaks: [f32; SPECTRUM_BANDS],
+    smoothed: [f32; SPECTRUM_BANDS],
+    last_emit_ms: u64,
+}
+
+impl SpectrumAnalyzer {
+    fn new(sample_rate: u32) -> Self {
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(SPECTRUM_WIN_SIZE);
+        let scratch = vec![Complex32::default(); fft.get_inplace_scratch_len()];
+        let fft_buffer = vec![Complex32::default(); SPECTRUM_WIN_SIZE];
+        let window = (0..SPECTRUM_WIN_SIZE)
+            .map(|index| {
+                let phase = 2.0 * std::f32::consts::PI * index as f32
+                    / (SPECTRUM_WIN_SIZE.saturating_sub(1)) as f32;
+                0.5 - 0.5 * phase.cos()
+            })
+            .collect();
+
+        Self {
+            buffer: Vec::with_capacity(SPECTRUM_WIN_SIZE),
+            fft,
+            scratch,
+            fft_buffer,
+            window,
+            band_ranges: build_spectrum_band_ranges(sample_rate),
+            band_peaks: [0.0; SPECTRUM_BANDS],
+            smoothed: [0.0; SPECTRUM_BANDS],
+            last_emit_ms: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.buffer.clear();
+        self.smoothed = [0.0; SPECTRUM_BANDS];
+        self.last_emit_ms = 0;
+    }
+
+    fn feed_frame(&mut self, mono: f32, shared: &Shared) {
+        self.buffer.push(mono);
+        if self.buffer.len() < SPECTRUM_WIN_SIZE {
+            return;
+        }
+
+        let now = now_ms();
+        if now >= self.last_emit_ms + SPECTRUM_EMIT_INTERVAL_MS {
+            self.last_emit_ms = now;
+            let next = self.analyze();
+            *shared.spectrum.lock().unwrap() = next;
+        }
+
+        self.buffer
+            .copy_within(SPECTRUM_HOP_SIZE..SPECTRUM_WIN_SIZE, 0);
+        self.buffer.truncate(SPECTRUM_WIN_SIZE - SPECTRUM_HOP_SIZE);
+    }
+
+    fn analyze(&mut self) -> [f32; SPECTRUM_BANDS] {
+        for (index, complex) in self.fft_buffer.iter_mut().enumerate() {
+            complex.re = self.buffer[index] * self.window[index];
+            complex.im = 0.0;
+        }
+
+        self.fft
+            .process_with_scratch(&mut self.fft_buffer, &mut self.scratch);
+
+        let mut output = [0.0; SPECTRUM_BANDS];
+        for (band_index, &(start, end)) in self.band_ranges.iter().enumerate() {
+            let mut energy = 0.0;
+            for bin in start..end {
+                energy += self.fft_buffer[bin].norm_sqr();
+            }
+
+            let count = (end - start).max(1) as f32;
+            let rms = (energy / count).sqrt();
+            let weight = 1.0 + band_index as f32 / SPECTRUM_BANDS as f32 * 0.85;
+            let boosted = rms * weight;
+            let floor = 0.0006;
+            let peak = (self.band_peaks[band_index] * 0.965).max(boosted.max(floor));
+
+            self.band_peaks[band_index] = peak;
+
+            let normalized = ((boosted - floor) / (peak * 1.15 + floor))
+                .clamp(0.0, 1.0)
+                .powf(0.68);
+            self.smoothed[band_index] = self.smoothed[band_index] * 0.45 + normalized * 0.55;
+            output[band_index] = self.smoothed[band_index];
+        }
+
+        output
+    }
+}
+
+fn build_spectrum_band_ranges(sample_rate: u32) -> Vec<(usize, usize)> {
+    let nyquist_bin = SPECTRUM_WIN_SIZE / 2;
+    let max_hz = (sample_rate as f32 * 0.48).min(SPECTRUM_MAX_HZ).max(SPECTRUM_MIN_HZ + 1.0);
+    let log_min = SPECTRUM_MIN_HZ.ln();
+    let log_max = max_hz.ln();
+    let mut ranges = Vec::with_capacity(SPECTRUM_BANDS);
+    let mut start = 1usize;
+
+    for band in 0..SPECTRUM_BANDS {
+        let t = (band + 1) as f32 / SPECTRUM_BANDS as f32;
+        let edge_hz = (log_min + (log_max - log_min) * t).exp();
+        let edge_bin = ((edge_hz * SPECTRUM_WIN_SIZE as f32) / sample_rate as f32)
+            .round()
+            .max((start + 1) as f32) as usize;
+        let end = if band + 1 == SPECTRUM_BANDS {
+            nyquist_bin
+        } else {
+            edge_bin.min(nyquist_bin)
+        };
+        ranges.push((start, end));
+        start = end.min(nyquist_bin.saturating_sub(1));
+    }
+
+    ranges
+}
+
+fn clear_spectrum(shared: &Shared) {
+    *shared.spectrum.lock().unwrap() = [0.0; SPECTRUM_BANDS];
+}
 
 struct BeatState {
     mono_buf: Vec<f32>,
@@ -160,6 +297,8 @@ struct Shared {
     active_stream: Mutex<Option<cpal::Stream>>,
     /// App handle used to emit beat events to the frontend.
     app_handle: tauri::AppHandle,
+    /// Latest real-time spectrum snapshot for the UI.
+    spectrum: Mutex<[f32; SPECTRUM_BANDS]>,
 }
 
 impl PlaybackState {
@@ -178,6 +317,7 @@ impl PlaybackState {
                 selected_device: Mutex::new(None),
                 active_stream: Mutex::new(None),
                 app_handle,
+                spectrum: Mutex::new([0.0; SPECTRUM_BANDS]),
             }),
         }
     }
@@ -199,6 +339,7 @@ impl PlaybackState {
             let mut ring = self.inner.ring.lock().unwrap();
             *ring = RingBuf::new(ring.buf.len());
         }
+        clear_spectrum(&self.inner);
         *self.inner.current_file.lock().unwrap() = Some(path.clone());
 
         let shared = Arc::clone(&self.inner);
@@ -213,6 +354,7 @@ impl PlaybackState {
 
     pub fn pause(&self) {
         self.inner.playing.store(false, Ordering::SeqCst);
+        clear_spectrum(&self.inner);
     }
 
     pub fn resume(&self) {
@@ -223,6 +365,7 @@ impl PlaybackState {
         self.inner.stop.store(true, Ordering::SeqCst);
         self.inner.playing.store(false, Ordering::SeqCst);
         self.inner.ring_cvar.notify_all();
+        clear_spectrum(&self.inner);
         // Drop the active stream to stop audio output immediately
         *self.inner.active_stream.lock().unwrap() = None;
     }
@@ -247,6 +390,7 @@ impl PlaybackState {
                 let mut ring = self.inner.ring.lock().unwrap();
                 *ring = RingBuf::new(ring.buf.len());
             }
+            clear_spectrum(&self.inner);
 
             let shared = Arc::clone(&self.inner);
             let seek_to = position_secs;
@@ -290,6 +434,10 @@ impl PlaybackState {
 
     pub fn selected_device_name(&self) -> Option<String> {
         self.inner.selected_device.lock().unwrap().clone()
+    }
+
+    pub fn spectrum(&self) -> Vec<f32> {
+        self.inner.spectrum.lock().unwrap().to_vec()
     }
 }
 
@@ -397,6 +545,7 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
                 }
                 shared.playing.store(false, Ordering::SeqCst);
                 shared.finished.store(true, Ordering::SeqCst);
+                clear_spectrum(&shared);
                 notify_playback_finished(&shared);
                 break;
             }
@@ -552,22 +701,43 @@ fn start_output_stream(
     };
 
     let shared2 = Arc::clone(&shared);
+    let channels_usize = channels as usize;
+    let mut spectrum_analyzer = SpectrumAnalyzer::new(sample_rate);
+    let mut spectrum_cleared = true;
     let stream = device
         .build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let vol = shared2.volume.load(Ordering::Relaxed) as f32 / 10000.0;
                 let playing = shared2.playing.load(Ordering::Relaxed);
-                let mut ring = shared2.ring.lock().unwrap();
-                for sample in data.iter_mut() {
+                {
+                    let mut ring = shared2.ring.lock().unwrap();
                     if playing {
-                        *sample = ring.pop().unwrap_or(0.0) * vol;
+                        for sample in data.iter_mut() {
+                            *sample = ring.pop().unwrap_or(0.0) * vol;
+                        }
                     } else {
-                        *sample = 0.0;
+                        for sample in data.iter_mut() {
+                            *sample = 0.0;
+                        }
                     }
                 }
-                drop(ring);
                 shared2.ring_cvar.notify_one();
+
+                if !playing {
+                    if !spectrum_cleared {
+                        spectrum_analyzer.reset();
+                        clear_spectrum(&shared2);
+                        spectrum_cleared = true;
+                    }
+                    return;
+                }
+
+                spectrum_cleared = false;
+                for frame in data.chunks(channels_usize) {
+                    let mono = frame.iter().copied().sum::<f32>() / channels_usize as f32;
+                    spectrum_analyzer.feed_frame(mono, &shared2);
+                }
             },
             |err| eprintln!("[playback] stream error: {err}"),
             None,
@@ -617,6 +787,11 @@ pub fn playback_seek(position: f64, state: tauri::State<'_, PlaybackState>) {
 #[tauri::command]
 pub fn playback_set_volume(value: f32, state: tauri::State<'_, PlaybackState>) {
     state.set_volume(value);
+}
+
+#[tauri::command]
+pub fn playback_spectrum(state: tauri::State<'_, PlaybackState>) -> Vec<f32> {
+    state.spectrum()
 }
 
 #[derive(serde::Serialize)]

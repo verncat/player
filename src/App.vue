@@ -532,16 +532,22 @@ const detailAuraStyle = computed(() => {
   };
 });
 
-const spectrumSegments = Array.from({ length: 32 }, (_, index) => {
+const SPECTRUM_SEGMENT_COUNT = 32;
+
+function createEmptySpectrum() {
+  return Array.from({ length: SPECTRUM_SEGMENT_COUNT }, () => 0);
+}
+
+const spectrumLevels = ref<number[]>(createEmptySpectrum());
+
+const spectrumSegments = Array.from({ length: SPECTRUM_SEGMENT_COUNT }, (_, index) => {
   const seed = (Math.sin(index * 12.9898) + 1) * 0.5;
   return {
     index,
-    angle: (index / 32) * 360,
-    width: `${(3.4 + seed * 1.8).toFixed(1)}px`,
-    height: `${(18 + seed * 18).toFixed(1)}px`,
-    travel: `${(8 + seed * 12).toFixed(1)}px`,
-    delay: `${(-index * 0.07).toFixed(2)}s`,
-    duration: `${(1.35 + seed * 0.85).toFixed(2)}s`,
+    angle: (index / SPECTRUM_SEGMENT_COUNT) * 360,
+    width: `${(3.2 + seed * 1.7).toFixed(1)}px`,
+    height: `${(12 + seed * 16).toFixed(1)}px`,
+    glow: `${(6 + seed * 10).toFixed(1)}px`,
   };
 });
 
@@ -556,23 +562,83 @@ function spectrumSpokeStyle(segment: (typeof spectrumSegments)[number]) {
 }
 
 function spectrumBarStyle(segment: (typeof spectrumSegments)[number]) {
+  const level = spectrumLevels.value[segment.index] ?? 0;
+  const pulse = beatIntensity.value;
   const colorA = currentTrack.value.colors[segment.index % 2];
   const colorB = currentTrack.value.colors[(segment.index + 1) % 2];
+  const scale = 0.2 + level * 1.9 + pulse * 0.14;
+  const lift = 3 + level * 18 + pulse * 5;
+  const opacity = Math.min(1, 0.16 + level * 0.88 + pulse * 0.06);
 
   return {
     '--bar-width': segment.width,
     '--bar-height': segment.height,
-    '--bar-travel': segment.travel,
-    '--bar-delay': segment.delay,
-    '--bar-duration': segment.duration,
+    '--bar-scale': scale.toFixed(3),
+    '--bar-lift': `${lift.toFixed(1)}px`,
     background: `linear-gradient(180deg, ${colorA} 0%, rgba(255,255,255,0.95) 58%, ${colorB} 100%)`,
-    boxShadow: '0 0 8px rgba(255,255,255,0.12)',
+    boxShadow: `0 0 ${segment.glow} rgba(255,255,255,${(0.08 + level * 0.36).toFixed(3)})`,
+    filter: `saturate(${(1 + level * 0.7).toFixed(2)})`,
+    opacity: opacity.toFixed(3),
   };
 }
 
 const mobileSeekActive = ref(false);
 const seekPreviewPos = ref<number | null>(null);
 const showDetail = ref(false);
+let spectrumPollTimer: ReturnType<typeof setInterval> | null = null;
+let spectrumPollPending = false;
+let spectrumPollVersion = 0;
+
+function normalizeSpectrum(values: number[]) {
+  return Array.from({ length: SPECTRUM_SEGMENT_COUNT }, (_, index) => {
+    const value = values[index] ?? 0;
+    return Math.max(0, Math.min(1, value));
+  });
+}
+
+function resetSpectrum() {
+  spectrumLevels.value = createEmptySpectrum();
+}
+
+async function refreshSpectrum(version = spectrumPollVersion) {
+  if (version !== spectrumPollVersion || spectrumPollPending || !showDetail.value || !nowPlaying.value) {
+    return;
+  }
+
+  spectrumPollPending = true;
+  try {
+    const next = await invoke<number[]>('playback_spectrum');
+    if (version !== spectrumPollVersion) return;
+    spectrumLevels.value = normalizeSpectrum(next);
+  } catch (_) {
+    if (version !== spectrumPollVersion) return;
+    resetSpectrum();
+  } finally {
+    if (version === spectrumPollVersion) {
+      spectrumPollPending = false;
+    }
+  }
+}
+
+function startSpectrumPolling() {
+  if (spectrumPollTimer || !showDetail.value || !nowPlaying.value) return;
+  spectrumPollVersion += 1;
+  const version = spectrumPollVersion;
+  void refreshSpectrum(version);
+  spectrumPollTimer = setInterval(() => {
+    void refreshSpectrum(version);
+  }, 50);
+}
+
+function stopSpectrumPolling(reset = true) {
+  spectrumPollVersion += 1;
+  spectrumPollPending = false;
+  if (spectrumPollTimer) {
+    clearInterval(spectrumPollTimer);
+    spectrumPollTimer = null;
+  }
+  if (reset) resetSpectrum();
+}
 
 // ── 3D cover card ──────────────────────────────────────────────────────────
 const cardRotX = ref(0);
@@ -710,16 +776,34 @@ function onCardTouchEnd() {
   springBack();
 }
 
-watch(showDetail, async (open) => {
+watch(showDetail, (open) => {
   if (open) {
     cardRotX.value = 0;
     cardRotY.value = 0;
     cardTX.value = 0;
     cardTY.value = 0;
     startAmbient();
+    startSpectrumPolling();
   } else {
     stopAmbient();
     cancelAnimationFrame(cardSpringRaf);
+    stopSpectrumPolling();
+  }
+});
+
+watch(() => nowPlaying.value?.id, () => {
+  resetSpectrum();
+  if (showDetail.value) {
+    void refreshSpectrum(spectrumPollVersion);
+  }
+});
+
+watch(isPlaying, (playing) => {
+  if (!playing) {
+    resetSpectrum();
+  } else if (showDetail.value) {
+    startSpectrumPolling();
+    void refreshSpectrum(spectrumPollVersion);
   }
 });
 // ────────────────────────────────────────────────────────────────────────────
@@ -1394,6 +1478,7 @@ onUnmounted(() => {
   if (_mouseRafId) cancelAnimationFrame(_mouseRafId);
   cancelAnimationFrame(cardSpringRaf);
   stopAmbient();
+  stopSpectrumPolling();
   stopTicker();
 });
 </script>
@@ -3701,28 +3786,11 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   width: var(--bar-width);
   height: var(--bar-height);
   border-radius: 999px;
-  transform: translate(-50%, calc(-100% - var(--ring-radius)));
+  transform: translate(-50%, calc(-100% - var(--ring-radius) - var(--bar-lift))) scaleY(var(--bar-scale));
   transform-origin: center bottom;
-  opacity: calc(0.34 + var(--ring-pulse) * 0.46);
-  will-change: transform, opacity;
-  animation: spectrum-wave var(--bar-duration) ease-in-out infinite;
-  animation-delay: var(--bar-delay);
-  animation-play-state: paused;
-}
-
-.detail-spectrum-ring.playing .detail-spectrum-bar {
-  animation-play-state: running;
-}
-
-@keyframes spectrum-wave {
-  0%, 100% {
-    transform: translate(-50%, calc(-100% - var(--ring-radius))) scaleY(calc(0.58 + var(--ring-pulse) * 0.22));
-    opacity: calc(0.2 + var(--ring-pulse) * 0.3);
-  }
-  50% {
-    transform: translate(-50%, calc(-100% - var(--ring-radius) - var(--bar-travel))) scaleY(calc(1 + var(--ring-pulse) * 0.35));
-    opacity: calc(0.72 + var(--ring-pulse) * 0.22);
-  }
+  opacity: 0.12;
+  will-change: transform, opacity, filter;
+  transition: transform 72ms linear, opacity 72ms linear, box-shadow 120ms ease, filter 120ms ease;
 }
 
 .detail-vinyl {
@@ -3942,6 +4010,10 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 @media (max-width: 768px) {
   .detail-sheet {
     backdrop-filter: none;
+  }
+
+  .detail-spectrum-ring {
+    --ring-radius: clamp(70px, 38%, 100px);
   }
 
   .detail-backdrop-image {

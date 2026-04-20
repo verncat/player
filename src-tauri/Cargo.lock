@@ -3142,6 +3142,7 @@ dependencies = [
  "notify",
  "reqwest 0.12.28",
  "rusqlite",
+ "rustfft",
  "rusty-chromaprint",
  "serde",
  "serde_json",
