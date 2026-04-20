@@ -935,6 +935,8 @@ async function handleFinishedPlayback() {
   }
 }
 
+(window as any)._playbackFinished = () => handleFinishedPlayback();
+
 function startTicker() {
   stopTicker();
   androidSyncCounter = 0;
@@ -1234,6 +1236,11 @@ onMounted(() => {
       startTicker();
     }
   });
+
+  // Rust emits this when decode thread reaches EOF — works even when JS timers are throttled (Android background)
+  listen('playback-finished', async () => {
+    await handleFinishedPlayback();
+  });
   
   listen('library-changed', () => { loadLibrary(); loadRecent(); });
   listen<number>('beat', (e) => {
@@ -1370,6 +1377,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
+  delete (window as any)._playbackFinished;
   stopTicker();
 });
 </script>

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use tauri::Emitter;
 
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;
@@ -298,6 +299,24 @@ fn decode_thread(shared: Arc<Shared>, path: &Path) -> Result<(), String> {
     decode_thread_seek(shared, path, 0.0)
 }
 
+fn notify_playback_finished(shared: &Shared) {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+
+        if let Some(window) = shared.app_handle.get_webview_window("main") {
+            if window
+                .eval("window._playbackFinished && window._playbackFinished()")
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    let _ = shared.app_handle.emit("playback-finished", ());
+}
+
 fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Result<(), String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -378,6 +397,7 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
                 }
                 shared.playing.store(false, Ordering::SeqCst);
                 shared.finished.store(true, Ordering::SeqCst);
+                notify_playback_finished(&shared);
                 break;
             }
             Err(e) => {
