@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
+import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 
 interface AudioDevice { name: string }
 interface DeviceList { devices: AudioDevice[]; current: string | null }
@@ -471,7 +472,7 @@ function syncPeer(peer: Peer) {
   invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
 }
 
-const currentTrack = computed(() => {
+const currentTrack = computed<{ title: string; artist: string; colors: [string, string] }>(() => {
   if (nowPlaying.value) {
     return {
       title: nowPlaying.value.title || nowPlaying.value.path,
@@ -481,6 +482,93 @@ const currentTrack = computed(() => {
   }
   return { title: 'No track', artist: '', colors: ['#282828', '#181818'] };
 });
+
+const beatIntensity = computed(() => {
+  if (BEAT_AMP <= 0) return 0;
+  return Math.max(0, Math.min(1.4, (beatScale.value - 1) / BEAT_AMP));
+});
+
+const currentCoverUrl = computed(() => {
+  if (!nowPlaying.value) return null;
+  return covers.value[nowPlaying.value.id] ?? null;
+});
+
+const currentRarityColor = computed(() => {
+  const rarity = nowPlaying.value?.rarity;
+  if (!rarity || rarity === 'Common') return '#d9dee8';
+  return rarityColors[rarity] ?? '#d9dee8';
+});
+
+const detailBackdropImageStyle = computed(() => {
+  if (currentCoverUrl.value) {
+    return {
+      backgroundImage: `url(${currentCoverUrl.value})`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+    };
+  }
+  return {
+    background: `linear-gradient(135deg, ${currentTrack.value.colors[0]}, ${currentTrack.value.colors[1]})`,
+  };
+});
+
+const detailBackdropWashStyle = computed(() => {
+  const [colorA, colorB] = currentTrack.value.colors;
+  const pulse = beatIntensity.value;
+  return {
+    background: `radial-gradient(circle at 18% 20%, ${colorA} 0%, transparent ${Math.max(28, 46 - pulse * 5)}%), radial-gradient(circle at 82% 18%, ${colorB} 0%, transparent ${Math.max(26, 44 - pulse * 4)}%), linear-gradient(180deg, rgba(4,6,12,0.22), rgba(4,6,12,0.74) 38%, rgba(4,6,12,0.95))`,
+    opacity: (0.62 + pulse * 0.18).toFixed(2),
+  };
+});
+
+const detailAuraStyle = computed(() => {
+  const [colorA, colorB] = currentTrack.value.colors;
+  const pulse = beatIntensity.value;
+  return {
+    background: `radial-gradient(circle at 34% 34%, ${colorA} 0%, transparent 48%), radial-gradient(circle at 66% 62%, ${colorB} 0%, transparent 46%), radial-gradient(circle at 50% 50%, rgba(255,255,255,0.2) 0%, transparent 34%)`,
+    opacity: (0.42 + pulse * 0.18).toFixed(2),
+    transform: `scale(${(1.01 + pulse * 0.05).toFixed(3)})`,
+    filter: `blur(${(24 + pulse * 10).toFixed(0)}px) saturate(${(1.02 + pulse * 0.2).toFixed(2)})`,
+  };
+});
+
+const spectrumSegments = Array.from({ length: 32 }, (_, index) => {
+  const seed = (Math.sin(index * 12.9898) + 1) * 0.5;
+  return {
+    index,
+    angle: (index / 32) * 360,
+    width: `${(3.4 + seed * 1.8).toFixed(1)}px`,
+    height: `${(18 + seed * 18).toFixed(1)}px`,
+    travel: `${(8 + seed * 12).toFixed(1)}px`,
+    delay: `${(-index * 0.07).toFixed(2)}s`,
+    duration: `${(1.35 + seed * 0.85).toFixed(2)}s`,
+  };
+});
+
+const detailSpectrumStyle = computed(() => ({
+  '--ring-pulse': beatIntensity.value.toFixed(3),
+}));
+
+function spectrumSpokeStyle(segment: (typeof spectrumSegments)[number]) {
+  return {
+    transform: `rotate(${segment.angle}deg)`,
+  };
+}
+
+function spectrumBarStyle(segment: (typeof spectrumSegments)[number]) {
+  const colorA = currentTrack.value.colors[segment.index % 2];
+  const colorB = currentTrack.value.colors[(segment.index + 1) % 2];
+
+  return {
+    '--bar-width': segment.width,
+    '--bar-height': segment.height,
+    '--bar-travel': segment.travel,
+    '--bar-delay': segment.delay,
+    '--bar-duration': segment.duration,
+    background: `linear-gradient(180deg, ${colorA} 0%, rgba(255,255,255,0.95) 58%, ${colorB} 100%)`,
+    boxShadow: '0 0 8px rgba(255,255,255,0.12)',
+  };
+}
 
 const mobileSeekActive = ref(false);
 const seekPreviewPos = ref<number | null>(null);
@@ -501,82 +589,6 @@ const MAX_TILT_DRAG = 4;  // max tilt degrees while dragging
 const MAX_TRANS = 100;    // max translate px from interaction
 const AMBIENT_R = 10;    // ambient rotation radius in degrees
 const AMBIENT_PERIOD = 8000; // ms for one ambient orbit
-
-const cardTransform = computed(() => {
-  const scale = cardDragging.value ? 1.06 : 1;
-  return `perspective(600px) translateX(${cardTX.value}px) translateY(${cardTY.value}px) scale(${scale}) rotateX(${cardRotX.value}deg) rotateY(${cardRotY.value}deg)`;
-});
-
-// Specular highlight — bright spot moves opposite to tilt direction
-const cardGloss = computed(() => {
-  const rx = cardRotX.value;
-  const ry = cardRotY.value;
-  const sx = 50 - ry * 2.8;
-  const sy = 50 + rx * 2.8;
-  const intensity = Math.hypot(rx, ry) / MAX_TILT;
-  const alpha = (0.1 + intensity * 0.25).toFixed(2);
-  return `radial-gradient(ellipse 60% 55% at ${sx}% ${sy}%, rgba(255,255,255,${alpha}) 0%, rgba(255,255,255,0.03) 55%, transparent 75%)`;
-});
-
-// Glossy sheen — white bands of light sweep across the card as it tilts,
-// tinted subtly by rarity color. Like light reflecting off a glossy surface.
-const cardRainbow = computed(() => {
-  const rx = cardRotX.value / MAX_TILT; // -1..1
-  const ry = cardRotY.value / MAX_TILT;
-  const intensity = Math.min(Math.hypot(rx, ry), 1);
-
-  const rarity = nowPlaying.value?.rarity ?? null;
-  const baseColor = rarityColors[rarity ?? ''] ?? '#ffffff';
-  const r = parseInt(baseColor.slice(1, 3), 16);
-  const g = parseInt(baseColor.slice(3, 5), 16);
-  const b = parseInt(baseColor.slice(5, 7), 16);
-
-  const sweep = ry * 0.9 - rx * 0.3;
-  const band1 = 15 + sweep * 75;  // primary band sweeps 15%→90%
-  const band2 = band1 + 30;       // secondary band
-  const angle = 132 + ry * 18;
-
-  // White gloss alpha — strong enough to be clearly visible
-  const gloss1 = (0.3 + intensity * 0.55).toFixed(2);
-  const gloss2 = (0.15 + intensity * 0.30).toFixed(2);
-  // Rarity tint mixed in at the edge of each band (very subtle)
-  const tint1  = (0.20 + intensity * 0.35).toFixed(2);
-  const tint2  = (0.10 + intensity * 0.18).toFixed(2);
-
-  const W1 = 12; // primary band half-width %
-  const W2 = 8;  // secondary band half-width %
-
-  // Band: hard edge → rarity tint → pure white hotspot → rarity tint → hard edge
-  const glossBand = (cx: number, w: number, gA: string, tA: string) => {
-    const e0 = (cx - w).toFixed(1);
-    const e1 = (cx + w).toFixed(1);
-    const t0 = (cx - w * 0.55).toFixed(1);
-    const t1 = (cx + w * 0.55).toFixed(1);
-    return [
-      `transparent ${e0}%`,
-      `rgba(${r},${g},${b},${tA}) ${e0}%`,
-      `rgba(255,255,255,${gA}) ${t0}%`,
-      `rgba(255,255,255,${gA}) ${t1}%`,
-      `rgba(${r},${g},${b},${tA}) ${e1}%`,
-      `transparent ${e1}%`,
-    ].join(', ');
-  };
-
-  return `linear-gradient(${angle.toFixed(0)}deg,
-    ${glossBand(band1, W1, gloss1, tint1)},
-    ${glossBand(band2, W2, gloss2, tint2)}
-  )`;
-});
-
-// Shadow shifts with tilt — card appears to lift off the surface
-const cardShadow = computed(() => {
-  const rx = cardRotX.value;
-  const ry = cardRotY.value;
-  const sx = (ry * 1.8).toFixed(1);
-  const sy = (-rx * 1.8 + 16).toFixed(1);
-  const blur = (40 + Math.hypot(rx, ry) * 1.2).toFixed(0);
-  return `${sx}px ${sy}px ${blur}px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.35)`;
-});
 
 function startAmbient() {
   const t0 = performance.now();
@@ -698,7 +710,7 @@ function onCardTouchEnd() {
   springBack();
 }
 
-watch(showDetail, (open) => {
+watch(showDetail, async (open) => {
   if (open) {
     cardRotX.value = 0;
     cardRotY.value = 0;
@@ -1378,6 +1390,10 @@ onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
   delete (window as any)._playbackFinished;
+  if (beatRafId !== null) cancelAnimationFrame(beatRafId);
+  if (_mouseRafId) cancelAnimationFrame(_mouseRafId);
+  cancelAnimationFrame(cardSpringRaf);
+  stopAmbient();
   stopTicker();
 });
 </script>
@@ -2334,6 +2350,10 @@ onUnmounted(() => {
   <Teleport to="body">
     <Transition name="detail">
       <div v-if="showDetail && nowPlaying" class="player-detail" @click.self="showDetail = false">
+          <div class="detail-backdrop" aria-hidden="true">
+            <div class="detail-backdrop-image" :style="detailBackdropImageStyle" />
+            <div class="detail-backdrop-wash" :style="detailBackdropWashStyle" />
+          </div>
           <div class="detail-sheet" :style="cardDragging ? { overflow: 'visible' } : {}">
             <!-- drag handle -->
             <div class="detail-handle" @click="showDetail = false" />
@@ -2354,16 +2374,30 @@ onUnmounted(() => {
               @touchmove.prevent="onCardTouchMove"
               @touchend="onCardTouchEnd"
             >
-              <div class="detail-cover detail-cover-3d"
-                :style="[
-                  covers[nowPlaying.id]
-                    ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
-                    : `background: linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})`,
-                  { transform: cardTransform, boxShadow: cardShadow }
-                ]"
-              >
-                <div class="card-gloss" :style="{ background: cardGloss }" />
-                <div class="card-rainbow" :style="{ background: cardRainbow }" />
+              <div class="detail-aura-field" :style="detailAuraStyle" aria-hidden="true" />
+              <div class="detail-art-stage">
+                <WebGLAlbumRenderer
+                  :cover-url="currentCoverUrl"
+                  :colors="currentTrack.colors"
+                  :rarity-color="currentRarityColor"
+                  :beat-scale="beatScale"
+                  :is-playing="isPlaying"
+                  :tilt-x="cardRotX"
+                  :tilt-y="cardRotY"
+                  :offset-x="cardTX"
+                  :offset-y="cardTY"
+                  :dragging="cardDragging"
+                />
+                <div class="detail-spectrum-ring" :class="{ playing: isPlaying }" :style="detailSpectrumStyle" aria-hidden="true">
+                  <div
+                    v-for="segment in spectrumSegments"
+                    :key="segment.index"
+                    class="detail-spectrum-spoke"
+                    :style="spectrumSpokeStyle(segment)"
+                  >
+                    <span class="detail-spectrum-bar" :style="spectrumBarStyle(segment)" />
+                  </div>
+                </div>
               </div>
             </div>
             <!-- track info -->
@@ -3562,15 +3596,42 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   justify-content: center;
   background: rgba(0,0,0,.45);
   backdrop-filter: blur(4px);
+  overflow: hidden;
+}
+
+.detail-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.detail-backdrop-image,
+.detail-backdrop-wash {
+  position: absolute;
+  inset: -8%;
+}
+
+.detail-backdrop-image {
+  filter: blur(20px) saturate(1.15);
+  opacity: 0.3;
+  transform: scale(1.1);
+}
+
+.detail-backdrop-wash {
+  opacity: 0.78;
 }
 
 .detail-sheet {
+  position: relative;
   width: 100%;
   max-width: 480px;
   max-height: 95vh;
   overflow-y: auto;
-  background: #121212;
+  background: linear-gradient(180deg, rgba(10,12,18,.8), rgba(10,12,18,.94));
+  backdrop-filter: blur(10px) saturate(1.05);
   border-radius: 20px 20px 0 0;
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 -10px 60px rgba(0,0,0,.38);
   padding: 0 24px 24px;
   padding-bottom: calc(24px + env(safe-area-inset-bottom));
   display: flex;
@@ -3589,6 +3650,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 
 .detail-cover-wrap {
+  position: relative;
   aspect-ratio: 1 / 1;
   flex-shrink: 0;
   width: min(28vh, 260px, 80vw);
@@ -3597,6 +3659,119 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   perspective: 600px;
   cursor: grab;
   user-select: none;
+  overflow: visible;
+  isolation: isolate;
+}
+
+.detail-aura-field {
+  position: absolute;
+  inset: -18%;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.detail-art-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.detail-spectrum-ring {
+  position: absolute;
+  inset: -18%;
+  pointer-events: none;
+  z-index: 1;
+  --ring-radius: clamp(86px, 43%, 124px);
+}
+
+.detail-spectrum-spoke {
+  position: absolute;
+  inset: 0;
+  transform-origin: center center;
+}
+
+.detail-spectrum-bar {
+  display: block;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--bar-width);
+  height: var(--bar-height);
+  border-radius: 999px;
+  transform: translate(-50%, calc(-100% - var(--ring-radius)));
+  transform-origin: center bottom;
+  opacity: calc(0.34 + var(--ring-pulse) * 0.46);
+  will-change: transform, opacity;
+  animation: spectrum-wave var(--bar-duration) ease-in-out infinite;
+  animation-delay: var(--bar-delay);
+  animation-play-state: paused;
+}
+
+.detail-spectrum-ring.playing .detail-spectrum-bar {
+  animation-play-state: running;
+}
+
+@keyframes spectrum-wave {
+  0%, 100% {
+    transform: translate(-50%, calc(-100% - var(--ring-radius))) scaleY(calc(0.58 + var(--ring-pulse) * 0.22));
+    opacity: calc(0.2 + var(--ring-pulse) * 0.3);
+  }
+  50% {
+    transform: translate(-50%, calc(-100% - var(--ring-radius) - var(--bar-travel))) scaleY(calc(1 + var(--ring-pulse) * 0.35));
+    opacity: calc(0.72 + var(--ring-pulse) * 0.22);
+  }
+}
+
+.detail-vinyl {
+  position: absolute;
+  left: 62%;
+  top: 50%;
+  width: 88%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at center, rgba(18,18,22,1) 0 10%, rgba(210,210,210,0.22) 10.5% 11.5%, rgba(20,20,24,1) 12% 18%, transparent 18.5%),
+    repeating-radial-gradient(circle at center, rgba(255,255,255,0.055) 0 1px, rgba(16,16,20,0.9) 1px 5px, rgba(8,8,10,0.98) 5px 8px),
+    radial-gradient(circle at 35% 30%, rgba(255,255,255,0.12), transparent 38%),
+    radial-gradient(circle at center, #181a20 0%, #07080b 72%);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 24px 18px 42px rgba(0,0,0,0.4);
+  overflow: hidden;
+  z-index: 0;
+  will-change: transform;
+}
+
+.detail-vinyl::before {
+  content: '';
+  position: absolute;
+  inset: 7%;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.04);
+}
+
+.detail-vinyl::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle at 35% 35%, #ddd 0%, #9fa4af 30%, #111 32%, #050608 100%);
+  box-shadow: 0 0 0 5px rgba(245,245,245,0.08);
+}
+
+.detail-vinyl-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(130deg, rgba(255,255,255,0.14), transparent 26%, transparent 58%, rgba(255,255,255,0.06) 72%, transparent 84%);
+  mix-blend-mode: screen;
+  pointer-events: none;
 }
 
 .detail-cover {
@@ -3605,12 +3780,16 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   border-radius: 12px;
   object-fit: cover;
   position: relative;
+  overflow: hidden;
   transform-style: preserve-3d;
   will-change: transform;
+  z-index: 2;
 }
 
 .detail-cover-3d {
   transform-origin: center center;
+  transform: translateZ(46px);
+  border: 1px solid rgba(255,255,255,0.08);
 }
 
 .card-gloss {
@@ -3760,6 +3939,17 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 
 /* ── Desktop override: centered dialog ──────────────────────────────────── */
+@media (max-width: 768px) {
+  .detail-sheet {
+    backdrop-filter: none;
+  }
+
+  .detail-backdrop-image {
+    filter: blur(14px) saturate(1.08);
+    opacity: 0.24;
+  }
+}
+
 @media (min-width: 769px) {
   .player-detail {
     align-items: center;
@@ -3786,6 +3976,11 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     width: 100%;
     aspect-ratio: 1;
     align-self: center;
+  }
+
+  .detail-backdrop-image {
+    filter: blur(32px) saturate(1.22);
+    opacity: 0.38;
   }
 
   .detail-cover {
