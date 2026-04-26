@@ -3492,8 +3492,8 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 /* ── Responsive: tablets and small screens ── */
 @media (max-width: 768px) {
   .app {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr 130px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr calc(130px + env(safe-area-inset-bottom));
   }
 
   .sidebar {
@@ -3546,10 +3546,11 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     grid-row: 3 / 4;
     display: flex;
     flex-direction: column;
-    padding: 0px 10px;
+    padding: 0 10px env(safe-area-inset-bottom);
     justify-content: center;
-    /* padding-bottom: env(safe-area-inset-bottom); */
     gap: 8px;
+    overflow: hidden;
+    min-width: 0;
   }
   .player-left {
     display: flex;
@@ -3587,7 +3588,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 125px;
+    bottom: calc(125px + env(safe-area-inset-bottom));
     z-index: 220;
     padding: 0 10px;
     pointer-events: none;
