@@ -1,11 +1,15 @@
 //! Track identification using AcoustID + rusty-chromaprint.
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use flate2::{write::GzEncoder, Compression};
+use reqwest::{header, StatusCode};
 use rusqlite::params;
 use rusty_chromaprint::{Configuration, FingerprintCompressor, Fingerprinter};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;
@@ -221,7 +225,38 @@ struct LookupResult {
 }
 
 fn acoustid_lookup(fingerprint: &str, duration: u32) -> Result<Option<LookupResult>, String> {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent(format!("player/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("build client: {e}"))?;
+
+    let duration_str = duration.to_string();
+    let form_body = serde_urlencoded::to_string([
+        ("client", ACOUSTID_API_KEY),
+        ("duration", duration_str.as_str()),
+        ("fingerprint", fingerprint),
+        ("meta", "recordings+releasegroups+compress"),
+        ("format", "json"),
+    ])
+    .map_err(|e| format!("encode request: {e}"))?;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(form_body.as_bytes())
+        .map_err(|e| format!("compress request: {e}"))?;
+    let compressed_body = encoder
+        .finish()
+        .map_err(|e| format!("finalize request compression: {e}"))?;
+
+    let form_body_len = form_body.len();
+    let compressed_body_len = compressed_body.len();
+    let fp_len = fingerprint.len();
+
+    eprintln!(
+        "[identify] AcoustID request prepared: duration={}s fp_len={} form_body={}B gzip_body={}B",
+        duration, fp_len, form_body_len, compressed_body_len
+    );
 
     let mut last_err = String::new();
     for attempt in 0..3 {
@@ -229,30 +264,66 @@ fn acoustid_lookup(fingerprint: &str, duration: u32) -> Result<Option<LookupResu
             std::thread::sleep(std::time::Duration::from_secs(2u64.pow(attempt)));
         }
 
+        let started_at = Instant::now();
+
         let resp = match client
             .post("https://api.acoustid.org/v2/lookup")
-            .form(&[
-                ("client", ACOUSTID_API_KEY),
-                ("duration", &duration.to_string()),
-                ("fingerprint", fingerprint),
-                ("meta", "recordings+releasegroups+compress"),
-            ])
+            .header(header::CONTENT_ENCODING, "gzip")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::ACCEPT, "application/json")
+            .body(compressed_body.clone())
             .send()
         {
             Ok(r) => r,
             Err(e) => {
+                let elapsed_ms = started_at.elapsed().as_millis();
                 last_err = format!("HTTP error: {e}");
-                eprintln!("[identify] attempt {}: {last_err}", attempt + 1);
+                eprintln!(
+                    "[identify] attempt {} transport failure after {}ms: {} (duration={}s fp_len={} form_body={}B gzip_body={}B)",
+                    attempt + 1,
+                    elapsed_ms,
+                    last_err,
+                    duration,
+                    fp_len,
+                    form_body_len,
+                    compressed_body_len
+                );
                 continue;
             }
         };
 
         let status = resp.status();
         let body = resp.text().map_err(|e| format!("read body: {e}"))?;
+        let elapsed_ms = started_at.elapsed().as_millis();
+
+        eprintln!(
+            "[identify] attempt {} response after {}ms: status={} body_len={}B (duration={}s fp_len={} form_body={}B gzip_body={}B)",
+            attempt + 1,
+            elapsed_ms,
+            status,
+            body.len(),
+            duration,
+            fp_len,
+            form_body_len,
+            compressed_body_len
+        );
 
         if status.is_server_error() {
-            last_err = format!("HTTP {status}: {body}");
-            eprintln!("[identify] attempt {}: {last_err}", attempt + 1);
+            let raw_err = format!("HTTP {status}: {body}");
+            eprintln!("[identify] attempt {}: {raw_err}", attempt + 1);
+            last_err = if matches!(
+                status,
+                StatusCode::SERVICE_UNAVAILABLE
+                    | StatusCode::BAD_GATEWAY
+                    | StatusCode::GATEWAY_TIMEOUT
+            ) || body.contains("upstream connect error")
+                || body.contains("connection termination")
+            {
+                "AcoustID is temporarily unavailable. The request was sent, but the service failed upstream. Please retry later."
+                    .to_string()
+            } else {
+                raw_err
+            };
             continue;
         }
 
@@ -264,10 +335,21 @@ fn acoustid_lookup(fingerprint: &str, duration: u32) -> Result<Option<LookupResu
             serde_json::from_str(&body).map_err(|e| format!("JSON parse: {e} — body: {body}"))?;
 
         if json.status != "ok" {
+            if body.contains("invalid client") {
+                return Err(
+                    "AcoustID rejected the configured client key. The key is invalid or expired."
+                        .to_string(),
+                );
+            }
             return Err(format!("AcoustID status '{}' — body: {body}", json.status));
         }
 
         let results = json.results.unwrap_or_default();
+        eprintln!(
+            "[identify] attempt {} parsed JSON successfully: {} result candidates",
+            attempt + 1,
+            results.len()
+        );
         let best = results
             .into_iter()
             .filter(|r| r.score >= 0.5)

@@ -32,7 +32,9 @@ blake3 = "1"
 symphonia = { version = "0.5", features = ["all"] }
 rustfft = "6"
 rusty-chromaprint = "0.3"
+flate2 = "1"
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+serde_urlencoded = "0.7"
 tiny_http = "0.12"
 mdns-sd = "0.11"
 hostname = "0.4"

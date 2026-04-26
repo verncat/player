@@ -1495,7 +1495,17 @@ async function startIdentify() {
   identifyRunning.value = true;
   identifyMinimized.value = false;
   identifyDone.value = false;
-  await invoke('identify_tracks', { ids });
+  try {
+    await invoke('identify_tracks', { ids });
+  } catch (e: any) {
+    identifyDone.value = true;
+    identifyResults.value.push({
+      track_id: 0,
+      track_name: null,
+      status: 'error',
+      message: String(e ?? 'Failed to start identify'),
+    });
+  }
 }
 
 async function identifySingle(track: Track) {
@@ -1505,7 +1515,17 @@ async function identifySingle(track: Track) {
   identifyRunning.value = true;
   identifyMinimized.value = false;
   identifyDone.value = false;
-  await invoke('identify_tracks', { ids: [track.id] });
+  try {
+    await invoke('identify_tracks', { ids: [track.id] });
+  } catch (e: any) {
+    identifyDone.value = true;
+    identifyResults.value.push({
+      track_id: track.id,
+      track_name: track.title || track.path,
+      status: 'error',
+      message: String(e ?? 'Failed to start identify'),
+    });
+  }
 }
 
 function identifyStatusIcon(status: string) {
@@ -1763,7 +1783,7 @@ onUnmounted(() => {
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
           Reindex
         </a>
-        <a class="nav-item" href="#" @click.prevent="startIdentify; showMobileNav = false">
+        <a class="nav-item" href="#" @click.prevent="startIdentify(); showMobileNav = false">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
           Identify
         </a>
