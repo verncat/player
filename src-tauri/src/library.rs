@@ -139,7 +139,8 @@ impl LibraryState {
                FROM tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
-                 OR album  LIKE ?1 COLLATE NOCASE
+                      OR album  LIKE ?1 COLLATE NOCASE
+                      OR genre  LIKE ?1 COLLATE NOCASE
               ORDER BY artist, album, track_number, title",
         )?;
         let tracks = stmt
@@ -263,6 +264,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN year INTEGER");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN genre TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN date_added INTEGER");
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre COLLATE NOCASE);",
+    )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS play_history (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
