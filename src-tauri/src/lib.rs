@@ -66,6 +66,10 @@ pub fn run() {
                 app.state::<discovery::DiscoveryState>(),
                 app.handle().clone(),
             );
+            sync::ensure_http_server_started(
+                &app.state::<sync::SyncState>(),
+                &app.state::<library::LibraryState>(),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

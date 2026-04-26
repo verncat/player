@@ -1,9 +1,11 @@
 //! Peer sync subsystem.
 //!
-//! When sync is enabled:
+//! The HTTP sync server is started at app launch and stays available:
 //!   • Binds a small HTTP server on SYNC_PORT (57322).
 //!       GET /tracks        → JSON { version, device_name, tracks:[...] }
 //!       GET /file/<hash>   → raw audio bytes
+//!
+//! When pull sync is enabled:
 //!   • `sync_with_peer` downloads every hash the peer has that we don't,
 //!     skipping hash-collisions (deduplication by blake3 hash).
 //!
@@ -130,6 +132,20 @@ impl SyncState {
             })),
         }
     }
+}
+
+pub fn ensure_http_server_started(
+    state: &SyncState,
+    library: &crate::library::LibraryState,
+) {
+    let mut inner = state.inner.lock().unwrap();
+    if inner.server_started {
+        return;
+    }
+    let conn = library.conn();
+    let data_dir = library.data_dir().to_path_buf();
+    start_http_server(conn, data_dir);
+    inner.server_started = true;
 }
 
 // ── HTTP server (serves our tracks to peers) ──────────────────────────────────
@@ -792,21 +808,16 @@ fn merge_sync_data(app: &AppHandle, remote: SyncData) {
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
-/// Enable or disable sync. Enabling also starts the HTTP server (once).
+/// Enable or disable pull sync. The HTTP server is started separately and kept available.
 #[tauri::command]
 pub fn sync_set_enabled(
     enabled: bool,
     state: State<'_, SyncState>,
     library: State<'_, crate::library::LibraryState>,
 ) -> Result<(), String> {
+    ensure_http_server_started(&state, &library);
     let mut inner = state.inner.lock().unwrap();
     inner.enabled = enabled;
-    if enabled && !inner.server_started {
-        let conn = library.conn();
-        let data_dir = library.data_dir().to_path_buf();
-        start_http_server(conn, data_dir);
-        inner.server_started = true;
-    }
     Ok(())
 }
 
