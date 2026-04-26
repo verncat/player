@@ -2508,10 +2508,10 @@ onUnmounted(() => {
                 <div class="peer-icon">{{ peer.device_emoji || syncProgress[peer.name]?.device_emoji || '🎵' }}</div>
                 <div class="peer-info">
                   <span class="peer-name">{{ peer.device_name || peerDeviceNames[peer.name] || peer.name }}</span>
-                  <span v-if="peer.playback" class="peer-status-row">
+                  <span class="peer-status-row">
                     <span class="peer-playback-icon" :class="peerPlaybackClass(peer)" aria-hidden="true">
-                      <svg v-if="peer.playback.state === 'playing'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
-                      <svg v-else-if="peer.playback.state === 'paused'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+                      <svg v-if="peer.playback?.state === 'playing'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
+                      <svg v-else-if="peer.playback?.state === 'paused'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
                       <svg v-else viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M7 7h10v10H7z"/></svg>
                     </span>
                     <span class="peer-now-playing">{{ peerNowPlayingText(peer) || peerPlaybackLabel(peer) }}</span>
