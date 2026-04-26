@@ -429,6 +429,14 @@ impl PlaybackState {
         self.inner.finished.load(Ordering::Relaxed)
     }
 
+    pub fn is_stopped(&self) -> bool {
+        self.inner.stop.load(Ordering::Relaxed)
+    }
+
+    pub fn current_file_path(&self) -> Option<PathBuf> {
+        self.inner.current_file.lock().unwrap().clone()
+    }
+
     pub fn set_device(&self, name: Option<String>) {
         *self.inner.selected_device.lock().unwrap() = name;
     }

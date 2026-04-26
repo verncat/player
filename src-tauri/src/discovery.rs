@@ -14,22 +14,28 @@ use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 const SERVICE_TYPE: &str = "_player._tcp.local.";
 /// Advertise the real sync HTTP port so peers can connect consistently.
 const SERVICE_PORT: u16 = crate::sync::SYNC_PORT;
+const PEER_STATUS_REQUEST_TIMEOUT: Duration = Duration::from_millis(1200);
+const PEER_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const BROWSE_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
+const BROWSE_RESTART_INTERVAL: Duration = Duration::from_secs(15);
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, PartialEq, Eq)]
 pub struct Peer {
     pub name: String,  // instance name (human-readable hostname)
     pub host: String,  // resolved hostname or IP
     pub port: u16,
     pub addresses: Vec<String>,
-    pub device_name: Option<String>,  // device name from remote /tracks endpoint
-    pub device_emoji: Option<String>,  // device emoji from remote /tracks endpoint
+    pub device_name: Option<String>,  // device name from remote /status endpoint
+    pub device_emoji: Option<String>,  // device emoji from remote /status endpoint
+    pub playback: Option<crate::sync::RemotePlaybackInfo>,
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -76,37 +82,89 @@ fn own_instance_name() -> String {
     name
 }
 
-fn fetch_remote_device_name(host: &str, port: u16) -> (Option<String>, Option<String>) {
-    use std::time::Duration;
-
+fn peer_status_url(host: &str, port: u16, path: &str) -> String {
     let host_for_url = if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
     } else {
         host.to_string()
     };
-    let url = format!("http://{}:{}/tracks", host_for_url, port);
-    
-    // Use blocking reqwest with short timeout
-    let resp = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
+    format!("http://{}:{}{}", host_for_url, port, path)
+}
+
+fn fetch_remote_status(host: &str, port: u16) -> Option<crate::sync::DeviceStatusResponse> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(PEER_STATUS_REQUEST_TIMEOUT)
         .build()
-        .and_then(|client| client.get(&url).send())
-    {
-        Ok(r) => r,
-        Err(_) => return (None, None),
+        .ok()?;
+
+    let status_url = peer_status_url(host, port, "/status");
+    if let Ok(resp) = client.get(&status_url).send() {
+        if let Ok(status) = resp.json::<crate::sync::DeviceStatusResponse>() {
+            return Some(status);
+        }
+    }
+
+    let tracks_url = peer_status_url(host, port, "/tracks");
+    if let Ok(resp) = client.get(&tracks_url).send() {
+        if let Ok(status) = resp.json::<crate::sync::TracksResponse>() {
+            return Some(crate::sync::DeviceStatusResponse {
+                version: status.version,
+                device_name: status.device_name,
+                device_emoji: status.device_emoji,
+                playback: None,
+            });
+        }
+    }
+
+    None
+}
+
+fn apply_remote_status(peer: &Peer, status: crate::sync::DeviceStatusResponse) -> Peer {
+    let mut updated = peer.clone();
+    if status.device_name.is_some() {
+        updated.device_name = status.device_name;
+    }
+    if status.device_emoji.is_some() {
+        updated.device_emoji = status.device_emoji;
+    }
+    updated.playback = status.playback;
+    updated
+}
+
+fn refresh_peer_statuses(app: &AppHandle, peers_arc: &Arc<Mutex<Inner>>) {
+    let snapshot: Vec<(String, Peer)> = {
+        let guard = peers_arc.lock().unwrap();
+        guard
+            .peers
+            .iter()
+            .map(|(key, peer)| (key.clone(), peer.clone()))
+            .collect()
     };
-    
-    match resp.json::<serde_json::Value>() {
-        Ok(val) => {
-            let device_name = val.get("device_name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let device_emoji = val.get("device_emoji")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            (device_name, device_emoji)
-        },
-        Err(_) => (None, None),
+    let mut updates = Vec::new();
+    for (key, peer) in snapshot {
+        let Some(status) = fetch_remote_status(&peer.host, peer.port) else {
+            continue;
+        };
+        let updated = apply_remote_status(&peer, status);
+        if updated != peer {
+            updates.push((key, updated));
+        }
+    }
+    if updates.is_empty() {
+        return;
+    }
+    let mut guard = peers_arc.lock().unwrap();
+    let mut changed = false;
+    for (key, updated) in updates {
+        if let Some(existing) = guard.peers.get_mut(&key) {
+            if *existing != updated {
+                *existing = updated;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        emit_peers(app, &guard.peers);
     }
 }
 
@@ -149,7 +207,8 @@ pub fn discovery_start(
     let daemon_clone = daemon.clone();
     
     std::thread::spawn(move || {
-        let mut last_browse_time = std::time::Instant::now();
+        let mut last_browse_time = Instant::now();
+        let mut last_status_refresh = Instant::now();
         let mut receiver = match daemon_clone.browse(SERVICE_TYPE) {
             Ok(r) => r,
             Err(_) => return,
@@ -157,14 +216,18 @@ pub fn discovery_start(
 
         loop {
             // Try to receive an event with a 5 second timeout
-            let event = match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+            let event = match receiver.recv_timeout(BROWSE_EVENT_TIMEOUT) {
                 Ok(event) => event,
                 Err(_) => {
+                    if last_status_refresh.elapsed() >= PEER_STATUS_REFRESH_INTERVAL {
+                        refresh_peer_statuses(&app, &peers_arc);
+                        last_status_refresh = Instant::now();
+                    }
                     // Timeout occurred - periodically restart browse to rediscover peers
-                    if last_browse_time.elapsed() > std::time::Duration::from_secs(15) {
+                    if last_browse_time.elapsed() > BROWSE_RESTART_INTERVAL {
                         if let Ok(new_receiver) = daemon_clone.browse(SERVICE_TYPE) {
                             receiver = new_receiver;
-                            last_browse_time = std::time::Instant::now();
+                            last_browse_time = Instant::now();
                         }
                     }
                     continue;
@@ -187,17 +250,22 @@ pub fn discovery_start(
                     // hostname only when no IP was returned by the daemon.
                     let host = best_addr(raw_addrs).unwrap_or_else(|| hostname.clone());
 
-                    // Try to fetch device_name and device_emoji from remote /tracks endpoint
-                    let (device_name, device_emoji) = fetch_remote_device_name(&host, port);
+                    let remote_status = fetch_remote_status(&host, port);
 
-                    let peer = Peer {
+                    let peer = apply_remote_status(&Peer {
                         name: hostname,
                         host,
                         port,
                         addresses: addrs,
-                        device_name,
-                        device_emoji,
-                    };
+                        device_name: None,
+                        device_emoji: None,
+                        playback: None,
+                    }, remote_status.unwrap_or(crate::sync::DeviceStatusResponse {
+                        version: String::new(),
+                        device_name: None,
+                        device_emoji: None,
+                        playback: None,
+                    }));
                     {
                         let mut g = peers_arc.lock().unwrap();
                         g.peers.insert(name, peer);

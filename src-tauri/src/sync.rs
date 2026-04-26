@@ -2,6 +2,7 @@
 //!
 //! The HTTP sync server is started at app launch and stays available:
 //!   • Binds a small HTTP server on SYNC_PORT (57322).
+//!       GET /status        → JSON { version, device_name, playback }
 //!       GET /tracks        → JSON { version, device_name, tracks:[...] }
 //!       GET /file/<hash>   → raw audio bytes
 //!
@@ -46,6 +47,24 @@ pub struct TracksResponse {
     pub device_name: Option<String>,
     pub device_emoji: Option<String>,
     pub tracks: Vec<RemoteTrack>,
+}
+
+/// Lightweight device state for discovery and device list UI.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RemotePlaybackInfo {
+    pub state: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+}
+
+/// `/status` response payload for lightweight peer polling.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DeviceStatusResponse {
+    pub version: String,
+    pub device_name: Option<String>,
+    pub device_emoji: Option<String>,
+    pub playback: Option<RemotePlaybackInfo>,
 }
 
 /// Progress event payload.
@@ -137,6 +156,7 @@ impl SyncState {
 pub fn ensure_http_server_started(
     state: &SyncState,
     library: &crate::library::LibraryState,
+    app: &AppHandle,
 ) {
     let mut inner = state.inner.lock().unwrap();
     if inner.server_started {
@@ -144,13 +164,13 @@ pub fn ensure_http_server_started(
     }
     let conn = library.conn();
     let data_dir = library.data_dir().to_path_buf();
-    start_http_server(conn, data_dir);
+    start_http_server(conn, data_dir, app.clone());
     inner.server_started = true;
 }
 
 // ── HTTP server (serves our tracks to peers) ──────────────────────────────────
 
-fn start_http_server(conn: Arc<Mutex<Connection>>, data_dir: PathBuf) {
+fn start_http_server(conn: Arc<Mutex<Connection>>, data_dir: PathBuf, app: AppHandle) {
     thread::spawn(move || {
         let server = match tiny_http::Server::http(format!("[::]:{SYNC_PORT}"))
             .or_else(|_| tiny_http::Server::http(format!("0.0.0.0:{SYNC_PORT}")))
@@ -165,14 +185,23 @@ fn start_http_server(conn: Arc<Mutex<Connection>>, data_dir: PathBuf) {
         for request in server.incoming_requests() {
             let conn = Arc::clone(&conn);
             let dir = data_dir.clone();
-            thread::spawn(move || handle_request(request, conn, dir));
+            let app = app.clone();
+            thread::spawn(move || handle_request(request, conn, dir, app));
         }
     });
 }
 
-fn handle_request(request: tiny_http::Request, conn: Arc<Mutex<Connection>>, data_dir: PathBuf) {
+fn handle_request(
+    request: tiny_http::Request,
+    conn: Arc<Mutex<Connection>>,
+    data_dir: PathBuf,
+    app: AppHandle,
+) {
     let url = request.url().to_string();
-    if url == "/tracks" {
+    if url == "/status" {
+        let playback = app.state::<crate::playback::PlaybackState>();
+        serve_status(request, &conn, &data_dir, &playback);
+    } else if url == "/tracks" {
         serve_tracks(request, &conn);
     } else if url == "/sync-data" {
         serve_sync_data(request, &conn);
@@ -182,6 +211,95 @@ fn handle_request(request: tiny_http::Request, conn: Arc<Mutex<Connection>>, dat
     } else {
         let _ = request.respond(tiny_http::Response::empty(404));
     }
+}
+
+fn device_identity(conn: &Connection) -> (Option<String>, Option<String>) {
+    conn.query_row(
+        "SELECT COALESCE(device_name, ''), emoji FROM device_config WHERE id = 1",
+        [],
+        |row| {
+            let name: String = row.get(0)?;
+            let emoji: String = row.get(1)?;
+            let name_opt = if name.trim().is_empty() { None } else { Some(name) };
+            Ok((name_opt, Some(emoji)))
+        },
+    )
+    .unwrap_or((None, None))
+}
+
+fn normalize_rel_path(path: &Path) -> String {
+    path.iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn current_playback_info(
+    conn: &Connection,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+) -> Option<RemotePlaybackInfo> {
+    let current_file = playback.current_file_path()?;
+    let rel_path = current_file
+        .strip_prefix(data_dir)
+        .ok()
+        .map(normalize_rel_path);
+    let metadata = rel_path.as_ref().and_then(|rel| {
+        conn.query_row(
+            "SELECT title, artist, album FROM tracks WHERE path = ?1 LIMIT 1",
+            params![rel],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .ok()
+    });
+    let fallback_title = current_file
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .filter(|value| !value.trim().is_empty());
+    let (title, artist, album) = metadata.unwrap_or((fallback_title, None, None));
+    let state = if playback.is_playing() {
+        "playing"
+    } else if playback.is_finished() {
+        "ended"
+    } else if playback.is_stopped() {
+        "stopped"
+    } else {
+        "paused"
+    };
+    Some(RemotePlaybackInfo {
+        state: state.to_string(),
+        title,
+        artist,
+        album,
+    })
+}
+
+fn serve_status(
+    request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+) {
+    let body = {
+        let c = conn.lock().unwrap();
+        let (device_name, device_emoji) = device_identity(&c);
+        let playback = current_playback_info(&c, data_dir, playback);
+        serde_json::to_vec(&DeviceStatusResponse {
+            version: APP_VERSION.to_string(),
+            device_name,
+            device_emoji,
+            playback,
+        })
+        .unwrap_or_default()
+    };
+    let content_type = Header::from_bytes(b"Content-Type", b"application/json").unwrap();
+    let _ = request.respond(tiny_http::Response::from_data(body).with_header(content_type));
 }
 
 fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
@@ -206,18 +324,7 @@ fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
                 .unwrap_or_default()
             })
             .unwrap_or_default();
-        let (device_name, device_emoji) = c
-            .query_row(
-                "SELECT COALESCE(device_name, ''), emoji FROM device_config WHERE id = 1",
-                [],
-                |row| {
-                    let name: String = row.get(0)?;
-                    let emoji: String = row.get(1)?;
-                    let name_opt = if name.trim().is_empty() { None } else { Some(name) };
-                    Ok((name_opt, Some(emoji)))
-                },
-            )
-            .unwrap_or((None, None));
+        let (device_name, device_emoji) = device_identity(&c);
         serde_json::to_vec(&TracksResponse {
             version: APP_VERSION.to_string(),
             device_name,
@@ -814,8 +921,9 @@ pub fn sync_set_enabled(
     enabled: bool,
     state: State<'_, SyncState>,
     library: State<'_, crate::library::LibraryState>,
+    app: AppHandle,
 ) -> Result<(), String> {
-    ensure_http_server_started(&state, &library);
+    ensure_http_server_started(&state, &library, &app);
     let mut inner = state.inner.lock().unwrap();
     inner.enabled = enabled;
     Ok(())

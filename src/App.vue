@@ -520,7 +520,22 @@ function smartPlaylistTracks(sp: SmartPlaylist): Track[] {
 // ────────────────────────────────────────────────────────────────────────────
 
 
-interface Peer { name: string; host: string; port: number; addresses: string[]; device_name?: string; device_emoji?: string }
+interface PeerPlayback {
+  state: 'playing' | 'paused' | 'stopped' | 'ended';
+  title?: string | null;
+  artist?: string | null;
+  album?: string | null;
+}
+
+interface Peer {
+  name: string;
+  host: string;
+  port: number;
+  addresses: string[];
+  device_name?: string;
+  device_emoji?: string;
+  playback?: PeerPlayback | null;
+}
 const peers = ref<Peer[]>([]);
 
 interface SyncProgress {
@@ -586,6 +601,31 @@ async function toggleSync() {
 
 function syncPeer(peer: Peer) {
   invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
+}
+
+function peerPlaybackLabel(peer: Peer) {
+  switch (peer.playback?.state) {
+    case 'playing': return 'Playing';
+    case 'paused': return 'Paused';
+    case 'stopped': return 'Stopped';
+    case 'ended': return 'Finished';
+    default: return 'Idle';
+  }
+}
+
+function peerPlaybackClass(peer: Peer) {
+  return `peer-status-${peer.playback?.state ?? 'idle'}`;
+}
+
+function peerNowPlayingText(peer: Peer) {
+  const playback = peer.playback;
+  if (!playback) return '';
+  const title = playback.title?.trim();
+  const artist = playback.artist?.trim();
+  const album = playback.album?.trim();
+  if (title) return title;
+  if (artist) return artist;
+  return album || '';
 }
 
 const currentTrack = computed<{ title: string; artist: string; colors: [string, string] }>(() => {
@@ -2468,6 +2508,14 @@ onUnmounted(() => {
                 <div class="peer-icon">{{ peer.device_emoji || syncProgress[peer.name]?.device_emoji || '🎵' }}</div>
                 <div class="peer-info">
                   <span class="peer-name">{{ peer.device_name || peerDeviceNames[peer.name] || peer.name }}</span>
+                  <span v-if="peer.playback" class="peer-status-row">
+                    <span class="peer-playback-icon" :class="peerPlaybackClass(peer)" aria-hidden="true">
+                      <svg v-if="peer.playback.state === 'playing'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
+                      <svg v-else-if="peer.playback.state === 'paused'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+                      <svg v-else viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M7 7h10v10H7z"/></svg>
+                    </span>
+                    <span class="peer-now-playing">{{ peerNowPlayingText(peer) || peerPlaybackLabel(peer) }}</span>
+                  </span>
                   <span class="peer-addr">{{ peer.host }}:{{ peer.port }}</span>
                   <!-- sync progress for this peer -->
                   <template v-if="syncProgress[peer.name]">
@@ -3127,6 +3175,32 @@ a, button, [role="button"] {
 .peer-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .peer-name { font-size: var(--fs-peer-title); font-weight: 600; color: #fff; }
 .peer-alias { font-size: var(--fs-body-sm); color: #7b7b7b; }
+.peer-status-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-body-sm);
+  min-width: 0;
+}
+.peer-playback-icon {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.peer-status-playing { color: #1db954; }
+.peer-status-paused { color: #f3c969; }
+.peer-status-stopped, .peer-status-ended, .peer-status-idle { color: #8b8b8b; }
+.peer-now-playing {
+  font-size: var(--fs-body-sm);
+  color: #d7d7d7;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .peer-addr { font-size: var(--fs-peer-meta); color: #a7a7a7; }
 
 .sync-toggle {

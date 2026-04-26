@@ -69,6 +69,7 @@ pub fn run() {
             sync::ensure_http_server_started(
                 &app.state::<sync::SyncState>(),
                 &app.state::<library::LibraryState>(),
+                &app.handle().clone(),
             );
             Ok(())
         })
