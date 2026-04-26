@@ -89,6 +89,7 @@ const currentDevice = ref<string | null>(null);
 const activeNav = ref("home");
 const libraryTracks = ref<Track[]>([]);
 const libraryLoading = ref(false);
+const libraryQuery = ref("");
 const searchQuery = ref("");
 const editingTrack = ref<Track | null>(null);
 const editForm = ref({ title: '', artist: '', album: '', track_number: null as number | null });
@@ -1311,15 +1312,59 @@ function onKeyDown(e: KeyboardEvent) {
   }
 }
 
+function trackMatchesQuery(track: Track, query: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+
+  const values = [
+    track.title,
+    track.artist,
+    track.album,
+    track.genre,
+    track.path,
+    track.year != null ? String(track.year) : null,
+  ];
+
+  return values.some((value) => value?.toLowerCase().includes(q));
+}
+
+function countUniqueArtists(tracks: Track[]) {
+  return new Set(
+    tracks
+      .map((track) => track.artist?.trim())
+      .filter((artist): artist is string => !!artist)
+  ).size;
+}
+
+function countUniqueAlbums(tracks: Track[]) {
+  return new Set(
+    tracks
+      .filter((track) => !!track.album?.trim())
+      .map((track) => `${track.artist?.trim() ?? ''}\u0000${track.album?.trim()}`)
+  ).size;
+}
+
 const filteredTracks = computed(() => {
-  const q = searchQuery.value.toLowerCase();
+  const q = libraryQuery.value.trim();
   if (!q) return libraryTracks.value;
-  return libraryTracks.value.filter(t =>
-    (t.title && t.title.toLowerCase().includes(q)) ||
-    (t.artist && t.artist.toLowerCase().includes(q)) ||
-    (t.album && t.album.toLowerCase().includes(q))
-  );
+  return libraryTracks.value.filter((track) => trackMatchesQuery(track, q));
 });
+
+const searchResults = computed(() => {
+  const q = searchQuery.value.trim();
+  if (!q) return [];
+  return libraryTracks.value.filter((track) => trackMatchesQuery(track, q));
+});
+
+const searchRecentTracks = computed(() => {
+  if (recentTracks.value.length) return recentTracks.value.slice(0, 10);
+  return libraryTracks.value.slice(0, 10);
+});
+
+const libraryArtistCount = computed(() => countUniqueArtists(libraryTracks.value));
+const libraryAlbumCount = computed(() => countUniqueAlbums(libraryTracks.value));
+const searchArtistCount = computed(() => countUniqueArtists(searchResults.value));
+const searchAlbumCount = computed(() => countUniqueAlbums(searchResults.value));
 
 const groupedByArtist = computed(() => {
   const map = new Map<string, Track[]>();
@@ -1820,7 +1865,7 @@ onUnmounted(() => {
             <div class="library-header">
               <h2>Your Library</h2>
               <input
-                v-model="searchQuery"
+                v-model="libraryQuery"
                 class="library-search"
                 type="text"
                 placeholder="Filter tracks..."
@@ -1890,8 +1935,136 @@ onUnmounted(() => {
         <!-- Search view -->
         <template v-else-if="activeNav === 'search'">
           <section>
-            <h2>Search</h2>
-            <p style="color:#a7a7a7">Search coming soon.</p>
+            <div class="library-header">
+              <h2>Search</h2>
+              <input
+                v-model="searchQuery"
+                class="library-search"
+                type="text"
+                placeholder="Search tracks, artists, albums, genres..."
+              />
+            </div>
+
+            <div v-if="libraryLoading" class="library-empty">Loading...</div>
+
+            <template v-else-if="!searchQuery.trim()">
+              <p class="search-empty-copy">Search across track titles, artists, albums, genres, years, and file paths.</p>
+
+              <div class="search-stat-grid">
+                <div class="search-stat-card">
+                  <span class="search-stat-label">Tracks</span>
+                  <strong class="search-stat-value">{{ libraryTracks.length }}</strong>
+                </div>
+                <div class="search-stat-card">
+                  <span class="search-stat-label">Artists</span>
+                  <strong class="search-stat-value">{{ libraryArtistCount }}</strong>
+                </div>
+                <div class="search-stat-card">
+                  <span class="search-stat-label">Albums</span>
+                  <strong class="search-stat-value">{{ libraryAlbumCount }}</strong>
+                </div>
+              </div>
+
+              <div v-if="searchRecentTracks.length" class="section-head search-section-head">
+                <h2>Start From Recent</h2>
+              </div>
+
+              <div v-if="searchRecentTracks.length" class="track-list">
+                <div
+                  v-for="(track, idx) in searchRecentTracks"
+                  :key="track.id"
+                  class="track-row"
+                  :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
+                  :style="rarityVars(track.rarity)"
+                  @click="playPlaylistTrack(searchRecentTracks, idx)"
+                  @touchstart.passive="startTrackRowLongPress($event, track)"
+                  @touchmove.passive="moveTrackRowLongPress"
+                  @touchend="endTrackRowLongPress"
+                  @touchcancel="endTrackRowLongPress"
+                >
+                  <div class="track-cover-sm" :style="covers[track.id]
+                    ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                    : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                  />
+                  <div class="track-info">
+                    <div class="track-title-row">
+                      <span class="track-title">{{ track.title || track.path }}</span>
+                      <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                      </span>
+                      <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        <span class="track-playback-step">1</span>
+                      </span>
+                    </div>
+                    <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
+                  </div>
+                  <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
+                  </button>
+                  <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
+                    <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                    <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                  </button>
+                  <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                </div>
+              </div>
+            </template>
+
+            <template v-else>
+              <div v-if="searchResults.length === 0" class="library-empty">
+                Nothing found for "{{ searchQuery }}".
+              </div>
+
+              <template v-else>
+                <div class="search-summary">
+                  <span><strong>{{ searchResults.length }}</strong> tracks</span>
+                  <span><strong>{{ searchArtistCount }}</strong> artists</span>
+                  <span><strong>{{ searchAlbumCount }}</strong> albums</span>
+                </div>
+
+                <div class="track-list">
+                  <div
+                    v-for="(track, idx) in searchResults"
+                    :key="track.id"
+                    class="track-row"
+                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
+                    :style="rarityVars(track.rarity)"
+                    @click="playPlaylistTrack(searchResults, idx)"
+                    @touchstart.passive="startTrackRowLongPress($event, track)"
+                    @touchmove.passive="moveTrackRowLongPress"
+                    @touchend="endTrackRowLongPress"
+                    @touchcancel="endTrackRowLongPress"
+                  >
+                    <div class="track-cover-sm" :style="covers[track.id]
+                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                    />
+                    <div class="track-info">
+                      <div class="track-title-row">
+                        <span class="track-title">{{ track.title || track.path }}</span>
+                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        </span>
+                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <span class="track-playback-step">1</span>
+                        </span>
+                      </div>
+                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}{{ track.year ? ' · ' + track.year : '' }}</span>
+                    </div>
+                    <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
+                    </button>
+                    <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
+                      <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                      <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                    </button>
+                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                  </div>
+                </div>
+              </template>
+            </template>
           </section>
         </template>
 
@@ -3242,6 +3415,53 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .library-search:focus { outline: 1px solid #555; }
 .library-empty {
   color: #a7a7a7; font-size: var(--fs-empty); padding: 32px 0;
+}
+.search-empty-copy {
+  color: #a7a7a7;
+  font-size: var(--fs-body-md);
+  margin: 0 0 16px;
+}
+.search-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.search-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.search-stat-label {
+  color: #a7a7a7;
+  font-size: var(--fs-eyebrow);
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.search-stat-value {
+  color: #fff;
+  font-size: calc(var(--fs-h2) - 2px);
+  font-weight: 700;
+}
+.search-section-head {
+  margin-top: 6px;
+}
+.search-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 0 0 14px;
+  color: #a7a7a7;
+  font-size: var(--fs-body-md);
+}
+.search-summary strong {
+  color: #fff;
+  font-weight: 700;
 }
 .text-action-btn { font-size: var(--fs-button); font-weight: 600; }
 .track-play-count {
