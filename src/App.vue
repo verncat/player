@@ -187,6 +187,16 @@ const showNewPlaylistInput = ref(false);
 const newPlaylistName = ref('');
 // context menu for "add to playlist"
 const addToPlaylistMenu = ref<{ track: Track; x: number; y: number } | null>(null);
+const trackContextMenu = ref<{ track: Track; x: number; y: number; playlistId: number | null } | null>(null);
+const TRACK_MENU_MARGIN = 12;
+const TRACK_MENU_WIDTH = 240;
+const TRACK_LONG_PRESS_DELAY = 420;
+const TRACK_LONG_PRESS_MOVE_TOLERANCE = 12;
+let trackLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+let trackTouchStartX = 0;
+let trackTouchStartY = 0;
+let trackLongPressContext: { track: Track; x: number; y: number; playlistId: number | null } | null = null;
+let suppressTrackRowClickUntil = 0;
 
 async function loadPlaylists() {
   playlists.value = await invoke<Playlist[]>('get_playlists');
@@ -230,9 +240,112 @@ async function removeTrackFromPlaylist(playlistId: number, trackId: number) {
   await loadPlaylists();
 }
 
+function clampMenuPosition(x: number, y: number) {
+  const maxX = Math.max(TRACK_MENU_MARGIN, window.innerWidth - TRACK_MENU_WIDTH - TRACK_MENU_MARGIN);
+  const maxY = Math.max(TRACK_MENU_MARGIN, window.innerHeight - 280);
+  return {
+    x: Math.max(TRACK_MENU_MARGIN, Math.min(x, maxX)),
+    y: Math.max(TRACK_MENU_MARGIN, Math.min(y, maxY)),
+  };
+}
+
+function openAddToPlaylistMenuAt(track: Track, x: number, y: number) {
+  const pos = clampMenuPosition(x, y);
+  trackContextMenu.value = null;
+  addToPlaylistMenu.value = { track, x: pos.x, y: pos.y };
+}
+
 function openAddToPlaylistMenu(e: MouseEvent, track: Track) {
   e.stopPropagation();
-  addToPlaylistMenu.value = { track, x: e.clientX, y: e.clientY };
+  openAddToPlaylistMenuAt(track, e.clientX, e.clientY);
+}
+
+function openTrackContextMenuAt(track: Track, x: number, y: number, playlistId: number | null = null) {
+  const pos = clampMenuPosition(x, y);
+  addToPlaylistMenu.value = null;
+  trackContextMenu.value = { track, x: pos.x, y: pos.y, playlistId };
+}
+
+function clearTrackLongPress() {
+  if (trackLongPressTimer) clearTimeout(trackLongPressTimer);
+  trackLongPressTimer = null;
+  trackLongPressContext = null;
+}
+
+function startTrackRowLongPress(e: TouchEvent, track: Track, playlistId: number | null = null) {
+  if (e.touches.length !== 1) return;
+  clearTrackLongPress();
+  const touch = e.touches[0];
+  trackTouchStartX = touch.clientX;
+  trackTouchStartY = touch.clientY;
+  trackLongPressContext = { track, x: touch.clientX, y: touch.clientY, playlistId };
+  trackLongPressTimer = setTimeout(() => {
+    const ctx = trackLongPressContext;
+    if (!ctx) return;
+    suppressTrackRowClickUntil = performance.now() + 500;
+    openTrackContextMenuAt(ctx.track, ctx.x, ctx.y, ctx.playlistId);
+    clearTrackLongPress();
+  }, TRACK_LONG_PRESS_DELAY);
+}
+
+function moveTrackRowLongPress(e: TouchEvent) {
+  if (!trackLongPressTimer || !e.touches.length) return;
+  const touch = e.touches[0];
+  const dx = touch.clientX - trackTouchStartX;
+  const dy = touch.clientY - trackTouchStartY;
+  if (Math.hypot(dx, dy) > TRACK_LONG_PRESS_MOVE_TOLERANCE) clearTrackLongPress();
+}
+
+function endTrackRowLongPress() {
+  clearTrackLongPress();
+}
+
+function shouldSuppressTrackRowClick() {
+  return performance.now() < suppressTrackRowClickUntil;
+}
+
+function playLibraryTrack(index: number) {
+  if (index < 0 || shouldSuppressTrackRowClick()) return;
+  playTrackFrom('library', index);
+}
+
+function playPlaylistTrack(tracks: Track[], index: number) {
+  if (index < 0 || shouldSuppressTrackRowClick()) return;
+  playFromPlaylist(tracks, index);
+}
+
+function toggleLikeFromTrackContext() {
+  const track = trackContextMenu.value?.track;
+  trackContextMenu.value = null;
+  if (!track) return;
+  toggleLike(track);
+}
+
+function editTrackFromTrackContext() {
+  const track = trackContextMenu.value?.track;
+  trackContextMenu.value = null;
+  if (!track) return;
+  openEditor(track);
+}
+
+function identifyTrackFromTrackContext() {
+  const track = trackContextMenu.value?.track;
+  trackContextMenu.value = null;
+  if (!track) return;
+  identifySingle(track);
+}
+
+function addTrackToPlaylistFromTrackContext() {
+  const menu = trackContextMenu.value;
+  if (!menu) return;
+  openAddToPlaylistMenuAt(menu.track, menu.x, menu.y);
+}
+
+function removeTrackFromPlaylistFromTrackContext() {
+  const menu = trackContextMenu.value;
+  trackContextMenu.value = null;
+  if (!menu || menu.playlistId === null) return;
+  removeTrackFromPlaylist(menu.playlistId, menu.track.id);
 }
 
 // ── Smart Playlists ──────────────────────────────────────────────────────────
@@ -917,6 +1030,18 @@ function isCurrentTrack(trackId: number) {
   return nowPlaying.value?.id === trackId;
 }
 
+function isTrackPlaying(trackId: number) {
+  return isCurrentTrack(trackId) && isPlaying.value;
+}
+
+async function toggleCardPlayback(src: QueueSource, index: number, trackId: number) {
+  if (isCurrentTrack(trackId)) {
+    await togglePlay();
+    return;
+  }
+  await playTrackFrom(src, index);
+}
+
 function isNextTrack(trackId: number) {
   const nextTrackId = queue.value[0]?.id;
   return nextTrackId !== undefined && nextTrackId !== null && nextTrackId !== nowPlaying.value?.id && nextTrackId === trackId;
@@ -934,6 +1059,7 @@ function restoreContentScroll(scrollTop: number | null) {
 async function playTrackFrom(src: QueueSource, index: number) {
   const list = sourceList(src);
   if (!list.length) return;
+  bumpPlaybackTransitionSequence();
   const contentScrollTop = contentRef.value?.scrollTop ?? null;
   const wasPlaying = isPlaying.value;
   queueSource.value = src;
@@ -962,6 +1088,7 @@ async function playTrackFrom(src: QueueSource, index: number) {
 
 /** Advance to next track in queue */
 async function playNext() {
+  bumpPlaybackTransitionSequence();
   if (!queue.value.length) {
     isPlaying.value = false;
     stopTicker();
@@ -986,6 +1113,7 @@ async function playNext() {
 
 /** Go to previous track (restart current if >3s in, else go back in source) */
 async function playPrev() {
+  bumpPlaybackTransitionSequence();
   if (currentTime.value > 3) {
     currentTime.value = 0;
     await invoke('playback_seek', { position: 0 });
@@ -1036,35 +1164,50 @@ function formatTime(s: number) {
 
 let ticker: ReturnType<typeof setInterval> | null = null;
 let androidSyncCounter = 0;
+let playbackTransitionSequence = 0;
+let handlingFinishedPlayback = false;
+
+function bumpPlaybackTransitionSequence() {
+  playbackTransitionSequence += 1;
+  return playbackTransitionSequence;
+}
 
 function stopTicker() {
   if (ticker) { clearInterval(ticker); ticker = null; }
 }
 
-async function handleFinishedPlayback() {
-  if (repeatMode.value === 2) {
-    if (nowPlaying.value) {
-      await invoke('playback_play', { path: nowPlaying.value.path });
-      startTicker();
-      syncAndroid();
+async function handleFinishedPlayback(expectedSequence = playbackTransitionSequence) {
+  if (expectedSequence !== playbackTransitionSequence || handlingFinishedPlayback) return;
+  handlingFinishedPlayback = true;
+  try {
+    if (repeatMode.value === 2) {
+      if (nowPlaying.value) {
+        bumpPlaybackTransitionSequence();
+        await invoke('playback_play', { path: nowPlaying.value.path });
+        startTicker();
+        syncAndroid();
+      }
+    } else {
+      await playNext();
     }
-  } else {
-    await playNext();
+  } finally {
+    handlingFinishedPlayback = false;
   }
 }
 
-(window as any)._playbackFinished = () => handleFinishedPlayback();
+(window as any)._playbackFinished = () => handleFinishedPlayback(playbackTransitionSequence);
 
 function startTicker() {
   stopTicker();
   androidSyncCounter = 0;
   ticker = setInterval(async () => {
     try {
+      const transitionSequence = playbackTransitionSequence;
       const st = await refreshPlaybackState();
       // sync Android notification progress ~every 4 ticks (≈1 s)
       if (++androidSyncCounter >= 4) { androidSyncCounter = 0; syncAndroid(); }
       if (st.finished) {
-        await handleFinishedPlayback();
+        await handleFinishedPlayback(transitionSequence);
       }
     } catch (_) { /* ignore polling errors */ }
   }, 250);
@@ -1345,9 +1488,10 @@ onMounted(() => {
   
   // Listen for app coming back to foreground (Android)
   listen('tauri://resumed', async () => {
+    const transitionSequence = playbackTransitionSequence;
     const st = await refreshPlaybackState();
     if (st.finished) {
-      await handleFinishedPlayback();
+      await handleFinishedPlayback(transitionSequence);
       return;
     }
     if (st.playing && !ticker) {
@@ -1357,7 +1501,7 @@ onMounted(() => {
 
   // Rust emits this when decode thread reaches EOF — works even when JS timers are throttled (Android background)
   listen('playback-finished', async () => {
-    await handleFinishedPlayback();
+    await handleFinishedPlayback(playbackTransitionSequence);
   });
   
   listen('library-changed', () => { loadLibrary(); loadRecent(); });
@@ -1496,6 +1640,7 @@ onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
   delete (window as any)._playbackFinished;
+  clearTrackLongPress();
   if (beatRafId !== null) cancelAnimationFrame(beatRafId);
   if (_mouseRafId) cancelAnimationFrame(_mouseRafId);
   cancelAnimationFrame(cardSpringRaf);
@@ -1636,8 +1781,9 @@ onUnmounted(() => {
                   ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                   : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`">
                   <div class="hover-play">
-                    <button class="green-circle">
-                      <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
+                    <button class="green-circle" type="button" @click.stop="toggleCardPlayback('recent', idx, track.id)">
+                      <svg v-if="!isTrackPlaying(track.id)" viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
+                      <svg v-else viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
                     </button>
                   </div>
                 </div>
@@ -1694,7 +1840,11 @@ onUnmounted(() => {
                   :key="track.id"
                   class="track-row" :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                   :style="rarityVars(track.rarity)"
-                  @click="playTrackFrom('library', libraryFlatList.indexOf(track))"
+                  @click="playLibraryTrack(libraryFlatList.indexOf(track))"
+                  @touchstart.passive="startTrackRowLongPress($event, track)"
+                  @touchmove.passive="moveTrackRowLongPress"
+                  @touchend="endTrackRowLongPress"
+                  @touchcancel="endTrackRowLongPress"
                 >
                   <div class="track-cover-sm" :style="covers[track.id]
                     ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -1714,20 +1864,20 @@ onUnmounted(() => {
                     </div>
                     <span class="track-album">{{ track.album || '' }}</span>
                   </div>
-                  <button class="icon-btn edit-btn" title="Identify" @click.stop="identifySingle(track)">
+                  <button class="icon-btn edit-btn track-inline-action" title="Identify" @click.stop="identifySingle(track)">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
                   </button>
-                  <button class="icon-btn edit-btn" title="Edit" @click.stop="openEditor(track)">
+                  <button class="icon-btn edit-btn track-inline-action" title="Edit" @click.stop="openEditor(track)">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
                   </button>
                   <span title="Play Count" v-if="track.play_count > 0" class="track-play-count" style="margin-right: 8px;">
                     ▶ {{ track.play_count }}
                   </span>
-                  <button class="icon-btn like-btn" @click.stop="toggleLike(track)" style="margin-right: 8px;">
+                  <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
                     <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
                     <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
                   </button>
-                  <button class="icon-btn edit-btn" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
+                  <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
                   </button>
                   <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
@@ -1765,7 +1915,11 @@ onUnmounted(() => {
                 class="track-row"
                 :class="[rarityClass(entry.track.rarity), { 'track-row-current': isCurrentTrack(entry.track.id), 'track-row-next': isNextTrack(entry.track.id) }]"
                 :style="rarityVars(entry.track.rarity)"
-                @click="playTrackFrom('library', libraryFlatList.findIndex(t => t.id === entry.track.id))"
+                @click="playLibraryTrack(libraryFlatList.findIndex(t => t.id === entry.track.id))"
+                @touchstart.passive="startTrackRowLongPress($event, entry.track)"
+                @touchmove.passive="moveTrackRowLongPress"
+                @touchend="endTrackRowLongPress"
+                @touchcancel="endTrackRowLongPress"
               >
                 <div class="track-cover-sm" :style="covers[entry.track.id]
                   ? `background-image: url(${covers[entry.track.id]}); background-size: cover; background-position: center`
@@ -1785,7 +1939,7 @@ onUnmounted(() => {
                   <span class="track-album">{{ entry.track.artist || 'Unknown' }}{{ entry.track.album ? ' · ' + entry.track.album : '' }}</span>
                 </div>
                 <span class="history-time" style="margin-right:12px;">{{ formatHistoryDate(entry.played_at) }}</span>
-                <button class="icon-btn like-btn" @click.stop="toggleLike(entry.track)" style="margin-right:8px;">
+                <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(entry.track)" style="margin-right:8px;">
                   <svg v-if="entry.track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
                   <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
                 </button>
@@ -1819,7 +1973,11 @@ onUnmounted(() => {
                     class="track-row"
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
-                    @click="playFromPlaylist(playlistView!.tracks, idx)"
+                    @click="playPlaylistTrack(playlistView!.tracks, idx)"
+                    @touchstart.passive="startTrackRowLongPress($event, track, playlistView!.id)"
+                    @touchmove.passive="moveTrackRowLongPress"
+                    @touchend="endTrackRowLongPress"
+                    @touchcancel="endTrackRowLongPress"
                   >
                     <div class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -1838,7 +1996,7 @@ onUnmounted(() => {
                       </div>
                       <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}</span>
                     </div>
-                    <button class="icon-btn" style="margin-right:8px;" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
+                    <button class="icon-btn track-inline-action" style="margin-right:8px;" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
                       <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13H5v-2h14v2z"/></svg>
                     </button>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
@@ -1973,7 +2131,11 @@ onUnmounted(() => {
                     class="track-row"
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
-                    @click="playTrackFrom('library', libraryFlatList.findIndex(t => t.id === track.id))"
+                    @click="playLibraryTrack(libraryFlatList.findIndex(t => t.id === track.id))"
+                    @touchstart.passive="startTrackRowLongPress($event, track)"
+                    @touchmove.passive="moveTrackRowLongPress"
+                    @touchend="endTrackRowLongPress"
+                    @touchcancel="endTrackRowLongPress"
                   >
                     <div class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -2020,7 +2182,11 @@ onUnmounted(() => {
                     class="track-row"
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
-                    @click="playFromPlaylist(smartPlaylistTracks(smartView!), idx)"
+                    @click="playPlaylistTrack(smartPlaylistTracks(smartView!), idx)"
+                    @touchstart.passive="startTrackRowLongPress($event, track)"
+                    @touchmove.passive="moveTrackRowLongPress"
+                    @touchend="endTrackRowLongPress"
+                    @touchcancel="endTrackRowLongPress"
                   >
                     <div class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -2152,6 +2318,29 @@ onUnmounted(() => {
     </main>
 
     <!-- Add to playlist menu -->
+    <Teleport to="body">
+      <div v-if="trackContextMenu" class="playlist-menu-backdrop" @click="trackContextMenu = null">
+        <div
+          class="playlist-menu track-context-menu"
+          :style="{ top: trackContextMenu.y + 'px', left: trackContextMenu.x + 'px' }"
+          @click.stop
+        >
+          <div class="playlist-menu-header">Track actions</div>
+          <button class="playlist-menu-item" @click="toggleLikeFromTrackContext">{{ trackContextMenu.track.is_liked ? 'Unlike' : 'Like' }}</button>
+          <button class="playlist-menu-item" @click="addTrackToPlaylistFromTrackContext">Add to playlist</button>
+          <button class="playlist-menu-item" @click="editTrackFromTrackContext">Edit metadata</button>
+          <button class="playlist-menu-item" @click="identifyTrackFromTrackContext">Identify</button>
+          <button
+            v-if="trackContextMenu.playlistId !== null"
+            class="playlist-menu-item danger"
+            @click="removeTrackFromPlaylistFromTrackContext"
+          >
+            Remove from playlist
+          </button>
+        </div>
+      </div>
+    </Teleport>
+
     <Teleport to="body">
       <div v-if="addToPlaylistMenu" class="playlist-menu-backdrop" @click="addToPlaylistMenu = null">
         <div
@@ -2584,8 +2773,10 @@ onUnmounted(() => {
                 @pointerup="mobileSeekHoldEnd"
                 @pointercancel="mobileSeekHoldEnd"
               >
-                <div class="detail-bar-fill" :style="`width:${displayProgressPercent}%`">
-                  <div class="detail-bar-thumb" />
+                <div class="detail-bar-track">
+                  <div class="detail-bar-fill" :style="`width:${displayProgressPercent}%`">
+                    <div class="detail-bar-thumb" />
+                  </div>
                 </div>
               </div>
               <div class="detail-time-row">
@@ -3114,6 +3305,8 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   font-size: var(--fs-button); padding: 9px 14px; cursor: pointer;
 }
 .playlist-menu-item:hover { background: #333; }
+.playlist-menu-item.danger { color: #ffb7b7; }
+.playlist-menu-item.danger:hover { background: rgba(255, 82, 82, 0.12); }
 
 /* Smart Playlists */
 .sp-match-row {
@@ -3686,7 +3879,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .app {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 1fr calc(130px + env(safe-area-inset-bottom));
-    --fs-nav: 13px;
+    --fs-nav: 15px;
     --fs-h2: 20px;
     --fs-section-link: 10px;
     --fs-card-title: 12px;
@@ -3820,6 +4013,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .track-cover-sm { width: 32px; height: 32px; }
   .track-num { display: none; }
   .edit-btn { opacity: 1; }
+  .track-inline-action { display: none !important; }
 
   .player {
     grid-column: 1;
@@ -3919,7 +4113,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 /* ── Responsive: phones ── */
 @media (max-width: 480px) {
   .app {
-    --fs-nav: 12px;
+    --fs-nav: 14px;
     --fs-h2: 18px;
     --fs-section-link: 10px;
     --fs-card-title: 11px;
@@ -3955,8 +4149,8 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     --fs-detail-time: 10px;
   }
 
-  .nav-item svg { width: 16px; height: 16px; }
-  .nav-item { padding: 6px 8px; font-size: var(--fs-nav); }
+  .nav-item svg { width: 18px; height: 18px; }
+  .nav-item { padding: 10px 12px; font-size: var(--fs-nav); }
 
   .card-list { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
 
@@ -4240,13 +4434,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   height: 28px; display: flex; align-items: center; cursor: pointer;
 }
 
-.detail-bar::before {
-  content: '';
-  position: absolute; left: 24px; right: 24px; height: 4px;
-  background: #3a3a3a; border-radius: 999px;
-  pointer-events: none;
-}
-
 .detail-seek-wrap { position: relative; }
 
 .detail-bar {
@@ -4254,10 +4441,18 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   height: 28px;
 }
 
+.detail-bar-track {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  background: #3a3a3a;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
 .detail-bar-fill {
   position: absolute;
-  top: 50%; left: 0;
-  transform: translateY(-50%);
+  inset: 0 auto 0 0;
   height: 4px;
   background: #fff;
   border-radius: 999px;
@@ -4274,12 +4469,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 
 .detail-bar-track {
-  position: absolute;
-  inset: 50% 0;
-  transform: translateY(-50%);
-  height: 4px;
-  background: #3a3a3a;
-  border-radius: 999px;
+  flex-shrink: 0;
 }
 
 .detail-time-row {
