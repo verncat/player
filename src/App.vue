@@ -3998,7 +3998,10 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
   .content { padding: 0 14px 24px; }
 
-  .topbar { padding: 10px 14px; }
+  .topbar {
+    padding: 10px 14px;
+    padding-top: calc(10px + env(safe-area-inset-top));
+  }
 
   .card-list {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
