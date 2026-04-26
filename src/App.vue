@@ -83,6 +83,7 @@ const repeatMode = ref(0);
 const isLiked = ref(true);
 const showUserMenu = ref(false);
 const showDeviceMenu = ref(false);
+const showMobileNav = ref(false);
 const outputDevices = ref<AudioDevice[]>([]);
 const currentDevice = ref<string | null>(null);
 const activeNav = ref("home");
@@ -126,6 +127,7 @@ const identifyDone = ref(false);
 interface IdentifyItem { track_id: number; track_name: string | null; status: string; message: string | null }
 const identifyResults = ref<IdentifyItem[]>([]);
 const identifyLogRef = ref<HTMLElement | null>(null);
+const contentRef = ref<HTMLElement | null>(null);
 
 /* ── Index progress state ── */
 const indexRunning = ref(false);
@@ -911,9 +913,28 @@ function playFromPlaylist(tracks: Track[], index: number) {
   playTrackFrom('playlist', index);
 }
 
+function isCurrentTrack(trackId: number) {
+  return nowPlaying.value?.id === trackId;
+}
+
+function isNextTrack(trackId: number) {
+  const nextTrackId = queue.value[0]?.id;
+  return nextTrackId !== undefined && nextTrackId !== null && nextTrackId !== nowPlaying.value?.id && nextTrackId === trackId;
+}
+
+function restoreContentScroll(scrollTop: number | null) {
+  if (scrollTop === null) return;
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      if (contentRef.value) contentRef.value.scrollTop = scrollTop;
+    });
+  });
+}
+
 async function playTrackFrom(src: QueueSource, index: number) {
   const list = sourceList(src);
   if (!list.length) return;
+  const contentScrollTop = contentRef.value?.scrollTop ?? null;
   const wasPlaying = isPlaying.value;
   queueSource.value = src;
   const track = list[index];
@@ -936,6 +957,7 @@ async function playTrackFrom(src: QueueSource, index: number) {
     startTicker();
   }
   syncAndroid();
+  restoreContentScroll(contentScrollTop);
 }
 
 /** Advance to next track in queue */
@@ -1485,8 +1507,16 @@ onUnmounted(() => {
 
 <template>
   <div class="app">
+    <Transition name="nav-overlay">
+      <div v-if="showMobileNav" class="mobile-nav-overlay" @click="showMobileNav = false" />
+    </Transition>
     <!-- Sidebar -->
-    <aside class="sidebar">
+    <aside class="sidebar" :class="{ 'sidebar-open': showMobileNav }">
+      <div class="sidebar-mobile-header">
+        <button class="icon-btn sidebar-close-btn" @click="showMobileNav = false" aria-label="Close menu">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
       <!-- <div class="brand">
         <svg viewBox="0 0 24 24" fill="#1db954" width="32" height="32">
           <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.622.622 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.622.622 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.622.622 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.632-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.541-1.073 9.43-.865 13.152 1.337a.937.937 0 0 1-.992 1.613z"/>
@@ -1495,23 +1525,23 @@ onUnmounted(() => {
       </div> -->
 
       <nav>
-        <a class="nav-item" :class="{ active: activeNav === 'home' }" @click.prevent="activeNav = 'home'" href="#">
+        <a class="nav-item" :class="{ active: activeNav === 'home' }" @click.prevent="activeNav = 'home'; showMobileNav = false" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
           Home
         </a>
-        <a class="nav-item" :class="{ active: activeNav === 'search' }" @click.prevent="activeNav = 'search'" href="#">
+        <a class="nav-item" :class="{ active: activeNav === 'search' }" @click.prevent="activeNav = 'search'; showMobileNav = false" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
           Search
         </a>
-        <a class="nav-item" :class="{ active: activeNav === 'library' }" @click.prevent="activeNav = 'library'" href="#">
+        <a class="nav-item" :class="{ active: activeNav === 'library' }" @click.prevent="activeNav = 'library'; showMobileNav = false" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
           Your Library
         </a>
-        <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="activeNav = 'playlists'; playlistView = null; playlistTab = 'regular'" href="#">
+        <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="activeNav = 'playlists'; playlistView = null; playlistTab = 'regular'; showMobileNav = false" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
           Playlists
         </a>
-        <a class="nav-item" :class="{ active: activeNav === 'playlists' && playlistTab === 'smart' }" @click.prevent="activeNav = 'playlists'; playlistTab = 'smart'; playlistView = null; editingSP = null; smartView = null" href="#">
+        <a class="nav-item" :class="{ active: activeNav === 'playlists' && playlistTab === 'smart' }" @click.prevent="activeNav = 'playlists'; playlistTab = 'smart'; playlistView = null; editingSP = null; smartView = null; showMobileNav = false" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
           Flexible Playlists
         </a>
@@ -1530,20 +1560,20 @@ onUnmounted(() => {
           </span>
           Liked Songs
         </a> -->
-        <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="activeNav = 'discovery'" href="#">
+        <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="activeNav = 'discovery'; showMobileNav = false" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
           Devices
           <span v-if="peers.length" class="peer-badge">{{ peers.length }}</span>
         </a>
-        <a class="nav-item" href="#" @click.prevent="openDataDir">
+        <a class="nav-item" href="#" @click.prevent="openDataDir; showMobileNav = false">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           Open Data Folder
         </a>
-        <a class="nav-item" href="#" @click.prevent="doReindex">
+        <a class="nav-item" href="#" @click.prevent="doReindex; showMobileNav = false">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
           Reindex
         </a>
-        <a class="nav-item" href="#" @click.prevent="startIdentify">
+        <a class="nav-item" href="#" @click.prevent="startIdentify; showMobileNav = false">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
           Identify
         </a>
@@ -1553,6 +1583,9 @@ onUnmounted(() => {
     <!-- Main -->
     <main class="main">
       <header class="topbar">
+        <button class="burger-btn" @click="showMobileNav = true" aria-label="Menu">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+        </button>
         <div class="nav-arrows">
           <button class="arrow-btn">&lsaquo;</button>
           <button class="arrow-btn">&rsaquo;</button>
@@ -1586,7 +1619,7 @@ onUnmounted(() => {
         </div> -->
       </header>
 
-      <div class="content">
+      <div ref="contentRef" class="content">
         <!-- Home view -->
         <template v-if="activeNav === 'home'">
           <section>
@@ -1659,7 +1692,7 @@ onUnmounted(() => {
                 <div
                   v-for="track in tracks"
                   :key="track.id"
-                  class="track-row" :class="rarityClass(track.rarity)"
+                  class="track-row" :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                   :style="rarityVars(track.rarity)"
                   @click="playTrackFrom('library', libraryFlatList.indexOf(track))"
                 >
@@ -1669,7 +1702,16 @@ onUnmounted(() => {
                   />
                   <span class="track-num">{{ track.track_number ?? '–' }}</span>
                   <div class="track-info">
-                    <span class="track-title">{{ track.title || track.path }}</span>
+                    <div class="track-title-row">
+                      <span class="track-title">{{ track.title || track.path }}</span>
+                      <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                      </span>
+                      <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        <span class="track-playback-step">1</span>
+                      </span>
+                    </div>
                     <span class="track-album">{{ track.album || '' }}</span>
                   </div>
                   <button class="icon-btn edit-btn" title="Identify" @click.stop="identifySingle(track)">
@@ -1678,7 +1720,7 @@ onUnmounted(() => {
                   <button class="icon-btn edit-btn" title="Edit" @click.stop="openEditor(track)">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
                   </button>
-                  <span title="Play Count" v-if="track.play_count > 0" style="margin-right: 8px; font-size: 13px; color: #a7a7a7; user-select: none;">
+                  <span title="Play Count" v-if="track.play_count > 0" class="track-play-count" style="margin-right: 8px;">
                     ▶ {{ track.play_count }}
                   </span>
                   <button class="icon-btn like-btn" @click.stop="toggleLike(track)" style="margin-right: 8px;">
@@ -1721,7 +1763,7 @@ onUnmounted(() => {
                 v-for="(entry, idx) in historyEntries"
                 :key="idx"
                 class="track-row"
-                :class="rarityClass(entry.track.rarity)"
+                :class="[rarityClass(entry.track.rarity), { 'track-row-current': isCurrentTrack(entry.track.id), 'track-row-next': isNextTrack(entry.track.id) }]"
                 :style="rarityVars(entry.track.rarity)"
                 @click="playTrackFrom('library', libraryFlatList.findIndex(t => t.id === entry.track.id))"
               >
@@ -1730,10 +1772,19 @@ onUnmounted(() => {
                   : `background: linear-gradient(135deg, ${hashToColors(entry.track.file_hash)[0]}, ${hashToColors(entry.track.file_hash)[1]})`"
                 />
                 <div class="track-info">
-                  <span class="track-title">{{ entry.track.title || entry.track.path }}</span>
+                  <div class="track-title-row">
+                    <span class="track-title">{{ entry.track.title || entry.track.path }}</span>
+                    <span v-if="isCurrentTrack(entry.track.id)" class="track-playback-badge current" title="Now playing">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                    </span>
+                    <span v-else-if="isNextTrack(entry.track.id)" class="track-playback-badge next" title="Up next">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                      <span class="track-playback-step">1</span>
+                    </span>
+                  </div>
                   <span class="track-album">{{ entry.track.artist || 'Unknown' }}{{ entry.track.album ? ' · ' + entry.track.album : '' }}</span>
                 </div>
-                <span style="font-size:12px; color:#a7a7a7; margin-right:12px; white-space:nowrap;">{{ formatHistoryDate(entry.played_at) }}</span>
+                <span class="history-time" style="margin-right:12px;">{{ formatHistoryDate(entry.played_at) }}</span>
                 <button class="icon-btn like-btn" @click.stop="toggleLike(entry.track)" style="margin-right:8px;">
                   <svg v-if="entry.track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
                   <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
@@ -1758,7 +1809,7 @@ onUnmounted(() => {
                     </button>
                     <h2 style="margin:0;">{{ playlistView.name }}</h2>
                   </div>
-                  <button v-if="playlistView.tracks.length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playFromPlaylist(playlistView!.tracks, 0)">▶ Play</button>
+                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playFromPlaylist(playlistView!.tracks, 0)">▶ Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
@@ -1766,7 +1817,7 @@ onUnmounted(() => {
                     v-for="(track, idx) in playlistView.tracks"
                     :key="track.id"
                     class="track-row"
-                    :class="rarityClass(track.rarity)"
+                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
                     @click="playFromPlaylist(playlistView!.tracks, idx)"
                   >
@@ -1775,7 +1826,16 @@ onUnmounted(() => {
                       : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                     />
                     <div class="track-info">
-                      <span class="track-title">{{ track.title || track.path }}</span>
+                      <div class="track-title-row">
+                        <span class="track-title">{{ track.title || track.path }}</span>
+                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        </span>
+                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <span class="track-playback-step">1</span>
+                        </span>
+                      </div>
                       <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}</span>
                     </div>
                     <button class="icon-btn" style="margin-right:8px;" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
@@ -1789,7 +1849,7 @@ onUnmounted(() => {
               <template v-else>
                 <div class="library-header">
                   <h2>Playlists</h2>
-                  <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
+                  <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
                 </div>
                 <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input
@@ -1830,14 +1890,14 @@ onUnmounted(() => {
                       <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
                     </button>
                     <input
-                      class="library-search"
-                      style="font-size:16px; font-weight:600; min-width:140px; max-width:260px; padding:4px 10px;"
+                      class="library-search smart-name-input"
+                      style="min-width:140px; max-width:260px;"
                       v-model="editingSP.name"
                       @input="saveSP()"
                       @click.stop
                     />
                   </div>
-                  <span style="font-size:12px; color:#a7a7a7;">{{ smartPlaylistTracks(editingSP).length }} tracks</span>
+                  <span class="smart-track-count">{{ smartPlaylistTracks(editingSP).length }} tracks</span>
                 </div>
 
                 <!-- Match mode -->
@@ -1891,7 +1951,7 @@ onUnmounted(() => {
                     <template v-else>
                       <div class="sp-multiselect">
                         <label v-for="v in spUniqueValues(rule.field)" :key="v" class="sp-chip" :class="{ selected: spIsSelected(rule, v) }" @click="spToggleValue(rule, v)">{{ v }}</label>
-                        <span v-if="spUniqueValues(rule.field).length === 0" style="color:#777; font-size:12px;">No values in library</span>
+                        <span v-if="spUniqueValues(rule.field).length === 0" class="smart-empty-values">No values in library</span>
                       </div>
                     </template>
 
@@ -1911,7 +1971,7 @@ onUnmounted(() => {
                     v-for="track in smartPlaylistTracks(editingSP).slice(0, 50)"
                     :key="track.id"
                     class="track-row"
-                    :class="rarityClass(track.rarity)"
+                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
                     @click="playTrackFrom('library', libraryFlatList.findIndex(t => t.id === track.id))"
                   >
@@ -1920,7 +1980,16 @@ onUnmounted(() => {
                       : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                     />
                     <div class="track-info">
-                      <span class="track-title">{{ track.title || track.path }}</span>
+                      <div class="track-title-row">
+                        <span class="track-title">{{ track.title || track.path }}</span>
+                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        </span>
+                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <span class="track-playback-step">1</span>
+                        </span>
+                      </div>
                       <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.year ? ' · ' + track.year : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
                     </div>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
@@ -1939,8 +2008,8 @@ onUnmounted(() => {
                     <h2 style="margin:0;">{{ smartView.name }}</h2>
                   </div>
                   <div style="display:flex;gap:8px;">
-                    <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
-                    <button v-if="smartPlaylistTracks(smartView).length" class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="playFromPlaylist(smartPlaylistTracks(smartView!), 0)">▶ Play</button>
+                    <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
+                    <button v-if="smartPlaylistTracks(smartView).length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playFromPlaylist(smartPlaylistTracks(smartView!), 0)">▶ Play</button>
                   </div>
                 </div>
                 <div v-if="smartPlaylistTracks(smartView).length === 0" class="library-empty">No tracks match this smart playlist.</div>
@@ -1949,7 +2018,7 @@ onUnmounted(() => {
                     v-for="(track, idx) in smartPlaylistTracks(smartView)"
                     :key="track.id"
                     class="track-row"
-                    :class="rarityClass(track.rarity)"
+                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
                     @click="playFromPlaylist(smartPlaylistTracks(smartView!), idx)"
                   >
@@ -1958,7 +2027,16 @@ onUnmounted(() => {
                       : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                     />
                     <div class="track-info">
-                      <span class="track-title">{{ track.title || track.path }}</span>
+                      <div class="track-title-row">
+                        <span class="track-title">{{ track.title || track.path }}</span>
+                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        </span>
+                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <span class="track-playback-step">1</span>
+                        </span>
+                      </div>
                       <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.year ? ' · ' + track.year : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
                     </div>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
@@ -1970,7 +2048,7 @@ onUnmounted(() => {
               <template v-else>
                 <div class="library-header">
                   <h2>Flexible Playlists</h2>
-                  <button class="icon-btn" style="padding:6px 12px; font-size:13px;" @click="showNewSPInput = !showNewSPInput">+ New</button>
+                  <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewSPInput = !showNewSPInput">+ New</button>
                 </div>
                 <div v-if="showNewSPInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input v-model="newSPName" class="library-search" placeholder="Smart playlist name…" style="flex:1;" @keydown.enter="createSmartPlaylist" @keydown.esc="showNewSPInput = false" />
@@ -2006,10 +2084,10 @@ onUnmounted(() => {
               <h2>Devices on Network</h2>
               <div style="display:flex; align-items:center; gap:12px">
                 <button class="sync-toggle" @click="openDeviceSettings" title="Device settings">
-                  <span style="font-size:16px; line-height:1">{{ deviceEmoji }}</span>
+                  <span class="device-emoji">{{ deviceEmoji }}</span>
                   Settings
                 </button>
-                <span style="color:#a7a7a7; font-size:12px">mDNS · auto discovery</span>
+                <span class="discovery-caption">mDNS · auto discovery</span>
                 <button
                   class="sync-toggle"
                   :class="{ active: syncEnabled }"
@@ -2024,7 +2102,7 @@ onUnmounted(() => {
             <div v-if="!peers.length" class="discovery-empty">
               <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" style="color:#535353"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
               <p>No other instances found</p>
-              <p style="font-size:12px; color:#535353">Make sure devices are on the same Wi-Fi network</p>
+              <p class="discovery-help-text">Make sure devices are on the same Wi-Fi network</p>
             </div>
             <div v-else class="peer-list">
               <div v-for="peer in peers" :key="peer.host" class="peer-item">
@@ -2560,6 +2638,40 @@ a, button, [role="button"] {
   height: 100vh;
   color: #fff;
   background: #000;
+  --fs-nav: 14px;
+  --fs-h2: 22px;
+  --fs-section-link: 11px;
+  --fs-card-title: 13px;
+  --fs-card-meta: 12px;
+  --fs-player-title: 13px;
+  --fs-player-meta: 11px;
+  --fs-input: 13px;
+  --fs-empty: 14px;
+  --fs-eyebrow: 11px;
+  --fs-group: 13px;
+  --fs-track-side: 13px;
+  --fs-track-title: 14px;
+  --fs-track-meta: 12px;
+  --fs-badge: 11px;
+  --fs-modal-title: 18px;
+  --fs-field-label: 12px;
+  --fs-field-input: 14px;
+  --fs-button: 13px;
+  --fs-dropdown-label: 12px;
+  --fs-dropdown-item: 14px;
+  --fs-queue-title: 13px;
+  --fs-queue-meta: 11px;
+  --fs-queue-dur: 12px;
+  --fs-status-pill: 13px;
+  --fs-powered-by: 11px;
+  --fs-body-sm: 12px;
+  --fs-body-md: 13px;
+  --fs-peer-title: 14px;
+  --fs-peer-meta: 12px;
+  --fs-control: 12px;
+  --fs-detail-title: 18px;
+  --fs-detail-artist: 14px;
+  --fs-detail-time: 12px;
 }
 
 /* ── Sidebar ── */
@@ -2592,7 +2704,7 @@ a, button, [role="button"] {
   border-radius: 6px;
   color: #b3b3b3;
   text-decoration: none;
-  font-size: 14px;
+  font-size: var(--fs-nav);
   font-weight: 600;
   cursor: pointer;
   transition: color .12s;
@@ -2606,7 +2718,7 @@ a, button, [role="button"] {
   margin-left: auto;
   background: #1db954;
   color: #000;
-  font-size: 11px; font-weight: 700;
+  font-size: var(--fs-eyebrow); font-weight: 700;
   min-width: 18px; height: 18px;
   border-radius: 9px;
   display: flex; align-items: center; justify-content: center;
@@ -2615,7 +2727,7 @@ a, button, [role="button"] {
 
 .discovery-empty {
   display: flex; flex-direction: column; align-items: center;
-  gap: 12px; padding: 60px 0; color: #a7a7a7; font-size: 14px;
+  gap: 12px; padding: 60px 0; color: #a7a7a7; font-size: var(--fs-empty);
 }
 .peer-list { display: flex; flex-direction: column; gap: 8px; }
 .peer-item {
@@ -2629,21 +2741,21 @@ a, button, [role="button"] {
   color: #a7a7a7; flex-shrink: 0;
 }
 .peer-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
-.peer-name { font-size: 14px; font-weight: 600; color: #fff; }
-.peer-alias { font-size: 11px; color: #7b7b7b; }
-.peer-addr { font-size: 12px; color: #a7a7a7; }
+.peer-name { font-size: var(--fs-peer-title); font-weight: 600; color: #fff; }
+.peer-alias { font-size: var(--fs-body-sm); color: #7b7b7b; }
+.peer-addr { font-size: var(--fs-peer-meta); color: #a7a7a7; }
 
 .sync-toggle {
   display: flex; align-items: center; gap: 6px;
   padding: 5px 12px; border-radius: 20px; border: 1px solid #535353;
-  background: transparent; color: #a7a7a7; font-size: 12px; font-weight: 600;
+  background: transparent; color: #a7a7a7; font-size: var(--fs-control); font-weight: 600;
   cursor: pointer; transition: all 0.15s;
 }
 .sync-toggle:hover { border-color: #fff; color: #fff; }
 .sync-toggle.active { background: #1db954; border-color: #1db954; color: #000; }
 
 .settings-body { gap: 12px; }
-.settings-label { font-size: 12px; font-weight: 700; color: #a7a7a7; margin-top: 2px; }
+.settings-label { font-size: var(--fs-field-label); font-weight: 700; color: #a7a7a7; margin-top: 2px; }
 .emoji-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -2660,7 +2772,7 @@ a, button, [role="button"] {
 }
 .emoji-cell:hover { border-color: #777; background: #242424; }
 .emoji-cell.active { border-color: #1db954; box-shadow: 0 0 0 1px #1db954 inset; }
-.settings-error { color: #e9283e; font-size: 12px; }
+.settings-error { color: #e9283e; font-size: var(--fs-body-sm); }
 
 .sync-now-btn {
   flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
@@ -2675,7 +2787,7 @@ a, button, [role="button"] {
   height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-top: 2px;
 }
 .sync-bar { height: 100%; background: #1db954; border-radius: 2px; transition: width 0.3s; }
-.sync-status { font-size: 11px; color: #a7a7a7; }
+.sync-status { font-size: var(--fs-powered-by); color: #a7a7a7; }
 .sync-done { color: #1db954; }
 .sync-error { color: #e9283e; }
 
@@ -2766,7 +2878,7 @@ a, button, [role="button"] {
 .content::-webkit-scrollbar-track { background: transparent; }
 
 section { margin-bottom: 36px; }
-section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
+section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
 .section-head {
   display: flex; align-items: baseline; justify-content: space-between;
@@ -2777,7 +2889,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   display: flex; flex-direction: column; gap: 2px;
 }
 .show-all {
-  font-size: 11px; font-weight: 700;
+  font-size: var(--fs-section-link); font-weight: 700;
   text-transform: uppercase; letter-spacing: .08em;
   color: #b3b3b3; text-decoration: none;
 }
@@ -2828,12 +2940,12 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .green-circle:hover { transform: scale(1.06); background: #1ed760; }
 
 .card-title {
-  font-size: 13px; font-weight: 700;
+  font-size: var(--fs-card-title); font-weight: 700;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   margin-bottom: 4px;
 }
 .card-artist {
-  font-size: 12px; color: #a7a7a7;
+  font-size: var(--fs-card-meta); color: #a7a7a7;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
@@ -2855,12 +2967,12 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .thumb { width: 56px; height: 56px; border-radius: 4px; flex-shrink: 0; }
 .track-meta { min-width: 0; }
 .track-name {
-  font-size: 13px; font-weight: 600;
+  font-size: var(--fs-player-title); font-weight: 600;
   overflow: hidden;
   mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
   -webkit-mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
 }
-.track-artist { font-size: 11px; color: #a7a7a7; margin-top: 3px; }
+.track-artist { font-size: var(--fs-player-meta); color: #a7a7a7; margin-top: 3px; }
 
 .player-center {
   display: flex; flex-direction: column; align-items: center;
@@ -2896,7 +3008,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .play-btn:hover { transform: scale(1.06); background: #f0f0f0; }
 
 .progress-row { display: flex; align-items: center; gap: 8px; width: 100%; }
-.time { font-size: 11px; color: #a7a7a7; min-width: 34px; text-align: center; }
+.time { font-size: var(--fs-body-sm); color: #a7a7a7; min-width: 34px; text-align: center; }
 
 .bar {
   flex: 1; height: 4px;
@@ -2932,13 +3044,49 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 .library-search {
   background: #282828; border: none; border-radius: 4px;
-  color: #fff; font-size: 13px; padding: 8px 12px;
+  color: #fff; font-size: var(--fs-input); padding: 8px 12px;
   width: 220px; outline: none;
 }
 .library-search::placeholder { color: #777; }
 .library-search:focus { outline: 1px solid #555; }
 .library-empty {
-  color: #a7a7a7; font-size: 14px; padding: 32px 0;
+  color: #a7a7a7; font-size: var(--fs-empty); padding: 32px 0;
+}
+.text-action-btn { font-size: var(--fs-button); font-weight: 600; }
+.track-play-count {
+  font-size: var(--fs-track-side);
+  color: #a7a7a7;
+  user-select: none;
+}
+.history-time {
+  font-size: var(--fs-body-sm);
+  color: #a7a7a7;
+  white-space: nowrap;
+}
+.smart-name-input {
+  font-size: var(--fs-modal-title);
+  font-weight: 600;
+  padding: 4px 10px;
+}
+.smart-track-count {
+  font-size: var(--fs-body-sm);
+  color: #a7a7a7;
+}
+.smart-empty-values {
+  color: #777;
+  font-size: var(--fs-body-sm);
+}
+.device-emoji {
+  font-size: calc(var(--fs-peer-title) + 2px);
+  line-height: 1;
+}
+.discovery-caption {
+  color: #a7a7a7;
+  font-size: var(--fs-body-sm);
+}
+.discovery-help-text {
+  font-size: var(--fs-body-sm);
+  color: #535353;
 }
 /* Playlist menu */
 .playlist-menu-backdrop {
@@ -2952,29 +3100,29 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   overflow: hidden;
 }
 .playlist-menu-header {
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  font-size: var(--fs-eyebrow); font-weight: 700; text-transform: uppercase;
   letter-spacing: .06em; color: #a7a7a7;
   padding: 10px 14px 6px;
   border-bottom: 1px solid #333;
 }
 .playlist-menu-empty {
-  font-size: 12px; color: #777; padding: 10px 14px;
+  font-size: var(--fs-body-sm); color: #777; padding: 10px 14px;
 }
 .playlist-menu-item {
   display: block; width: 100%; text-align: left;
   background: none; border: none; color: #e0e0e0;
-  font-size: 13px; padding: 9px 14px; cursor: pointer;
+  font-size: var(--fs-button); padding: 9px 14px; cursor: pointer;
 }
 .playlist-menu-item:hover { background: #333; }
 
 /* Smart Playlists */
 .sp-match-row {
   display: flex; align-items: center; gap: 8px;
-  font-size: 13px; color: #a7a7a7; padding: 0 0 14px;
+  font-size: var(--fs-body-md); color: #a7a7a7; padding: 0 0 14px;
 }
 .sp-match-btn {
   background: transparent; border: 1px solid #535353; color: #a7a7a7;
-  border-radius: 20px; padding: 4px 12px; font-size: 12px;
+  border-radius: 20px; padding: 4px 12px; font-size: var(--fs-body-sm);
   font-weight: 600; cursor: pointer; transition: all .15s;
 }
 .sp-match-btn.active, .sp-match-btn:hover { background: #1db954; border-color: #1db954; color: #000; }
@@ -2986,7 +3134,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 .sp-select {
   background: #282828; border: 1px solid #535353; border-radius: 20px;
-  color: #a7a7a7; font-size: 13px; padding: 5px 28px 5px 12px; cursor: pointer;
+  color: #a7a7a7; font-size: var(--fs-input); padding: 5px 28px 5px 12px; cursor: pointer;
   appearance: none; -webkit-appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 10px center;
@@ -2994,12 +3142,12 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 .sp-select:focus { border-color: #fff; color: #fff; }
 .sp-select:hover { border-color: #fff; color: #fff; }
-.sp-op-label { font-size: 12px; color: #a7a7a7; white-space: nowrap; }
+.sp-op-label { font-size: var(--fs-body-sm); color: #a7a7a7; white-space: nowrap; }
 .sp-text-input { flex: 1; min-width: 100px; }
 .sp-num-input { width: 80px; }
 .sp-add-rule-btn {
   background: transparent; border: 1px solid #535353; color: #a7a7a7;
-  border-radius: 20px; padding: 5px 14px; font-size: 12px; font-weight: 600;
+  border-radius: 20px; padding: 5px 14px; font-size: var(--fs-body-sm); font-weight: 600;
   cursor: pointer; transition: all .15s;
   align-self: flex-start;
 }
@@ -3009,21 +3157,21 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 .sp-chip {
   background: #282828; border: 1px solid #444; color: #a7a7a7;
-  border-radius: 20px; padding: 3px 10px; font-size: 12px;
+  border-radius: 20px; padding: 3px 10px; font-size: var(--fs-body-sm);
   cursor: pointer; transition: background .12s, color .12s, border-color .12s;
   user-select: none;
 }
 .sp-chip.selected { background: #1db954; border-color: #1db954; color: #000; font-weight: 600; }
 .sp-chip:hover:not(.selected) { border-color: #888; color: #e0e0e0; }
 .sp-preview-header {
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  font-size: var(--fs-eyebrow); font-weight: 700; text-transform: uppercase;
   letter-spacing: .06em; color: #a7a7a7;
   padding: 0 0 10px; border-bottom: 1px solid #282828; margin-bottom: 8px;
 }
 .sp-preview { opacity: 0.9; }
 .track-groups { display: flex; flex-direction: column; gap: 24px; }
 .group-artist {
-  font-size: 13px; font-weight: 700; color: #a7a7a7;
+  font-size: var(--fs-group); font-weight: 700; color: #a7a7a7;
   text-transform: uppercase; letter-spacing: .04em;
   padding-bottom: 8px; border-bottom: 1px solid #282828;
   margin-bottom: 4px;
@@ -3040,19 +3188,56 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 .track-num {
   width: 24px; text-align: right;
-  font-size: 13px; color: #a7a7a7; flex-shrink: 0;
+  font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
 }
 .track-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.track-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .track-title {
-  font-size: 14px; font-weight: 500; color: #fff;
+  font-size: var(--fs-track-title); font-weight: 500; color: #fff;
+  display: block; flex: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .track-album {
-  font-size: 12px; color: #a7a7a7;
+  font-size: var(--fs-track-meta); color: #a7a7a7;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.track-row.track-row-current {
+  background: rgba(29, 185, 84, 0.14) !important;
+  box-shadow: inset 0 0 0 1px rgba(29, 185, 84, 0.3);
+}
+.track-row.track-row-next {
+  background: rgba(29, 185, 84, 0.08) !important;
+}
+.track-playback-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: var(--fs-badge);
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.track-playback-badge.current {
+  background: #1db954;
+  color: #08120b;
+}
+.track-playback-badge.next {
+  background: rgba(29, 185, 84, 0.14);
+  color: #8de2a7;
+  box-shadow: inset 0 0 0 1px rgba(29, 185, 84, 0.28);
+}
+.track-playback-step {
+  font-variant-numeric: tabular-nums;
+}
 .track-dur {
-  font-size: 13px; color: #a7a7a7; flex-shrink: 0;
+  font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
 }
 .edit-btn {
   opacity: 0; transition: opacity .12s; flex-shrink: 0;
@@ -3075,17 +3260,17 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   display: flex; align-items: center; justify-content: space-between;
   padding: 20px 24px 12px;
 }
-.modal-header h3 { font-size: 18px; font-weight: 700; }
+.modal-header h3 { font-size: var(--fs-modal-title); font-weight: 700; }
 .modal-body { padding: 8px 24px 16px; display: flex; flex-direction: column; gap: 14px; }
 .field {
   display: flex; flex-direction: column; gap: 4px;
 }
 .field span {
-  font-size: 12px; font-weight: 600; color: #a7a7a7; text-transform: uppercase; letter-spacing: .03em;
+  font-size: var(--fs-field-label); font-weight: 600; color: #a7a7a7; text-transform: uppercase; letter-spacing: .03em;
 }
 .field input {
   background: #3e3e3e; border: none; border-radius: 4px;
-  color: #fff; font-size: 14px; padding: 10px 12px; outline: none;
+  color: #fff; font-size: var(--fs-field-input); padding: 10px 12px; outline: none;
 }
 .field input:focus { outline: 1px solid #1db954; }
 .modal-footer {
@@ -3094,19 +3279,21 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 .btn-secondary {
   background: transparent; border: 1px solid #727272; border-radius: 20px;
-  color: #fff; font-size: 13px; font-weight: 700;
+  color: #fff; font-size: var(--fs-button); font-weight: 700;
   padding: 8px 24px; cursor: pointer;
 }
 .btn-secondary:hover { border-color: #fff; }
 .btn-primary {
   background: #1db954; border: none; border-radius: 20px;
-  color: #000; font-size: 13px; font-weight: 700;
+  color: #000; font-size: var(--fs-button); font-weight: 700;
   padding: 8px 28px; cursor: pointer;
 }
 .btn-primary:hover { background: #1ed760; transform: scale(1.02); }
 
 .modal-enter-active, .modal-leave-active { transition: opacity .15s; }
 .modal-enter-from, .modal-leave-to { opacity: 0; }
+.nav-overlay-enter-active, .nav-overlay-leave-active { transition: opacity .25s; }
+.nav-overlay-enter-from, .nav-overlay-leave-to { opacity: 0; }
 
 /* ── Device popup ── */
 .device-menu-wrapper { position: relative; }
@@ -3119,7 +3306,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 .dropdown-header {
   padding: 10px 16px 6px;
-  font-size: 12px;
+  font-size: var(--fs-dropdown-label);
   font-weight: 700;
   color: #a7a7a7;
   text-transform: uppercase;
@@ -3139,7 +3326,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   padding: 10px 16px;
   color: #fff;
   text-decoration: none;
-  font-size: 14px;
+  font-size: var(--fs-dropdown-item);
   cursor: pointer;
 }
 .device-item:hover { background: #3e3e3e; }
@@ -3147,7 +3334,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   width: 18px;
   text-align: center;
   color: #1db954;
-  font-size: 14px;
+  font-size: var(--fs-dropdown-item);
   flex-shrink: 0;
 }
 .device-name {
@@ -3169,7 +3356,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .queue-now-label, .queue-next-label {
   display: block;
   padding: 8px 16px 4px;
-  font-size: 11px;
+  font-size: var(--fs-eyebrow);
   font-weight: 700;
   color: #a7a7a7;
   text-transform: uppercase;
@@ -3195,16 +3382,16 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   display: flex; flex-direction: column; gap: 2px;
 }
 .queue-item-title {
-  font-size: 13px; font-weight: 600; color: #fff;
+  font-size: var(--fs-queue-title); font-weight: 600; color: #fff;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .queue-item.active .queue-item-title { color: #1db954; }
 .queue-item-artist {
-  font-size: 11px; color: #a7a7a7;
+  font-size: var(--fs-queue-meta); color: #a7a7a7;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .queue-item-dur {
-  font-size: 12px; color: #a7a7a7; flex-shrink: 0;
+  font-size: var(--fs-queue-dur); color: #a7a7a7; flex-shrink: 0;
 }
 .queue-list {
   max-height: 260px;
@@ -3216,7 +3403,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .queue-empty {
   padding: 16px;
   color: #a7a7a7;
-  font-size: 13px;
+  font-size: var(--fs-body-md);
   text-align: center;
 }
 
@@ -3297,7 +3484,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   border-radius: 20px;
   padding: 6px 14px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-status-pill);
   font-weight: 600;
   color: #fff;
   box-shadow: 0 4px 16px rgba(0,0,0,.5);
@@ -3315,7 +3502,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .identify-mini-done { color: #1db954; font-size: 14px; }
 @keyframes ident-spin { to { transform: rotate(360deg); } }
 .identify-modal { width: 440px; }
-.powered-by { font-size: 11px; font-weight: 400; color: #888; margin-left: 6px; }
+.powered-by { font-size: var(--fs-powered-by); font-weight: 400; color: #888; margin-left: 6px; }
 .powered-by a { color: #1db954; text-decoration: none; }
 .powered-by a:hover { text-decoration: underline; }
 .identify-bar-wrap {
@@ -3332,7 +3519,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   transition: width .3s;
 }
 .identify-status {
-  font-size: 12px;
+  font-size: var(--fs-body-sm);
   color: #a7a7a7;
   margin-bottom: 12px;
 }
@@ -3352,7 +3539,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   gap: 8px;
   padding: 6px 8px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: var(--fs-body-md);
   min-width: 0;
 }
 .ir-icon { width: 16px; text-align: center; flex-shrink: 0; }
@@ -3379,7 +3566,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .ir-done { color: #1db954; font-weight: 600; }
 .identify-empty {
   color: #a7a7a7;
-  font-size: 13px;
+  font-size: var(--fs-body-md);
   padding: 12px 0;
   text-align: center;
 }
@@ -3396,7 +3583,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .index-results::-webkit-scrollbar { width: 6px; }
 .index-results::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
 .index-results::-webkit-scrollbar-track { background: transparent; }
-.index-empty { padding: 40px 20px; text-align: center; color: #a7a7a7; font-size: 14px; }
+.index-empty { padding: 40px 20px; text-align: center; color: #a7a7a7; font-size: var(--fs-empty); }
 
 /* Progress bar shown above the list while scanning */
 .log-progress-wrap {
@@ -3417,7 +3604,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   position: absolute;
   right: 0;
   top: 7px;
-  font-size: 11px;
+  font-size: var(--fs-powered-by);
   color: #a7a7a7;
 }
 
@@ -3436,17 +3623,17 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-body-md);
 }
 .ls-icon { font-size: 16px; flex-shrink: 0; }
 .ls-source { font-weight: 600; color: #fff; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ls-time { font-size: 11px; color: #666; flex-shrink: 0; }
+.ls-time { font-size: var(--fs-powered-by); color: #666; flex-shrink: 0; }
 
 .ls-badge {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-body-sm);
   color: #a7a7a7;
   white-space: nowrap;
   flex-shrink: 0;
@@ -3464,7 +3651,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 .ls-error-msg {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--fs-body-sm);
   color: #ff7070;
   word-break: break-all;
 }
@@ -3478,7 +3665,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-body-sm);
   color: #ccc;
   white-space: nowrap;
   overflow: hidden;
@@ -3489,39 +3676,132 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 /* Hidden on desktop; appears above footer on mobile/tablet */
 .mobile-seek-wrap { display: none; }
 
+/* ── Burger & mobile nav overlay (hidden on desktop) ── */
+.burger-btn { display: none; }
+.mobile-nav-overlay { display: none; }
+.sidebar-mobile-header { display: none; }
+
 /* ── Responsive: tablets and small screens ── */
 @media (max-width: 768px) {
   .app {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto 1fr calc(130px + env(safe-area-inset-bottom));
+    grid-template-rows: 1fr calc(130px + env(safe-area-inset-bottom));
+    --fs-nav: 13px;
+    --fs-h2: 20px;
+    --fs-section-link: 10px;
+    --fs-card-title: 12px;
+    --fs-card-meta: 11px;
+    --fs-player-title: 12px;
+    --fs-player-meta: 10px;
+    --fs-input: 12px;
+    --fs-empty: 13px;
+    --fs-eyebrow: 10px;
+    --fs-group: 12px;
+    --fs-track-side: 12px;
+    --fs-track-title: 13px;
+    --fs-track-meta: 11px;
+    --fs-badge: 10px;
+    --fs-modal-title: 16px;
+    --fs-field-label: 11px;
+    --fs-field-input: 13px;
+    --fs-button: 12px;
+    --fs-dropdown-label: 11px;
+    --fs-dropdown-item: 13px;
+    --fs-queue-title: 12px;
+    --fs-queue-meta: 10px;
+    --fs-queue-dur: 11px;
+    --fs-status-pill: 12px;
+    --fs-powered-by: 10px;
+    --fs-body-sm: 11px;
+    --fs-body-md: 12px;
+    --fs-peer-title: 13px;
+    --fs-peer-meta: 11px;
+    --fs-control: 11px;
+    --fs-detail-title: 17px;
+    --fs-detail-artist: 13px;
+    --fs-detail-time: 11px;
   }
 
-  .sidebar {
-    grid-row: 1 / 2;
-    flex-direction: row;
-    padding: 8px 12px;
-    padding-top: calc(8px + env(safe-area-inset-top));
-    gap: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-bottom: 1px solid #282828;
-  }
-  .sidebar nav {
+  /* Burger button */
+  .burger-btn {
     display: flex;
-    gap: 2px;
-    width: 100%;
-  }
-  .sidebar .sidebar-divider { display: none; }
-  .nav-item {
-    gap: 6px;
-    padding: 8px 10px;
-    font-size: 12px;
-    white-space: nowrap;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    padding: 6px;
+    margin-right: 8px;
     flex-shrink: 0;
   }
-  .nav-item svg { width: 18px; height: 18px; }
 
-  .main { grid-row: 2 / 3; }
+  /* Dark overlay */
+  .mobile-nav-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 399;
+  }
+
+  /* Sidebar becomes a slide-in drawer */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 260px;
+    z-index: 400;
+    flex-direction: column;
+    padding: 0 0 24px;
+    padding-top: env(safe-area-inset-top);
+    gap: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-bottom: none;
+    border-right: 1px solid #282828;
+    background: #121212;
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .sidebar.sidebar-open {
+    transform: translateX(0);
+  }
+
+  /* Close button row at top of drawer */
+  .sidebar-mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 12px 12px 4px;
+    flex-shrink: 0;
+  }
+  .sidebar-close-btn {
+    color: #b3b3b3;
+    padding: 8px;
+  }
+
+  .sidebar nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 8px;
+    width: 100%;
+  }
+  .sidebar .sidebar-divider { display: block; }
+  .nav-item {
+    gap: 12px;
+    padding: 12px 14px;
+    font-size: var(--fs-nav);
+    white-space: nowrap;
+    flex-shrink: 0;
+    border-radius: 6px;
+  }
+  .nav-item svg { width: 20px; height: 20px; }
+
+  /* Main spans the full grid now that sidebar is out of flow */
+  .main { grid-row: 1 / 2; grid-column: 1; }
 
   .content { padding: 0 14px 24px; }
 
@@ -3543,7 +3823,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 
   .player {
     grid-column: 1;
-    grid-row: 3 / 4;
+    grid-row: 2 / 3;
     display: flex;
     flex-direction: column;
     padding: 0 10px env(safe-area-inset-bottom);
@@ -3565,8 +3845,8 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
   .player-right { display: none; }
   .player-left .thumb { width: 40px; height: 40px; }
   .player-left .track-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
-  .track-name { font-size: 12px; font-weight: 600; color: #fff; }
-  .track-artist { font-size: 10px; color: #a7a7a7; }
+  .track-name { font-size: var(--fs-player-title); font-weight: 600; color: #fff; }
+  .track-artist { font-size: var(--fs-player-meta); color: #a7a7a7; }
   .player-center {
     display: flex;
     flex-direction: column;
@@ -3638,12 +3918,49 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 
 /* ── Responsive: phones ── */
 @media (max-width: 480px) {
+  .app {
+    --fs-nav: 12px;
+    --fs-h2: 18px;
+    --fs-section-link: 10px;
+    --fs-card-title: 11px;
+    --fs-card-meta: 10px;
+    --fs-player-title: 11px;
+    --fs-player-meta: 9px;
+    --fs-input: 11px;
+    --fs-empty: 12px;
+    --fs-eyebrow: 10px;
+    --fs-group: 11px;
+    --fs-track-side: 11px;
+    --fs-track-title: 12px;
+    --fs-track-meta: 10px;
+    --fs-badge: 9px;
+    --fs-modal-title: 15px;
+    --fs-field-label: 10px;
+    --fs-field-input: 12px;
+    --fs-button: 11px;
+    --fs-dropdown-label: 10px;
+    --fs-dropdown-item: 12px;
+    --fs-queue-title: 11px;
+    --fs-queue-meta: 9px;
+    --fs-queue-dur: 10px;
+    --fs-status-pill: 11px;
+    --fs-powered-by: 9px;
+    --fs-body-sm: 10px;
+    --fs-body-md: 11px;
+    --fs-peer-title: 12px;
+    --fs-peer-meta: 10px;
+    --fs-control: 10px;
+    --fs-detail-title: 16px;
+    --fs-detail-artist: 12px;
+    --fs-detail-time: 10px;
+  }
+
   .nav-item svg { width: 16px; height: 16px; }
-  .nav-item { padding: 6px 8px; font-size: 11px; }
+  .nav-item { padding: 6px 8px; font-size: var(--fs-nav); }
 
   .card-list { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
 
-  .track-title { font-size: 13px; }
+  .track-title { font-size: var(--fs-track-title); }
   .track-album { display: none; }
   .track-dur { display: none; }
 
@@ -3888,7 +4205,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 }
 
 .detail-track-name {
-  font-size: 18px; font-weight: 700; color: #fff;
+  font-size: var(--fs-detail-title); font-weight: 700; color: #fff;
   overflow: hidden;
   flex: 1;
   mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
@@ -3910,7 +4227,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 
 
 .detail-track-artist {
-  font-size: 14px; color: #a7a7a7;
+  font-size: var(--fs-detail-artist); color: #a7a7a7;
   flex: 1;
   overflow: hidden;
   mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
@@ -3968,7 +4285,7 @@ section h2 { font-size: 22px; font-weight: 800; margin-bottom: 16px; }
 .detail-time-row {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--fs-detail-time);
   color: #a7a7a7;
 }
 
