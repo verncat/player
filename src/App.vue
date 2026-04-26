@@ -4759,6 +4759,15 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
 /* ── Desktop override: centered dialog ──────────────────────────────────── */
 @media (max-width: 768px) {
+  .player-detail {
+    background: rgba(0,0,0,.72);
+    backdrop-filter: none;
+  }
+
+  .detail-backdrop {
+    display: none;
+  }
+
   .detail-sheet {
     backdrop-filter: none;
   }

@@ -101,6 +101,24 @@ let rimLight: THREE.PointLight | null = null;
 let coverTexture: THREE.Texture | null = null;
 let coverMaskTexture: THREE.Texture | null = null;
 
+const qualityProfile = (() => {
+  const coarsePointer = typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches;
+  const mobileViewport = typeof window !== 'undefined' && window.innerWidth <= 768;
+  const lowPower = coarsePointer || mobileViewport;
+
+  return {
+    lowPower,
+    maxPixelRatio: lowPower ? 1 : 1.6,
+    textureSize: lowPower ? 512 : 1024,
+    roundedBoxSegments: lowPower ? 3 : 5,
+    maxAnisotropy: lowPower ? 2 : Infinity,
+    maxFps: lowPower ? 30 : 60,
+    antialias: !lowPower,
+  };
+})();
+
 const motionState = {
   coverRotX: 0,
   coverRotY: 0,
@@ -115,8 +133,8 @@ function disposeTexture(texture: THREE.Texture | null) {
 
 function createGradientTexture(colors: [string, string]) {
   const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1024;
+  canvas.width = qualityProfile.textureSize;
+  canvas.height = qualityProfile.textureSize;
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
@@ -151,8 +169,8 @@ function createGradientTexture(colors: [string, string]) {
 
 function createRoundedMaskTexture() {
   const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1024;
+  canvas.width = qualityProfile.textureSize;
+  canvas.height = qualityProfile.textureSize;
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
@@ -184,7 +202,7 @@ function setRendererSize() {
   const height = host.clientHeight;
   if (!width || !height) return;
 
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, qualityProfile.maxPixelRatio));
   renderer.setSize(width, height, false);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
@@ -237,7 +255,10 @@ async function updateTextures() {
 
   if (nextCoverTexture) {
     nextCoverTexture.colorSpace = THREE.SRGBColorSpace;
-    nextCoverTexture.anisotropy = renderer?.capabilities.getMaxAnisotropy() ?? 1;
+    nextCoverTexture.anisotropy = Math.min(
+      renderer?.capabilities.getMaxAnisotropy() ?? 1,
+      qualityProfile.maxAnisotropy,
+    );
   }
 
   disposeTexture(coverTexture);
@@ -256,7 +277,7 @@ function buildScene() {
   camera.position.set(0, 0.08, 5.0);
 
   renderer = new THREE.WebGLRenderer({
-    antialias: true,
+    antialias: qualityProfile.antialias,
     alpha: true,
     powerPreference: 'high-performance',
   });
@@ -295,7 +316,13 @@ function buildScene() {
     emissiveIntensity: 0.65,
   });
 
-  const coverBodyGeometry = new RoundedBoxGeometry(1.72, 1.72, 0.11, 5, 0.08);
+  const coverBodyGeometry = new RoundedBoxGeometry(
+    1.72,
+    1.72,
+    0.11,
+    qualityProfile.roundedBoxSegments,
+    0.08,
+  );
   coverBodyMesh = new THREE.Mesh(coverBodyGeometry, coverBodyMaterial);
   coverGroup.add(coverBodyMesh);
 
@@ -343,6 +370,12 @@ function buildScene() {
 
 function animate(now: number) {
   if (disposed || !renderer || !scene || !camera || !coverGroup) {
+    return;
+  }
+
+  const minFrameDelta = 1000 / qualityProfile.maxFps;
+  if (lastFrameTime && now - lastFrameTime < minFrameDelta) {
+    animationFrame = requestAnimationFrame(animate);
     return;
   }
 
