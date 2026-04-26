@@ -560,15 +560,6 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
             continue;
         }
 
-        // Update position
-        if let Some(ts) = packet.ts().checked_mul(1000) {
-            let pos_ms = ts / sample_rate as u64;
-            shared.position_ms.store(pos_ms, Ordering::SeqCst);
-        } else {
-            let pos_ms = (packet.ts() as f64 / sample_rate as f64 * 1000.0) as u64;
-            shared.position_ms.store(pos_ms, Ordering::SeqCst);
-        }
-
         match decoder.decode(&packet) {
             Ok(decoded) => {
                 write_to_ring(&shared, &decoded, channels, &mut beat_state);
@@ -705,17 +696,30 @@ fn start_output_stream(
     let channels_usize = channels as usize;
     let mut spectrum_analyzer = SpectrumAnalyzer::new(sample_rate);
     let mut spectrum_cleared = true;
+    let mut pending_position_ms = 0.0f64;
     let stream = device
         .build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let vol = shared2.volume.load(Ordering::Relaxed) as f32 / 10000.0;
                 let playing = shared2.playing.load(Ordering::Relaxed);
+                let mut played_frames = 0usize;
                 {
                     let mut ring = shared2.ring.lock().unwrap();
                     if playing {
-                        for sample in data.iter_mut() {
-                            *sample = ring.pop().unwrap_or(0.0) * vol;
+                        for frame in data.chunks_mut(channels_usize) {
+                            let mut frame_had_audio = true;
+                            for sample in frame.iter_mut() {
+                                if let Some(value) = ring.pop() {
+                                    *sample = value * vol;
+                                } else {
+                                    *sample = 0.0;
+                                    frame_had_audio = false;
+                                }
+                            }
+                            if frame_had_audio {
+                                played_frames += 1;
+                            }
                         }
                     } else {
                         for sample in data.iter_mut() {
@@ -735,6 +739,14 @@ fn start_output_stream(
                 }
 
                 spectrum_cleared = false;
+                if played_frames > 0 {
+                    pending_position_ms += played_frames as f64 * 1000.0 / sample_rate as f64;
+                    let add_ms = pending_position_ms.floor() as u64;
+                    if add_ms > 0 {
+                        shared2.position_ms.fetch_add(add_ms, Ordering::SeqCst);
+                        pending_position_ms -= add_ms as f64;
+                    }
+                }
                 for frame in data.chunks(channels_usize) {
                     let mono = frame.iter().copied().sum::<f32>() / channels_usize as f32;
                     spectrum_analyzer.feed_frame(mono, &shared2);
