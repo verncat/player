@@ -236,11 +236,14 @@ interface Playlist {
   name: string;
   created_at: number;
   track_count: number;
+  pinned: boolean;
+  pinned_at: number | null;
 }
 const playlists = ref<Playlist[]>([]);
 const playlistView = ref<{ id: number; name: string; tracks: Track[] } | null>(null);
 const showNewPlaylistInput = ref(false);
 const newPlaylistName = ref('');
+const homePinnedRegularTracks = ref<Record<number, Track[]>>({});
 // context menu for "add to playlist"
 const addToPlaylistMenu = ref<{ track: Track; x: number; y: number } | null>(null);
 const trackContextMenu = ref<{ track: Track; x: number; y: number; playlistId: number | null } | null>(null);
@@ -270,6 +273,28 @@ async function deletePlaylist(id: number) {
   await invoke('delete_playlist', { id });
   if (playlistView.value?.id === id) playlistView.value = null;
   await loadPlaylists();
+}
+
+async function togglePlaylistPinned(pl: Playlist) {
+  await invoke('set_playlist_pinned', { id: pl.id, pinned: !pl.pinned });
+  await loadPlaylists();
+}
+
+async function loadHomePinnedRegularTracks() {
+  const pinnedPlaylists = playlists.value.filter((pl) => pl.pinned);
+  if (pinnedPlaylists.length === 0) {
+    homePinnedRegularTracks.value = {};
+    return;
+  }
+
+  const entries = await Promise.all(
+    pinnedPlaylists.map(async (pl) => [
+      pl.id,
+      await invoke<Track[]>('get_playlist_tracks', { playlistId: pl.id }),
+    ] as const),
+  );
+
+  homePinnedRegularTracks.value = Object.fromEntries(entries);
 }
 
 async function openPlaylist(pl: Playlist) {
@@ -409,7 +434,14 @@ type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false' | 
 type SPSortField = Exclude<SPField, 'any' | 'sort'>;
 type SPSortOp = Extract<SPOp, 'sort_asc' | 'sort_desc'>;
 interface SPRule { id: string; field: SPField; op: SPOp; value: string; }
-interface SmartPlaylist { id: string; name: string; match: 'all' | 'any'; rules: SPRule[]; }
+interface SmartPlaylist {
+  id: string;
+  name: string;
+  match: 'all' | 'any';
+  rules: SPRule[];
+  pinned: boolean;
+  pinned_at: number | null;
+}
 
 const SP_SORT_FIELD_OPTIONS: Array<{ value: SPSortField; label: string }> = [
   { value: 'title', label: 'Title' },
@@ -447,10 +479,19 @@ async function loadSmartPlaylists() {
       }
       localStorage.removeItem('smart_playlists');
     }
-    const rows = await invoke<{ id: string; name: string; match_mode: string; rules_json: string }[]>('get_smart_playlists');
+    const rows = await invoke<{
+      id: string;
+      name: string;
+      match_mode: string;
+      rules_json: string;
+      pinned: boolean;
+      pinned_at: number | null;
+    }[]>('get_smart_playlists');
     smartPlaylists.value = rows.map(r => ({
       id: r.id, name: r.name, match: r.match_mode as 'all' | 'any',
       rules: JSON.parse(r.rules_json || '[]'),
+      pinned: !!r.pinned,
+      pinned_at: r.pinned_at ?? null,
     }));
   } catch { smartPlaylists.value = []; }
 }
@@ -460,7 +501,7 @@ async function createSmartPlaylist() {
   const savedName = await invoke<string>('save_smart_playlist', {
     id, name, matchMode: 'all', rulesJson: '[]',
   });
-  const sp: SmartPlaylist = { id, name: savedName, match: 'all', rules: [] };
+  const sp: SmartPlaylist = { id, name: savedName, match: 'all', rules: [], pinned: false, pinned_at: null };
   smartPlaylists.value.push(sp);
   newSPName.value = '';
   showNewSPInput.value = false;
@@ -471,6 +512,11 @@ async function deleteSmartPlaylist(id: string) {
   smartPlaylists.value = smartPlaylists.value.filter(sp => sp.id !== id);
   if (editingSP.value?.id === id) editingSP.value = null;
   if (smartView.value?.id === id) smartView.value = null;
+}
+
+async function toggleSmartPlaylistPinned(sp: SmartPlaylist) {
+  await invoke('set_smart_playlist_pinned', { id: sp.id, pinned: !sp.pinned });
+  await loadSmartPlaylists();
 }
 function saveSP() {
   if (!editingSP.value) return;
@@ -689,6 +735,114 @@ function smartPlaylistTracks(sp: SmartPlaylist): Track[] {
     return smartPlaylistSortCollator.compare(left.path, right.path);
   });
 }
+
+type HomePinnedPlaylistItem = {
+  key: string;
+  kind: 'regular' | 'smart';
+  name: string;
+  subtitle: string;
+  trackCount: number;
+  pinnedAt: number;
+  playlist: Playlist | SmartPlaylist;
+};
+
+type HomePinnedPlaylistSection = HomePinnedPlaylistItem & {
+  tracks: Track[];
+  previewTracks: Track[];
+};
+
+const hasHomePlaylistCandidates = computed(() => playlists.value.length > 0 || smartPlaylists.value.length > 0);
+const homePinnedItems = computed<HomePinnedPlaylistItem[]>(() => {
+  const regular = playlists.value
+    .filter((pl) => pl.pinned)
+    .map((pl) => ({
+      key: `playlist:${pl.id}`,
+      kind: 'regular' as const,
+      name: pl.name,
+      subtitle: `Playlist · ${pl.track_count} track${pl.track_count !== 1 ? 's' : ''}`,
+      trackCount: pl.track_count,
+      pinnedAt: pl.pinned_at ?? 0,
+      playlist: pl,
+    }));
+  const smart = smartPlaylists.value
+    .filter((sp) => sp.pinned)
+    .map((sp) => {
+      const trackCount = smartPlaylistTracks(sp).length;
+      return {
+        key: `smart:${sp.id}`,
+        kind: 'smart' as const,
+        name: sp.name,
+        subtitle: `Flexible playlist · ${trackCount} track${trackCount !== 1 ? 's' : ''}`,
+        trackCount,
+        pinnedAt: sp.pinned_at ?? 0,
+        playlist: sp,
+      };
+    });
+
+  return [...regular, ...smart].sort((left, right) => {
+    if (right.pinnedAt !== left.pinnedAt) return right.pinnedAt - left.pinnedAt;
+    return left.name.localeCompare(right.name);
+  });
+});
+const HOME_PLAYLIST_PREVIEW_LIMIT = 4;
+const homePinnedSections = computed<HomePinnedPlaylistSection[]>(() => {
+  return homePinnedItems.value.map((item) => {
+    const tracks = item.kind === 'regular'
+      ? homePinnedRegularTracks.value[(item.playlist as Playlist).id] ?? []
+      : smartPlaylistTracks(item.playlist as SmartPlaylist);
+
+    return {
+      ...item,
+      tracks,
+      previewTracks: tracks.slice(0, HOME_PLAYLIST_PREVIEW_LIMIT),
+    };
+  });
+});
+
+function homePinnedCoverStyle(item: HomePinnedPlaylistItem) {
+  const [left, right] = hashToColors(item.key);
+  return `background: linear-gradient(135deg, ${left}, ${right})`;
+}
+
+async function openHomePinnedItem(item: HomePinnedPlaylistItem) {
+  activeNav.value = 'playlists';
+  playlistView.value = null;
+  editingSP.value = null;
+
+  if (item.kind === 'regular') {
+    playlistTab.value = 'regular';
+    smartView.value = null;
+    await openPlaylist(item.playlist as Playlist);
+    return;
+  }
+
+  playlistTab.value = 'smart';
+  smartView.value = item.playlist as SmartPlaylist;
+}
+
+async function playHomePinnedItem(item: HomePinnedPlaylistItem) {
+  if (item.trackCount === 0) return;
+
+  if (item.kind === 'regular') {
+    const playlist = item.playlist as Playlist;
+    const tracks = await invoke<Track[]>('get_playlist_tracks', { playlistId: playlist.id });
+    if (tracks.length) playFromPlaylist(tracks, 0);
+    return;
+  }
+
+  const tracks = smartPlaylistTracks(item.playlist as SmartPlaylist);
+  if (tracks.length) playFromPlaylist(tracks, 0);
+}
+
+watch(
+  playlists,
+  () => {
+    loadHomePinnedRegularTracks().catch(() => {
+      homePinnedRegularTracks.value = {};
+    });
+  },
+  { immediate: true },
+);
 // ────────────────────────────────────────────────────────────────────────────
 
 
@@ -2765,6 +2919,80 @@ onUnmounted(() => {
             </div>
           </section>
 
+          <section v-if="hasHomePlaylistCandidates">
+            <div class="section-head">
+              <h2>Pinned Playlists</h2>
+              <a
+                class="show-all"
+                href="#"
+                @click.prevent="activeNav = 'playlists'; playlistTab = 'regular'; playlistView = null; smartView = null; editingSP = null"
+              >Show all</a>
+            </div>
+            <div v-if="homePinnedItems.length === 0" class="library-empty">Pin playlists from Playlists or Flexible Playlists to keep them here.</div>
+            <div v-else class="card-list">
+              <div
+                v-for="item in homePinnedItems"
+                :key="item.key"
+                class="card"
+                @click="openHomePinnedItem(item)"
+              >
+                <div class="cover" :style="homePinnedCoverStyle(item)">
+                  <div class="hover-play">
+                    <button v-if="item.trackCount" class="green-circle" type="button" @click.stop="playHomePinnedItem(item)">
+                      <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
+                    </button>
+                  </div>
+                  <svg v-if="item.kind === 'regular'" viewBox="0 0 24 24" fill="rgba(255,255,255,0.88)" width="30" height="30"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="rgba(255,255,255,0.88)" width="30" height="30"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+                </div>
+                <div class="card-title">{{ item.name }}</div>
+                <div class="card-artist">{{ item.subtitle }}</div>
+              </div>
+            </div>
+          </section>
+
+          <section v-for="item in homePinnedSections" :key="`${item.key}:preview`">
+            <div class="section-head">
+              <h2>{{ item.name }}</h2>
+              <a class="show-all" href="#" @click.prevent="openHomePinnedItem(item)">Show all</a>
+            </div>
+            <div v-if="item.previewTracks.length === 0" class="library-empty">No tracks in this playlist yet.</div>
+            <div v-else class="track-list">
+              <div
+                v-for="(track, idx) in item.previewTracks"
+                :key="`${item.key}:${track.id}`"
+                class="track-row"
+                :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
+                :style="rarityVars(track.rarity)"
+                @click="playPlaylistTrack(item.tracks, idx)"
+                @touchstart.passive="startTrackRowLongPress($event, track)"
+                @touchmove.passive="moveTrackRowLongPress"
+                @touchend="endTrackRowLongPress"
+                @touchcancel="endTrackRowLongPress"
+              >
+                <div class="track-cover-sm" :style="covers[track.id]
+                  ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                  : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                />
+                <div class="track-info">
+                  <div class="track-title-row">
+                    <span class="track-title">{{ track.title || track.path }}</span>
+                    <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                    </span>
+                    <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                      <span class="track-playback-step">1</span>
+                    </span>
+                  </div>
+                  <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
+                </div>
+                <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+              </div>
+            </div>
+            <div v-if="item.tracks.length > item.previewTracks.length" class="library-empty home-playlist-more">… and {{ item.tracks.length - item.previewTracks.length }} more</div>
+          </section>
+
           <section>
             <div class="section-head">
               <h2>Made For You</h2>
@@ -3198,6 +3426,9 @@ onUnmounted(() => {
                       <span class="track-title">{{ pl.name }}</span>
                       <span class="track-album">{{ pl.track_count }} track{{ pl.track_count !== 1 ? 's' : '' }}</span>
                     </div>
+                    <button class="icon-btn" :class="{ green: pl.pinned }" style="margin-right:4px;" :title="pl.pinned ? 'Unpin from Home' : 'Pin to Home'" @click.stop="togglePlaylistPinned(pl)">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v1h5v8h2v-8h5v-1l-2-2z"/></svg>
+                    </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete playlist" @click.stop="deletePlaylist(pl.id)">
                       <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                     </button>
@@ -3409,6 +3640,9 @@ onUnmounted(() => {
                       <span class="track-title">{{ sp.name }}</span>
                       <span class="track-album">{{ sp.rules.length }} rule{{ sp.rules.length !== 1 ? 's' : '' }} · {{ smartPlaylistTracks(sp).length }} tracks</span>
                     </div>
+                    <button class="icon-btn" :class="{ green: sp.pinned }" style="margin-right:4px;" :title="sp.pinned ? 'Unpin from Home' : 'Pin to Home'" @click.stop="toggleSmartPlaylistPinned(sp)">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v1h5v8h2v-8h5v-1l-2-2z"/></svg>
+                    </button>
                     <button class="icon-btn" style="margin-right:4px;" title="Edit" @click.stop="editingSP = { ...sp }; smartView = null">
                       <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
                     </button>

@@ -379,7 +379,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS playlists (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             name       TEXT NOT NULL,
-            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            pinned     INTEGER NOT NULL DEFAULT 0,
+            pinned_at  INTEGER
         );
         CREATE TABLE IF NOT EXISTS playlist_tracks (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -395,6 +397,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_enabled INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_username TEXT NOT NULL DEFAULT ''");
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_password TEXT NOT NULL DEFAULT ''");
+    let _ = conn.execute_batch("ALTER TABLE playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    let _ = conn.execute_batch("ALTER TABLE playlists ADD COLUMN pinned_at INTEGER");
     // Smart (flexible) playlists — previously in localStorage, now in DB for sync.
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS smart_playlists (
@@ -402,9 +406,13 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             name       TEXT NOT NULL,
             match_mode TEXT NOT NULL DEFAULT 'all',
             rules_json TEXT NOT NULL DEFAULT '[]',
+            pinned     INTEGER NOT NULL DEFAULT 0,
+            pinned_at  INTEGER,
             updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
         );",
     )?;
+    let _ = conn.execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    let _ = conn.execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned_at INTEGER");
     Ok(())
 }
 
@@ -1406,13 +1414,15 @@ pub struct Playlist {
     pub name: String,
     pub created_at: i64,
     pub track_count: i64,
+    pub pinned: bool,
+    pub pinned_at: Option<i64>,
 }
 
 #[tauri::command]
 pub fn get_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<Playlist>, String> {
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn.prepare(
-        "SELECT p.id, p.name, p.created_at, COUNT(pt.id) as track_count
+        "SELECT p.id, p.name, p.created_at, COUNT(pt.id) as track_count, p.pinned, p.pinned_at
          FROM playlists p
          LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
          GROUP BY p.id ORDER BY p.created_at DESC",
@@ -1422,6 +1432,8 @@ pub fn get_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<Playli
         name: row.get(1)?,
         created_at: row.get(2)?,
         track_count: row.get(3)?,
+        pinned: row.get::<_, i64>(4).unwrap_or(0) != 0,
+        pinned_at: row.get(5).unwrap_or(None),
     })).map_err(|e| e.to_string())?;
     rows.map(|r| r.map_err(|e| e.to_string())).collect()
 }
@@ -1460,6 +1472,25 @@ pub fn delete_playlist(id: i64, state: tauri::State<'_, LibraryState>) -> Result
     let conn = state.conn.lock().unwrap();
     conn.execute("DELETE FROM playlists WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_playlist_pinned(id: i64, pinned: bool, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    if pinned {
+        conn.execute(
+            "UPDATE playlists SET pinned = 1, pinned_at = strftime('%s','now') WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE playlists SET pinned = 0, pinned_at = NULL WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1513,6 +1544,8 @@ pub struct SmartPlaylistRow {
     pub name: String,
     pub match_mode: String, // "all" | "any"
     pub rules_json: String, // JSON array of rule objects
+    pub pinned: bool,
+    pub pinned_at: Option<i64>,
     pub updated_at: i64,
 }
 
@@ -1520,14 +1553,16 @@ pub struct SmartPlaylistRow {
 pub fn get_smart_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<SmartPlaylistRow>, String> {
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn.prepare(
-        "SELECT id, name, match_mode, rules_json, updated_at FROM smart_playlists ORDER BY name",
+        "SELECT id, name, match_mode, rules_json, pinned, pinned_at, updated_at FROM smart_playlists ORDER BY name",
     ).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| Ok(SmartPlaylistRow {
         id: row.get(0)?,
         name: row.get(1)?,
         match_mode: row.get(2)?,
         rules_json: row.get(3)?,
-        updated_at: row.get(4)?,
+        pinned: row.get::<_, i64>(4).unwrap_or(0) != 0,
+        pinned_at: row.get(5).unwrap_or(None),
+        updated_at: row.get(6)?,
     })).map_err(|e| e.to_string())?;
     rows.map(|r| r.map_err(|e| e.to_string())).collect()
 }
@@ -1568,5 +1603,24 @@ pub fn delete_smart_playlist(id: String, state: tauri::State<'_, LibraryState>) 
     let conn = state.conn.lock().unwrap();
     conn.execute("DELETE FROM smart_playlists WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_smart_playlist_pinned(id: String, pinned: bool, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    if pinned {
+        conn.execute(
+            "UPDATE smart_playlists SET pinned = 1, pinned_at = strftime('%s','now') WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE smart_playlists SET pinned = 0, pinned_at = NULL WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
