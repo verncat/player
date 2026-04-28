@@ -138,11 +138,26 @@ const covers = ref<Record<number, string | null>>({});
 const beatScale = ref(1);
 let beatRafId: number | null = null;
 let beatStartTime = 0;
+const scheduledBeatTimeoutIds = new Set<number>();
 const BEAT_AMP = 0.10;    // max scale overshoot (1.10× at peak)
 const BEAT_TAU = 130;     // exponential decay time-constant in ms
 
+function scheduleBeatAnimation(delayMs: number) {
+  const timeoutId = window.setTimeout(() => {
+    scheduledBeatTimeoutIds.delete(timeoutId);
+    if (!isPlaying.value) return;
+    startBeatAnimation(0);
+  }, delayMs);
+  scheduledBeatTimeoutIds.add(timeoutId);
+}
+
 function startBeatAnimation(lagMs = 0) {
-  beatStartTime = performance.now() - lagMs;
+  if (lagMs < -8) {
+    scheduleBeatAnimation(-lagMs);
+    return;
+  }
+
+  beatStartTime = performance.now() - Math.max(0, lagMs);
   if (beatRafId !== null) return; // already running — just reset start time
   function tick() {
     const elapsed = performance.now() - beatStartTime;
@@ -2595,6 +2610,10 @@ onUnmounted(() => {
   if (soulseekSearchTimer) clearTimeout(soulseekSearchTimer);
   if (unlistenSoulseekDownload) unlistenSoulseekDownload();
   if (beatRafId !== null) cancelAnimationFrame(beatRafId);
+  for (const timeoutId of scheduledBeatTimeoutIds) {
+    clearTimeout(timeoutId);
+  }
+  scheduledBeatTimeoutIds.clear();
   if (_mouseRafId) cancelAnimationFrame(_mouseRafId);
   cancelAnimationFrame(cardSpringRaf);
   stopAmbient();

@@ -570,7 +570,7 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                write_to_ring(&shared, &decoded, channels, &mut beat_state);
+                write_to_ring(&shared, &decoded, sample_rate, channels, &mut beat_state);
             }
             Err(symphonia::core::errors::Error::DecodeError(e)) => {
                 eprintln!("[playback] decode warning: {e}");
@@ -586,14 +586,20 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
     Ok(())
 }
 
-fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize, beat: &mut BeatState) {
+fn write_to_ring(
+    shared: &Shared,
+    buf: &AudioBufferRef,
+    sample_rate: u32,
+    channels: usize,
+    beat: &mut BeatState,
+) {
     let frames = buf.frames();
     // Convert to interleaved f32
     match buf {
         AudioBufferRef::F32(b) => {
             for frame in 0..frames {
                 let mono = (0..channels).map(|ch| b.chan(ch)[frame]).sum::<f32>() / channels as f32;
-                check_beat(shared, beat, mono);
+                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame];
                     push_sample(shared, sample);
@@ -603,7 +609,7 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize, beat: &
         AudioBufferRef::S16(b) => {
             for frame in 0..frames {
                 let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32 / 32768.0).sum::<f32>() / channels as f32;
-                check_beat(shared, beat, mono);
+                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32 / 32768.0;
                     push_sample(shared, sample);
@@ -613,7 +619,7 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize, beat: &
         AudioBufferRef::S32(b) => {
             for frame in 0..frames {
                 let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32 / 2_147_483_648.0).sum::<f32>() / channels as f32;
-                check_beat(shared, beat, mono);
+                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32 / 2_147_483_648.0;
                     push_sample(shared, sample);
@@ -623,7 +629,7 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize, beat: &
         AudioBufferRef::U8(b) => {
             for frame in 0..frames {
                 let mono = (0..channels).map(|ch| (b.chan(ch)[frame] as f32 - 128.0) / 128.0).sum::<f32>() / channels as f32;
-                check_beat(shared, beat, mono);
+                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = (b.chan(ch)[frame] as f32 - 128.0) / 128.0;
                     push_sample(shared, sample);
@@ -633,7 +639,7 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize, beat: &
         AudioBufferRef::F64(b) => {
             for frame in 0..frames {
                 let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32).sum::<f32>() / channels as f32;
-                check_beat(shared, beat, mono);
+                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32;
                     push_sample(shared, sample);
@@ -644,13 +650,17 @@ fn write_to_ring(shared: &Shared, buf: &AudioBufferRef, channels: usize, beat: &
     }
 }
 
-fn check_beat(shared: &Shared, beat: &mut BeatState, mono: f32) {
+fn check_beat(shared: &Shared, beat: &mut BeatState, mono: f32, sample_rate: u32, channels: usize) {
     if beat.feed(mono) {
         let now = now_ms();
         if now >= beat.last_beat_ms + BEAT_COOLDOWN_MS {
             beat.last_beat_ms = now;
+            let queued_samples = shared.ring.lock().unwrap().available();
+            let queued_frames = queued_samples as f64 / channels.max(1) as f64;
+            let queued_ms = queued_frames * 1000.0 / sample_rate.max(1) as f64;
+            let scheduled_at = now.saturating_add(queued_ms.round() as u64);
             use tauri::Emitter;
-            let _ = shared.app_handle.emit("beat", now);
+            let _ = shared.app_handle.emit("beat", scheduled_at);
         }
     }
 }
