@@ -202,9 +202,7 @@ pub async fn soulseek_search(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut files = flatten_search_results(results);
-    files.truncate(120);
-    Ok(files)
+    Ok(flatten_search_results(results))
 }
 
 #[tauri::command]

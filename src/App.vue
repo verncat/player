@@ -1147,16 +1147,18 @@ const soulseekSettingsSaving = ref(false);
 const soulseekSettingsError = ref('');
 const soulseekStatus = ref<SoulseekStatus | null>(null);
 const soulseekResults = ref<SoulseekSearchResult[]>([]);
+const soulseekVisibleCount = ref(0);
+const soulseekSubmittedQuery = ref('');
 const soulseekLoading = ref(false);
 const soulseekSearching = ref(false);
 const soulseekError = ref('');
 const soulseekDownloads = ref<Record<string, SoulseekDownloadEvent>>({});
 const soulseekCoverUrls = ref<Record<string, string | null>>({});
 const libraryDataDir = ref<string | null>(null);
-let soulseekSearchTimer: ReturnType<typeof setTimeout> | null = null;
 let soulseekSearchSeq = 0;
 let unlistenSoulseekDownload: (() => void) | null = null;
-const SOULSEEK_SEARCH_DEBOUNCE_MS = 450;
+const SOULSEEK_RESULTS_PAGE_SIZE = 120;
+const SOULSEEK_SCROLL_LOAD_THRESHOLD = 180;
 const soulseekCoverLoading = new Set<string>();
 const soulseekPendingPlayback = new Set<string>();
 
@@ -1410,11 +1412,13 @@ async function runSoulseekSearch(query: string, requestId: number) {
     const results = await invoke<SoulseekSearchResult[]>('soulseek_search', { query });
     if (requestId !== soulseekSearchSeq) return;
     soulseekResults.value = results;
+    soulseekVisibleCount.value = Math.min(SOULSEEK_RESULTS_PAGE_SIZE, results.length);
     soulseekError.value = '';
-    void fetchSoulseekCovers(results, requestId);
+    void fetchSoulseekCovers(results.slice(0, soulseekVisibleCount.value), requestId);
   } catch (e: any) {
     if (requestId !== soulseekSearchSeq) return;
     soulseekResults.value = [];
+    soulseekVisibleCount.value = 0;
     soulseekError.value = String(e ?? 'Soulseek search failed');
   } finally {
     if (requestId === soulseekSearchSeq) {
@@ -1424,11 +1428,16 @@ async function runSoulseekSearch(query: string, requestId: number) {
   }
 }
 
-function resetSoulseekSearchState() {
+function resetSoulseekSearchState(clearSubmittedQuery = true) {
+  soulseekSearchSeq += 1;
   soulseekLoading.value = false;
   soulseekSearching.value = false;
   soulseekError.value = '';
   soulseekResults.value = [];
+  soulseekVisibleCount.value = 0;
+  if (clearSubmittedQuery) {
+    soulseekSubmittedQuery.value = '';
+  }
 }
 
 async function fetchSoulseekCovers(results: SoulseekSearchResult[], requestId: number) {
@@ -1469,64 +1478,80 @@ async function fetchSoulseekCovers(results: SoulseekSearchResult[], requestId: n
   }
 }
 
-function scheduleSoulseekSearch(query = searchQuery.value) {
-  if (soulseekSearchTimer) {
-    clearTimeout(soulseekSearchTimer);
-    soulseekSearchTimer = null;
-  }
+function loadMoreSoulseekResults() {
+  if (soulseekVisibleCount.value >= soulseekResults.value.length) return;
 
-  soulseekSearchSeq += 1;
-  const requestId = soulseekSearchSeq;
-  const trimmed = query.trim();
-  const enabled = soulseekStatus.value?.enabled;
-  const configured = soulseekStatus.value?.configured;
+  const previousCount = soulseekVisibleCount.value;
+  const nextCount = Math.min(soulseekResults.value.length, previousCount + SOULSEEK_RESULTS_PAGE_SIZE);
+  soulseekVisibleCount.value = nextCount;
 
-  if (activeNav.value !== 'search' || !trimmed) {
-    resetSoulseekSearchState();
-    return;
-  }
-
-  if (!enabled || !configured) {
-    resetSoulseekSearchState();
-    return;
-  }
-
-  soulseekSearching.value = true;
-  soulseekLoading.value = false;
-  soulseekError.value = '';
-  soulseekSearchTimer = setTimeout(() => {
-    soulseekLoading.value = true;
-    void runSoulseekSearch(trimmed, requestId);
-  }, SOULSEEK_SEARCH_DEBOUNCE_MS);
-}
-
-function handleSearchInput() {
-  if (!searchQuery.value.trim()) {
-    scheduleSoulseekSearch('');
+  if (nextCount > previousCount) {
+    void fetchSoulseekCovers(soulseekResults.value.slice(previousCount, nextCount), soulseekSearchSeq);
+    void nextTick(() => {
+      maybeLoadMoreSoulseekResults();
+    });
   }
 }
 
-function handleSearchKeyup(event: KeyboardEvent) {
+function maybeLoadMoreSoulseekResults() {
   if (
-    event.isComposing
-    || ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)
+    activeNav.value !== 'search'
+    || soulseekLoading.value
+    || soulseekSearching.value
+    || soulseekQueryDirty.value
+    || soulseekVisibleCount.value >= soulseekResults.value.length
   ) {
     return;
   }
 
-  scheduleSoulseekSearch(searchQuery.value);
+  const content = contentRef.value;
+  if (!content) return;
+
+  const distanceToBottom = content.scrollHeight - (content.scrollTop + content.clientHeight);
+  if (distanceToBottom > SOULSEEK_SCROLL_LOAD_THRESHOLD) return;
+
+  loadMoreSoulseekResults();
+}
+
+async function runExplicitSoulseekSearch() {
+  const trimmed = searchQuery.value.trim();
+  const enabled = soulseekStatus.value?.enabled;
+  const configured = soulseekStatus.value?.configured;
+
+  if (activeNav.value !== 'search' || !trimmed || !enabled || !configured || soulseekLoading.value) {
+    return;
+  }
+
+  soulseekSearchSeq += 1;
+  const requestId = soulseekSearchSeq;
+  soulseekSubmittedQuery.value = trimmed;
+  soulseekSearching.value = true;
+  soulseekLoading.value = true;
+  soulseekError.value = '';
+  soulseekResults.value = [];
+  soulseekVisibleCount.value = 0;
+  await runSoulseekSearch(trimmed, requestId);
+}
+
+function handleSearchInput() {
+  const trimmed = searchQuery.value.trim();
+  if (!trimmed) {
+    resetSoulseekSearchState();
+    return;
+  }
+
+  if (trimmed === soulseekSubmittedQuery.value) {
+    return;
+  }
+
+  resetSoulseekSearchState();
 }
 
 watch(
   [activeNav, () => soulseekStatus.value?.enabled, () => soulseekStatus.value?.configured],
   ([nav, enabled, configured]) => {
     if (nav !== 'search' || !enabled || !configured) {
-      scheduleSoulseekSearch('');
-      return;
-    }
-
-    if (searchQuery.value.trim()) {
-      scheduleSoulseekSearch(searchQuery.value);
+      resetSoulseekSearchState();
     }
   }
 );
@@ -2643,6 +2668,12 @@ const searchRecentTracks = computed(() => {
 
 const searchArtistCount = computed(() => countUniqueArtists(searchResults.value));
 const searchAlbumCount = computed(() => countUniqueAlbums(searchResults.value));
+const visibleSoulseekResults = computed(() => soulseekResults.value.slice(0, soulseekVisibleCount.value));
+const soulseekQueryDirty = computed(() => {
+  const trimmed = searchQuery.value.trim();
+  return !!trimmed && trimmed !== soulseekSubmittedQuery.value;
+});
+const canRunSoulseekSearch = computed(() => !!soulseekReady.value && !!searchQuery.value.trim() && !soulseekLoading.value);
 const searchSoulseekCountLabel = computed(() => (soulseekSearching.value ? '?' : String(soulseekResults.value.length)));
 
 const groupedByArtist = computed(() => {
@@ -3041,7 +3072,6 @@ onUnmounted(() => {
   delete (window as any)._playbackFinished;
   clearTrackLongPress();
   clearHomePinnedLongPress();
-  if (soulseekSearchTimer) clearTimeout(soulseekSearchTimer);
   if (unlistenSoulseekDownload) unlistenSoulseekDownload();
   if (beatRafId !== null) cancelAnimationFrame(beatRafId);
   for (const timeoutId of scheduledBeatTimeoutIds) {
@@ -3170,7 +3200,7 @@ onUnmounted(() => {
         </div> -->
       </header>
 
-      <div ref="contentRef" class="content">
+      <div ref="contentRef" class="content" @scroll.passive="maybeLoadMoreSoulseekResults">
         <!-- Home view -->
         <template v-if="activeNav === 'home'">
           <section>
@@ -3388,7 +3418,6 @@ onUnmounted(() => {
                 v-model="searchQuery"
                 class="library-search"
                 @input="handleSearchInput"
-                @keyup="handleSearchKeyup"
                 type="text"
                 placeholder="Search tracks, artists, albums, genres..."
               />
@@ -3508,9 +3537,19 @@ onUnmounted(() => {
 
               <div class="section-head search-section-head soulseek-section-head">
                 <h2>Soulseek</h2>
-                <button class="text-action-btn soulseek-settings-link" @click="openSoulseekSettings">
-                  {{ soulseekStatus?.enabled ? 'Settings' : 'Enable' }}
-                </button>
+                <div class="soulseek-section-actions">
+                  <button
+                    v-if="soulseekReady"
+                    class="icon-btn text-action-btn soulseek-search-btn"
+                    :disabled="!canRunSoulseekSearch"
+                    @click="runExplicitSoulseekSearch"
+                  >
+                    {{ soulseekLoading ? 'Searching…' : 'Search' }}
+                  </button>
+                  <button class="text-action-btn soulseek-settings-link" @click="openSoulseekSettings">
+                    {{ soulseekStatus?.enabled ? 'Settings' : 'Enable' }}
+                  </button>
+                </div>
               </div>
 
               <div v-if="!soulseekStatus?.enabled" class="library-empty search-inline-empty">
@@ -3520,7 +3559,10 @@ onUnmounted(() => {
                 Add Soulseek username and password in Soulseek settings to search the network.
               </div>
               <div v-else-if="!searchQuery.trim()" class="library-empty search-inline-empty">
-                Soulseek search is ready. Start typing to search the network.
+                Enter a query above, then press Search in this block.
+              </div>
+              <div v-else-if="soulseekQueryDirty" class="library-empty search-inline-empty">
+                Press Search in this block to query Soulseek for "{{ searchQuery.trim() }}".
               </div>
               <div v-else-if="soulseekLoading" class="library-empty search-inline-empty">
                 Searching Soulseek…
@@ -3529,11 +3571,11 @@ onUnmounted(() => {
                 {{ soulseekError }}
               </div>
               <div v-else-if="soulseekResults.length === 0" class="library-empty search-inline-empty">
-                No Soulseek matches for "{{ searchQuery }}".
+                No Soulseek matches for "{{ soulseekSubmittedQuery }}".
               </div>
               <div v-else class="track-list soulseek-list">
                 <div
-                  v-for="result in soulseekResults"
+                  v-for="result in visibleSoulseekResults"
                   :key="`${result.username}\u0000${result.filename}`"
                   class="track-row soulseek-row"
                   @click="activateSoulseekResult(result)"
@@ -3579,6 +3621,9 @@ onUnmounted(() => {
                       {{ soulseekDownloadActionLabel(result) }}
                     </button>
                   </div>
+                </div>
+                <div v-if="visibleSoulseekResults.length < soulseekResults.length" class="library-empty search-inline-empty soulseek-more-copy">
+                  Scroll down to load more results · showing {{ visibleSoulseekResults.length }} of {{ soulseekResults.length }}
                 </div>
               </div>
             </template>
@@ -5219,6 +5264,18 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   justify-content: space-between;
   margin-top: 22px;
 }
+.soulseek-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.soulseek-search-btn {
+  padding: 6px 12px;
+}
+.soulseek-search-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .soulseek-settings-link {
   background: transparent;
   border: none;
@@ -5269,6 +5326,9 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.soulseek-more-copy {
+  padding-top: 10px;
 }
 .soulseek-inline-error {
   color: #ff98a3;
