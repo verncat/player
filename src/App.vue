@@ -61,6 +61,7 @@ interface Track {
   play_count: number;
   year: number | null;
   genre: string | null;
+  tags: string | null;
   date_added: number | null;
 }
 
@@ -73,6 +74,7 @@ const rarityColors: Record<string, string> = {
   Mythic: '#ff5252',
 };
 const animatedRarities = new Set(['Epic', 'Legendary', 'Mythic']);
+const TRACK_RARITY_OPTIONS = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary', 'Mythic'] as const;
 
 function rarityClass(r: string | null) {
   if (!r || r === 'Common') return '';
@@ -131,8 +133,67 @@ const libraryLoading = ref(false);
 const libraryQuery = ref("");
 const searchQuery = ref("");
 const editingTrack = ref<Track | null>(null);
-const editForm = ref({ title: '', artist: '', album: '', track_number: null as number | null });
+const editForm = ref({
+  title: '',
+  artist: '',
+  album: '',
+  track_number: null as number | null,
+  year: null as number | null,
+  genre: '',
+  tags: '',
+  play_count: 0,
+  is_liked: false,
+  date_added: '',
+  rarity: '',
+});
 const covers = ref<Record<number, string | null>>({});
+
+function trackTagsList(track: Pick<Track, 'tags'>): string[] {
+  if (!track.tags) return [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of track.tags.split(/[\n,;]+/)) {
+    const tag = raw.trim();
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function trackTagsText(track: Pick<Track, 'tags'>) {
+  return trackTagsList(track).join(', ');
+}
+
+function normalizeTrackTagsInput(value: string): string | null {
+  const tags = trackTagsList({ tags: value });
+  return tags.length ? tags.join(', ') : null;
+}
+
+function trackDateInputValue(value: number | null) {
+  if (value == null) return '';
+  const date = new Date(value * 1000);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+}
+
+function parseTrackDateInput(value: string): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
+}
+
+function normalizeOptionalInteger(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.trunc(parsed));
+}
 
 /* ── Beat animation ── */
 const beatScale = ref(1);
@@ -247,6 +308,7 @@ const homePinnedRegularTracks = ref<Record<number, Track[]>>({});
 // context menu for "add to playlist"
 const addToPlaylistMenu = ref<{ track: Track; x: number; y: number } | null>(null);
 const trackContextMenu = ref<{ track: Track; x: number; y: number; playlistId: number | null } | null>(null);
+const homePinnedContextMenu = ref<{ item: HomePinnedPlaylistItem; x: number; y: number } | null>(null);
 const TRACK_MENU_MARGIN = 12;
 const TRACK_MENU_WIDTH = 240;
 const TRACK_LONG_PRESS_DELAY = 420;
@@ -255,6 +317,10 @@ let trackLongPressTimer: ReturnType<typeof setTimeout> | null = null;
 let trackTouchStartX = 0;
 let trackTouchStartY = 0;
 let trackLongPressContext: { track: Track; x: number; y: number; playlistId: number | null } | null = null;
+let homePinnedLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+let homePinnedTouchStartX = 0;
+let homePinnedTouchStartY = 0;
+let homePinnedLongPressContext: { item: HomePinnedPlaylistItem; x: number; y: number } | null = null;
 let suppressTrackRowClickUntil = 0;
 
 async function loadPlaylists() {
@@ -331,6 +397,7 @@ function clampMenuPosition(x: number, y: number) {
 
 function openAddToPlaylistMenuAt(track: Track, x: number, y: number) {
   const pos = clampMenuPosition(x, y);
+  homePinnedContextMenu.value = null;
   trackContextMenu.value = null;
   addToPlaylistMenu.value = { track, x: pos.x, y: pos.y };
 }
@@ -342,14 +409,40 @@ function openAddToPlaylistMenu(e: MouseEvent, track: Track) {
 
 function openTrackContextMenuAt(track: Track, x: number, y: number, playlistId: number | null = null) {
   const pos = clampMenuPosition(x, y);
+  homePinnedContextMenu.value = null;
   addToPlaylistMenu.value = null;
   trackContextMenu.value = { track, x: pos.x, y: pos.y, playlistId };
+}
+
+function openTrackContextMenu(e: MouseEvent, track: Track, playlistId: number | null = null) {
+  e.preventDefault();
+  e.stopPropagation();
+  openTrackContextMenuAt(track, e.clientX, e.clientY, playlistId);
+}
+
+function openHomePinnedContextMenuAt(item: HomePinnedPlaylistItem, x: number, y: number) {
+  const pos = clampMenuPosition(x, y);
+  addToPlaylistMenu.value = null;
+  trackContextMenu.value = null;
+  homePinnedContextMenu.value = { item, x: pos.x, y: pos.y };
+}
+
+function openHomePinnedContextMenu(e: MouseEvent, item: HomePinnedPlaylistItem) {
+  e.preventDefault();
+  e.stopPropagation();
+  openHomePinnedContextMenuAt(item, e.clientX, e.clientY);
 }
 
 function clearTrackLongPress() {
   if (trackLongPressTimer) clearTimeout(trackLongPressTimer);
   trackLongPressTimer = null;
   trackLongPressContext = null;
+}
+
+function clearHomePinnedLongPress() {
+  if (homePinnedLongPressTimer) clearTimeout(homePinnedLongPressTimer);
+  homePinnedLongPressTimer = null;
+  homePinnedLongPressContext = null;
 }
 
 function startTrackRowLongPress(e: TouchEvent, track: Track, playlistId: number | null = null) {
@@ -380,6 +473,34 @@ function endTrackRowLongPress() {
   clearTrackLongPress();
 }
 
+function startHomePinnedCardLongPress(e: TouchEvent, item: HomePinnedPlaylistItem) {
+  if (e.touches.length !== 1) return;
+  clearHomePinnedLongPress();
+  const touch = e.touches[0];
+  homePinnedTouchStartX = touch.clientX;
+  homePinnedTouchStartY = touch.clientY;
+  homePinnedLongPressContext = { item, x: touch.clientX, y: touch.clientY };
+  homePinnedLongPressTimer = setTimeout(() => {
+    const ctx = homePinnedLongPressContext;
+    if (!ctx) return;
+    suppressTrackRowClickUntil = performance.now() + 500;
+    openHomePinnedContextMenuAt(ctx.item, ctx.x, ctx.y);
+    clearHomePinnedLongPress();
+  }, TRACK_LONG_PRESS_DELAY);
+}
+
+function moveHomePinnedCardLongPress(e: TouchEvent) {
+  if (!homePinnedLongPressTimer || !e.touches.length) return;
+  const touch = e.touches[0];
+  const dx = touch.clientX - homePinnedTouchStartX;
+  const dy = touch.clientY - homePinnedTouchStartY;
+  if (Math.hypot(dx, dy) > TRACK_LONG_PRESS_MOVE_TOLERANCE) clearHomePinnedLongPress();
+}
+
+function endHomePinnedCardLongPress() {
+  clearHomePinnedLongPress();
+}
+
 function shouldSuppressTrackRowClick() {
   return performance.now() < suppressTrackRowClickUntil;
 }
@@ -392,6 +513,16 @@ function playLibraryTrack(index: number) {
 function playPlaylistTrack(tracks: Track[], index: number) {
   if (index < 0 || shouldSuppressTrackRowClick()) return;
   playFromPlaylist(tracks, index);
+}
+
+async function playRecentCard(index: number) {
+  if (shouldSuppressTrackRowClick()) return;
+  await playTrackFrom('recent', index);
+}
+
+async function toggleRecentCardPlayback(index: number, trackId: number) {
+  if (shouldSuppressTrackRowClick()) return;
+  await toggleCardPlayback('recent', index, trackId);
 }
 
 function toggleLikeFromTrackContext() {
@@ -429,7 +560,7 @@ function removeTrackFromPlaylistFromTrackContext() {
 }
 
 // ── Smart Playlists ──────────────────────────────────────────────────────────
-type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'extension' | 'year' | 'play_count' | 'is_liked' | 'date_added' | 'sort';
+type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'tags' | 'rarity' | 'path' | 'extension' | 'track_number' | 'duration_secs' | 'year' | 'play_count' | 'is_liked' | 'date_added' | 'sort';
 type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false' | 'sort_asc' | 'sort_desc';
 type SPSortField = Exclude<SPField, 'any' | 'sort'>;
 type SPSortOp = Extract<SPOp, 'sort_asc' | 'sort_desc'>;
@@ -448,7 +579,12 @@ const SP_SORT_FIELD_OPTIONS: Array<{ value: SPSortField; label: string }> = [
   { value: 'artist', label: 'Artist' },
   { value: 'album', label: 'Album' },
   { value: 'genre', label: 'Genre' },
+  { value: 'tags', label: 'Tags' },
+  { value: 'rarity', label: 'Rarity' },
+  { value: 'path', label: 'Path' },
   { value: 'extension', label: 'Extension' },
+  { value: 'track_number', label: 'Track #' },
+  { value: 'duration_secs', label: 'Duration (sec)' },
   { value: 'year', label: 'Year' },
   { value: 'play_count', label: 'Play count' },
   { value: 'is_liked', label: 'Is liked' },
@@ -553,29 +689,31 @@ function onSPRuleFieldChange(rule: SPRule) {
   const f = rule.field;
   if (f === 'sort') { rule.op = 'sort_asc'; rule.value = 'title'; }
   else if (f === 'is_liked') { rule.op = 'is_true'; rule.value = ''; }
-  else if (f === 'year' || f === 'play_count') { rule.op = 'gte'; rule.value = '0'; }
+  else if (f === 'year' || f === 'play_count' || f === 'track_number' || f === 'duration_secs') { rule.op = 'gte'; rule.value = '0'; }
   else if (f === 'date_added') { rule.op = 'gte'; rule.value = new Date().toISOString().slice(0, 10); }
-  else if (f === 'genre' || f === 'extension' || f === 'artist' || f === 'album') { rule.op = 'in'; rule.value = '[]'; }
+  else if (f === 'genre' || f === 'tags' || f === 'rarity' || f === 'extension' || f === 'artist' || f === 'album') { rule.op = 'in'; rule.value = '[]'; }
   else { rule.op = 'contains'; rule.value = ''; }
   saveSP();
 }
 function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool' | 'date' | 'sort' {
   if (field === 'sort') return 'sort';
   if (field === 'is_liked') return 'bool';
-  if (field === 'year' || field === 'play_count') return 'number';
+  if (field === 'year' || field === 'play_count' || field === 'track_number' || field === 'duration_secs') return 'number';
   if (field === 'date_added') return 'date';
-  if (field === 'genre' || field === 'extension' || field === 'artist' || field === 'album') return 'multiselect';
+  if (field === 'genre' || field === 'tags' || field === 'rarity' || field === 'extension' || field === 'artist' || field === 'album') return 'multiselect';
   return 'text';
 }
 function spUniqueValues(field: SPField): string[] {
   const set = new Set<string>();
   for (const t of libraryTracks.value) {
     if (field === 'genre' && t.genre) set.add(t.genre);
+    else if (field === 'tags') for (const tag of trackTagsList(t)) set.add(tag);
+    else if (field === 'rarity' && t.rarity) set.add(t.rarity);
     else if (field === 'extension') { const e = t.path.split('.').pop()?.toLowerCase(); if (e) set.add(e); }
     else if (field === 'artist' && t.artist) set.add(t.artist);
     else if (field === 'album' && t.album) set.add(t.album);
   }
-  return [...set].sort();
+  return [...set].sort((left, right) => smartPlaylistSortCollator.compare(left, right));
 }
 function spToggleValue(rule: SPRule, v: string) {
   const sel: string[] = JSON.parse(rule.value || '[]');
@@ -640,8 +778,18 @@ function compareTracksForSortField(left: Track, right: Track, field: SPSortField
       return compareOptionalText(left.album, right.album);
     case 'genre':
       return compareOptionalText(left.genre, right.genre);
+    case 'tags':
+      return compareOptionalText(trackTagsText(left), trackTagsText(right));
+    case 'rarity':
+      return compareOptionalText(left.rarity, right.rarity);
+    case 'path':
+      return compareOptionalText(left.path, right.path);
     case 'extension':
       return compareOptionalText(trackSortExtension(left), trackSortExtension(right));
+    case 'track_number':
+      return compareOptionalNumber(left.track_number, right.track_number);
+    case 'duration_secs':
+      return compareOptionalNumber(left.duration_secs, right.duration_secs);
     case 'year':
       return compareOptionalNumber(left.year, right.year);
     case 'play_count':
@@ -657,9 +805,20 @@ function matchesRule(track: Track, rule: SPRule): boolean {
   switch (rule.field) {
     case 'any': {
       const q = rule.value.toLowerCase();
-      return !q || !!(track.title?.toLowerCase().includes(q) || track.artist?.toLowerCase().includes(q) ||
-        track.album?.toLowerCase().includes(q) || track.genre?.toLowerCase().includes(q) ||
-        track.path.toLowerCase().includes(q));
+      const values = [
+        track.title,
+        track.artist,
+        track.album,
+        track.genre,
+        trackTagsText(track),
+        track.rarity,
+        track.path,
+        track.track_number != null ? String(track.track_number) : null,
+        track.duration_secs != null ? String(track.duration_secs) : null,
+        track.year != null ? String(track.year) : null,
+        String(track.play_count),
+      ];
+      return !q || values.some((value) => value?.toLowerCase().includes(q));
     }
     case 'title': return !rule.value || !!track.title?.toLowerCase().includes(rule.value.toLowerCase());
     case 'artist': {
@@ -674,10 +833,40 @@ function matchesRule(track: Track, rule: SPRule): boolean {
       if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.genre ?? ''); }
       return !rule.value || !!track.genre?.toLowerCase().includes(rule.value.toLowerCase());
     }
+    case 'tags': {
+      const tags = trackTagsList(track);
+      if (rule.op === 'in') {
+        const s: string[] = JSON.parse(rule.value || '[]');
+        return s.length === 0 || s.some((tag) => tags.includes(tag));
+      }
+      return !rule.value || trackTagsText(track).toLowerCase().includes(rule.value.toLowerCase());
+    }
+    case 'rarity': {
+      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.rarity ?? ''); }
+      return !rule.value || !!track.rarity?.toLowerCase().includes(rule.value.toLowerCase());
+    }
+    case 'path':
+      return !rule.value || track.path.toLowerCase().includes(rule.value.toLowerCase());
     case 'extension': {
       const ext = track.path.split('.').pop()?.toLowerCase() || '';
       if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(ext); }
       return ext.includes(rule.value.toLowerCase());
+    }
+    case 'track_number': {
+      if (track.track_number == null) return false;
+      const n = Number(rule.value);
+      if (rule.op === 'eq') return track.track_number === n;
+      if (rule.op === 'gte') return track.track_number >= n;
+      if (rule.op === 'lte') return track.track_number <= n;
+      return false;
+    }
+    case 'duration_secs': {
+      if (track.duration_secs == null) return false;
+      const n = Number(rule.value);
+      if (rule.op === 'eq') return track.duration_secs === n;
+      if (rule.op === 'gte') return track.duration_secs >= n;
+      if (rule.op === 'lte') return track.duration_secs <= n;
+      return false;
     }
     case 'year': {
       if (track.year == null) return false;
@@ -832,6 +1021,62 @@ async function playHomePinnedItem(item: HomePinnedPlaylistItem) {
 
   const tracks = smartPlaylistTracks(item.playlist as SmartPlaylist);
   if (tracks.length) playFromPlaylist(tracks, 0);
+}
+
+async function openHomePinnedCard(item: HomePinnedPlaylistItem) {
+  if (shouldSuppressTrackRowClick()) return;
+  await openHomePinnedItem(item);
+}
+
+async function playHomePinnedCard(item: HomePinnedPlaylistItem) {
+  if (shouldSuppressTrackRowClick()) return;
+  await playHomePinnedItem(item);
+}
+
+async function openHomePinnedFromContextMenu() {
+  const item = homePinnedContextMenu.value?.item;
+  homePinnedContextMenu.value = null;
+  if (!item) return;
+  await openHomePinnedItem(item);
+}
+
+async function playHomePinnedFromContextMenu() {
+  const item = homePinnedContextMenu.value?.item;
+  homePinnedContextMenu.value = null;
+  if (!item) return;
+  await playHomePinnedItem(item);
+}
+
+async function unpinHomePinnedFromContextMenu() {
+  const item = homePinnedContextMenu.value?.item;
+  homePinnedContextMenu.value = null;
+  if (!item) return;
+  if (item.kind === 'regular') {
+    await togglePlaylistPinned(item.playlist as Playlist);
+    return;
+  }
+  await toggleSmartPlaylistPinned(item.playlist as SmartPlaylist);
+}
+
+function editHomePinnedFromContextMenu() {
+  const item = homePinnedContextMenu.value?.item;
+  homePinnedContextMenu.value = null;
+  if (!item || item.kind !== 'smart') return;
+  activeNav.value = 'playlists';
+  playlistTab.value = 'smart';
+  smartView.value = null;
+  editingSP.value = { ...(item.playlist as SmartPlaylist) };
+}
+
+async function deleteHomePinnedFromContextMenu() {
+  const item = homePinnedContextMenu.value?.item;
+  homePinnedContextMenu.value = null;
+  if (!item) return;
+  if (item.kind === 'regular') {
+    await deletePlaylist((item.playlist as Playlist).id);
+    return;
+  }
+  await deleteSmartPlaylist((item.playlist as SmartPlaylist).id);
 }
 
 watch(
@@ -1123,6 +1368,7 @@ function makeSoulseekTrack(result: SoulseekSearchResult, relativePath: string): 
     play_count: 0,
     year: null,
     genre: null,
+    tags: null,
     date_added: null,
   };
 }
@@ -2350,7 +2596,12 @@ function trackMatchesQuery(track: Track, query: string) {
     track.artist,
     track.album,
     track.genre,
+    trackTagsText(track),
+    track.rarity,
     track.path,
+    track.track_number != null ? String(track.track_number) : null,
+    track.duration_secs != null ? String(track.duration_secs) : null,
+    String(track.play_count),
     track.year != null ? String(track.year) : null,
   ];
 
@@ -2467,21 +2718,49 @@ function openEditor(track: Track) {
     artist: track.artist || '',
     album: track.album || '',
     track_number: track.track_number,
+    year: track.year,
+    genre: track.genre || '',
+    tags: track.tags || '',
+    play_count: track.play_count,
+    is_liked: track.is_liked,
+    date_added: trackDateInputValue(track.date_added),
+    rarity: track.rarity || '',
   };
   editingTrack.value = track;
 }
 
 async function saveTrack() {
-  if (!editingTrack.value) return;
+  const activeTrack = editingTrack.value;
+  if (!activeTrack) return;
+  const activePlaylistId = playlistView.value?.id ?? null;
   await invoke('update_track', {
-    id: editingTrack.value.id,
+    id: activeTrack.id,
     title: editForm.value.title || null,
     artist: editForm.value.artist || null,
     album: editForm.value.album || null,
-    trackNumber: editForm.value.track_number || null,
+    trackNumber: normalizeOptionalInteger(editForm.value.track_number),
+    year: normalizeOptionalInteger(editForm.value.year),
+    genre: editForm.value.genre.trim() || null,
+    tags: normalizeTrackTagsInput(editForm.value.tags),
+    playCount: normalizeNonNegativeInteger(editForm.value.play_count),
+    isLiked: editForm.value.is_liked,
+    dateAdded: parseTrackDateInput(editForm.value.date_added),
+    rarity: editForm.value.rarity.trim() || null,
   });
   editingTrack.value = null;
   await loadLibrary();
+  await loadRecent();
+  if (activePlaylistId !== null && playlistView.value?.id === activePlaylistId) {
+    const tracks = await invoke<Track[]>('get_playlist_tracks', { playlistId: activePlaylistId });
+    playlistView.value = { ...playlistView.value, tracks };
+  }
+  if (nowPlaying.value?.id === activeTrack.id) {
+    const refreshedTrack = libraryTracks.value.find((track) => track.id === activeTrack.id);
+    if (refreshedTrack) {
+      nowPlaying.value = refreshedTrack;
+      isLiked.value = refreshedTrack.is_liked;
+    }
+  }
 }
 
 function formatDuration(secs: number | null) {
@@ -2761,6 +3040,7 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onKeyDown);
   delete (window as any)._playbackFinished;
   clearTrackLongPress();
+  clearHomePinnedLongPress();
   if (soulseekSearchTimer) clearTimeout(soulseekSearchTimer);
   if (unlistenSoulseekDownload) unlistenSoulseekDownload();
   if (beatRafId !== null) cancelAnimationFrame(beatRafId);
@@ -2902,12 +3182,17 @@ onUnmounted(() => {
             <div v-else class="card-list">
               <div v-for="(track, idx) in (recentTracks.length ? recentTracks : libraryTracks.slice(0, 12))" :key="track.id + '-' + idx"
                 class="card" :class="rarityClass(track.rarity)" :style="rarityVars(track.rarity)"
-                @click="playTrackFrom('recent', idx)">
+                @click="playRecentCard(idx)"
+                @contextmenu.prevent="openTrackContextMenu($event, track)"
+                @touchstart.passive="startTrackRowLongPress($event, track)"
+                @touchmove.passive="moveTrackRowLongPress"
+                @touchend="endTrackRowLongPress"
+                @touchcancel="endTrackRowLongPress">
                 <div class="cover" :style="covers[track.id]
                   ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                   : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`">
                   <div class="hover-play">
-                    <button class="green-circle" type="button" @click.stop="toggleCardPlayback('recent', idx, track.id)">
+                    <button class="green-circle" type="button" @click.stop="toggleRecentCardPlayback(idx, track.id)">
                       <svg v-if="!isTrackPlaying(track.id)" viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
                       <svg v-else viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
                     </button>
@@ -2934,11 +3219,16 @@ onUnmounted(() => {
                 v-for="item in homePinnedItems"
                 :key="item.key"
                 class="card"
-                @click="openHomePinnedItem(item)"
+                @click="openHomePinnedCard(item)"
+                @contextmenu.prevent="openHomePinnedContextMenu($event, item)"
+                @touchstart.passive="startHomePinnedCardLongPress($event, item)"
+                @touchmove.passive="moveHomePinnedCardLongPress"
+                @touchend="endHomePinnedCardLongPress"
+                @touchcancel="endHomePinnedCardLongPress"
               >
                 <div class="cover" :style="homePinnedCoverStyle(item)">
                   <div class="hover-play">
-                    <button v-if="item.trackCount" class="green-circle" type="button" @click.stop="playHomePinnedItem(item)">
+                    <button v-if="item.trackCount" class="green-circle" type="button" @click.stop="playHomePinnedCard(item)">
                       <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
                     </button>
                   </div>
@@ -2965,6 +3255,7 @@ onUnmounted(() => {
                 :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                 :style="rarityVars(track.rarity)"
                 @click="playPlaylistTrack(item.tracks, idx)"
+                @contextmenu.prevent="openTrackContextMenu($event, track)"
                 @touchstart.passive="startTrackRowLongPress($event, track)"
                 @touchmove.passive="moveTrackRowLongPress"
                 @touchend="endTrackRowLongPress"
@@ -3041,6 +3332,7 @@ onUnmounted(() => {
                   class="track-row" :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                   :style="rarityVars(track.rarity)"
                   @click="playLibraryTrack(libraryFlatList.indexOf(track))"
+                  @contextmenu.prevent="openTrackContextMenu($event, track)"
                   @touchstart.passive="startTrackRowLongPress($event, track)"
                   @touchmove.passive="moveTrackRowLongPress"
                   @touchend="endTrackRowLongPress"
@@ -3120,6 +3412,7 @@ onUnmounted(() => {
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
                     @click="playPlaylistTrack(searchRecentTracks, idx)"
+                    @contextmenu.prevent="openTrackContextMenu($event, track)"
                     @touchstart.passive="startTrackRowLongPress($event, track)"
                     @touchmove.passive="moveTrackRowLongPress"
                     @touchend="endTrackRowLongPress"
@@ -3178,6 +3471,7 @@ onUnmounted(() => {
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
                     @click="playPlaylistTrack(searchResults, idx)"
+                    @contextmenu.prevent="openTrackContextMenu($event, track)"
                     @touchstart.passive="startTrackRowLongPress($event, track)"
                     @touchmove.passive="moveTrackRowLongPress"
                     @touchend="endTrackRowLongPress"
@@ -3312,6 +3606,7 @@ onUnmounted(() => {
                 :class="[rarityClass(entry.track.rarity), { 'track-row-current': isCurrentTrack(entry.track.id), 'track-row-next': isNextTrack(entry.track.id) }]"
                 :style="rarityVars(entry.track.rarity)"
                 @click="playLibraryTrack(libraryFlatList.findIndex(t => t.id === entry.track.id))"
+                @contextmenu.prevent="openTrackContextMenu($event, entry.track)"
                 @touchstart.passive="startTrackRowLongPress($event, entry.track)"
                 @touchmove.passive="moveTrackRowLongPress"
                 @touchend="endTrackRowLongPress"
@@ -3370,6 +3665,7 @@ onUnmounted(() => {
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
                     @click="playPlaylistTrack(playlistView!.tracks, idx)"
+                    @contextmenu.prevent="openTrackContextMenu($event, track, playlistView!.id)"
                     @touchstart.passive="startTrackRowLongPress($event, track, playlistView!.id)"
                     @touchmove.passive="moveTrackRowLongPress"
                     @touchend="endTrackRowLongPress"
@@ -3474,7 +3770,12 @@ onUnmounted(() => {
                       <option value="artist">Artist</option>
                       <option value="album">Album</option>
                       <option value="genre">Genre</option>
+                      <option value="tags">Tags</option>
+                      <option value="rarity">Rarity</option>
+                      <option value="path">Path</option>
                       <option value="extension">Extension</option>
+                      <option value="track_number">Track #</option>
+                      <option value="duration_secs">Duration</option>
                       <option value="year">Year</option>
                       <option value="play_count">Play count</option>
                       <option value="is_liked">Is liked</option>
@@ -3542,6 +3843,7 @@ onUnmounted(() => {
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
                     @click="playLibraryTrack(libraryFlatList.findIndex(t => t.id === track.id))"
+                    @contextmenu.prevent="openTrackContextMenu($event, track)"
                     @touchstart.passive="startTrackRowLongPress($event, track)"
                     @touchmove.passive="moveTrackRowLongPress"
                     @touchend="endTrackRowLongPress"
@@ -3593,6 +3895,7 @@ onUnmounted(() => {
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
                     @click="playPlaylistTrack(smartPlaylistTracks(smartView!), idx)"
+                    @contextmenu.prevent="openTrackContextMenu($event, track)"
                     @touchstart.passive="startTrackRowLongPress($event, track)"
                     @touchmove.passive="moveTrackRowLongPress"
                     @touchend="endTrackRowLongPress"
@@ -3774,6 +4077,23 @@ onUnmounted(() => {
     </Teleport>
 
     <Teleport to="body">
+      <div v-if="homePinnedContextMenu" class="playlist-menu-backdrop" @click="homePinnedContextMenu = null">
+        <div
+          class="playlist-menu"
+          :style="{ top: homePinnedContextMenu.y + 'px', left: homePinnedContextMenu.x + 'px' }"
+          @click.stop
+        >
+          <div class="playlist-menu-header">{{ homePinnedContextMenu.item.kind === 'regular' ? 'Playlist actions' : 'Flexible playlist actions' }}</div>
+          <button class="playlist-menu-item" @click="openHomePinnedFromContextMenu">Open</button>
+          <button v-if="homePinnedContextMenu.item.trackCount > 0" class="playlist-menu-item" @click="playHomePinnedFromContextMenu">Play</button>
+          <button v-if="homePinnedContextMenu.item.kind === 'smart'" class="playlist-menu-item" @click="editHomePinnedFromContextMenu">Edit rules</button>
+          <button class="playlist-menu-item" @click="unpinHomePinnedFromContextMenu">Unpin from Home</button>
+          <button class="playlist-menu-item danger" @click="deleteHomePinnedFromContextMenu">Delete</button>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
       <div v-if="addToPlaylistMenu" class="playlist-menu-backdrop" @click="addToPlaylistMenu = null">
         <div
           class="playlist-menu"
@@ -3797,14 +4117,14 @@ onUnmounted(() => {
     <!-- Edit modal -->
     <Transition name="modal">
       <div v-if="editingTrack" class="modal-overlay" @click.self="editingTrack = null">
-        <div class="modal">
+        <div class="modal edit-track-modal">
           <div class="modal-header">
             <h3>Edit Track</h3>
             <button class="icon-btn" @click="editingTrack = null">
               <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
-          <div class="modal-body">
+          <div class="modal-body edit-track-body">
             <label class="field">
               <span>Title</span>
               <input v-model="editForm.title" />
@@ -3820,6 +4140,40 @@ onUnmounted(() => {
             <label class="field">
               <span>Track #</span>
               <input v-model.number="editForm.track_number" type="number" min="0" />
+            </label>
+            <label class="field">
+              <span>Year</span>
+              <input v-model.number="editForm.year" type="number" min="0" />
+            </label>
+            <label class="field">
+              <span>Genre</span>
+              <input v-model="editForm.genre" />
+            </label>
+            <label class="field">
+              <span>User tags</span>
+              <input v-model="editForm.tags" placeholder="tag one, tag two" />
+            </label>
+            <label class="field">
+              <span>Play count</span>
+              <input v-model.number="editForm.play_count" type="number" min="0" />
+            </label>
+            <label class="field">
+              <span>Liked</span>
+              <select v-model="editForm.is_liked">
+                <option :value="false">No</option>
+                <option :value="true">Yes</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Date added</span>
+              <input v-model="editForm.date_added" type="date" />
+            </label>
+            <label class="field">
+              <span>Rarity</span>
+              <select v-model="editForm.rarity">
+                <option value="">Unset</option>
+                <option v-for="rarity in TRACK_RARITY_OPTIONS" :key="rarity" :value="rarity">{{ rarity }}</option>
+              </select>
             </label>
           </div>
           <div class="modal-footer">
@@ -5027,14 +5381,20 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 .sp-select {
   background: #282828; border: 1px solid #535353; border-radius: 20px;
-  color: #a7a7a7; font-size: var(--fs-input); padding: 5px 28px 5px 12px; cursor: pointer;
+  color: #a7a7a7; font-size: var(--fs-input); padding: 6px 34px 6px 12px; cursor: pointer;
+  min-height: 34px;
+  line-height: 1.2;
   appearance: none; -webkit-appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 10px center;
+  background-repeat: no-repeat; background-position: right 12px center; background-size: 12px 12px;
   outline: none; transition: border-color .15s, color .15s;
 }
 .sp-select:focus { border-color: #fff; color: #fff; }
 .sp-select:hover { border-color: #fff; color: #fff; }
+.sp-select option {
+  background: #282828;
+  color: #fff;
+}
 .sp-op-label { font-size: var(--fs-body-sm); color: #a7a7a7; white-space: nowrap; }
 .sp-text-input { flex: 1; min-width: 100px; }
 .sp-num-input { width: 80px; }
@@ -5161,11 +5521,34 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .field span {
   font-size: var(--fs-field-label); font-weight: 600; color: #a7a7a7; text-transform: uppercase; letter-spacing: .03em;
 }
-.field input {
+.field input,
+.field select {
   background: #3e3e3e; border: none; border-radius: 4px;
   color: #fff; font-size: var(--fs-field-input); padding: 10px 12px; outline: none;
+  min-height: 42px;
+  line-height: 1.2;
 }
-.field input:focus { outline: 1px solid #1db954; }
+.field select {
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23ffffff'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px 12px;
+  padding-right: 40px;
+}
+.field select option {
+  background: #282828;
+  color: #fff;
+}
+.field input:focus,
+.field select:focus { outline: 1px solid #1db954; }
+.edit-track-modal { width: 460px; }
+.edit-track-body {
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+}
 .modal-footer {
   display: flex; justify-content: flex-end; gap: 10px;
   padding: 12px 24px 20px;
@@ -5758,6 +6141,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     justify-content: flex-start;
     order: -1;
     min-width: 0;
+    margin-top: 10px;
     padding: 0 15px;
     width: calc(100%);
   }
@@ -5960,6 +6344,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   max-width: 480px;
   max-height: 95vh;
   overflow-y: auto;
+  overflow-x: hidden;
   background: linear-gradient(180deg, rgba(10,12,18,.8), rgba(10,12,18,.94));
   backdrop-filter: blur(10px) saturate(1.05);
   border-radius: 20px 20px 0 0;
@@ -6138,6 +6523,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   font-size: var(--fs-detail-title); font-weight: 700; color: #fff;
   overflow: hidden;
   flex: 1;
+  min-width: 0;
   mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
   -webkit-mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
 }
@@ -6160,6 +6546,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   font-size: var(--fs-detail-artist); color: #a7a7a7;
   flex: 1;
   overflow: hidden;
+  min-width: 0;
   mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
   -webkit-mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
 }

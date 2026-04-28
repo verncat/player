@@ -79,6 +79,7 @@ pub struct Track {
     pub play_count: i64,
     pub year: Option<i64>,
     pub genre: Option<String>,
+    pub tags: Option<String>,
     pub date_added: Option<i64>,
 }
 
@@ -171,12 +172,13 @@ impl LibraryState {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags
                FROM tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
-                      OR album  LIKE ?1 COLLATE NOCASE
-                      OR genre  LIKE ?1 COLLATE NOCASE
+                 OR album  LIKE ?1 COLLATE NOCASE
+                 OR genre  LIKE ?1 COLLATE NOCASE
+                 OR tags   LIKE ?1 COLLATE NOCASE
               ORDER BY artist, album, track_number, title",
         )?;
         let tracks = stmt
@@ -189,7 +191,7 @@ impl LibraryState {
     pub fn all_tracks(&self) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags
                FROM tracks
               ORDER BY artist, album, track_number, title",
         )?;
@@ -357,8 +359,10 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN year INTEGER");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN genre TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN date_added INTEGER");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN tags TEXT");
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre COLLATE NOCASE);",
+        "CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre COLLATE NOCASE);
+         CREATE INDEX IF NOT EXISTS idx_tags ON tracks(tags COLLATE NOCASE);",
     )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS play_history (
@@ -433,6 +437,7 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         year: row.get(12).unwrap_or(None),
         genre: row.get(13).unwrap_or(None),
         date_added: row.get(14).unwrap_or(None),
+        tags: row.get(15).unwrap_or(None),
     })
 }
 
@@ -1234,18 +1239,34 @@ pub fn update_track(
     artist: Option<String>,
     album: Option<String>,
     track_number: Option<i64>,
+    year: Option<i64>,
+    genre: Option<String>,
+    tags: Option<String>,
+    play_count: i64,
+    is_liked: bool,
+    date_added: Option<i64>,
+    rarity: Option<String>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     conn.execute(
-        "UPDATE tracks SET title = ?1, artist = ?2, album = ?3, track_number = ?4, manually_edited = 1 WHERE id = ?5",
-        params![title, artist, album, track_number, id],
+        "UPDATE tracks
+            SET title = ?1,
+                artist = ?2,
+                album = ?3,
+                track_number = ?4,
+                year = ?5,
+                genre = ?6,
+                tags = ?7,
+                play_count = ?8,
+                is_liked = ?9,
+                date_added = ?10,
+                rarity = ?11,
+                manually_edited = 1
+          WHERE id = ?12",
+        params![title, artist, album, track_number, year, genre, tags, play_count, is_liked, date_added, rarity, id],
     )
     .map_err(|e| e.to_string())?;
-    let _ = conn.execute(
-        "UPDATE tracks SET play_count = play_count + 1 WHERE id = ?1",
-        rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1285,7 +1306,7 @@ pub fn get_recent_tracks(
     let lim = limit.unwrap_or(12) as i64;
     let mut stmt = conn.prepare(
         "SELECT DISTINCT t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags
            FROM play_history h
            JOIN tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
@@ -1308,7 +1329,7 @@ pub fn get_play_history(
     let lim = limit.unwrap_or(500) as i64;
     let mut stmt = conn.prepare(
         "SELECT h.played_at, t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags
            FROM play_history h
            JOIN tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
@@ -1333,6 +1354,7 @@ pub fn get_play_history(
                 year: row.get(13).unwrap_or(None),
                 genre: row.get(14).unwrap_or(None),
                 date_added: row.get(15).unwrap_or(None),
+                tags: row.get(16).unwrap_or(None),
             };
             Ok(PlayHistoryEntry { played_at, track })
         })
@@ -1500,7 +1522,7 @@ pub fn get_playlist_tracks(playlist_id: i64, state: tauri::State<'_, LibraryStat
     let mut stmt = conn.prepare(
         "SELECT t.id, t.path, t.title, t.artist, t.album, t.track_number,
                 t.duration_secs, t.file_hash, t.rarity, t.manually_edited,
-                t.is_liked, t.play_count, t.year, t.genre
+                t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags
          FROM tracks t
          JOIN playlist_tracks pt ON pt.track_id = t.id
          WHERE pt.playlist_id = ?1
