@@ -3,10 +3,14 @@ pub mod discovery;
 pub mod identify;
 pub mod library;
 pub mod playback;
+pub mod soulseek;
 pub mod sync;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::f32::consts::PI;
+use std::sync::Once;
+
+static INIT_TRACING: Once = Once::new();
 
 fn play_sine(freq: f32) -> cpal::Stream {
     let host = cpal::default_host();
@@ -42,9 +46,27 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+fn init_tracing() {
+    INIT_TRACING.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                "warn,player_lib=info,soulseek_rs=trace"
+            )
+        });
+
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_ansi(false)
+            .compact()
+            .try_init();
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // let _stream = play_sine(440.0);
+    init_tracing();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -60,6 +82,7 @@ pub fn run() {
             app.manage(audio::AudioState::new());
             app.manage(playback::PlaybackState::new(app.handle().clone()));
             app.manage(discovery::DiscoveryState::new());
+            app.manage(soulseek::SoulseekState::new());
             app.manage(sync::SyncState::new());
             // Auto-start discovery
             let _ = discovery::discovery_start(
@@ -99,6 +122,10 @@ pub fn run() {
             library::set_device_emoji,
             library::get_device_settings,
             library::set_device_settings,
+            soulseek::soulseek_get_status,
+            soulseek::soulseek_search,
+            soulseek::soulseek_fetch_cover,
+            soulseek::soulseek_download,
             audio::get_output_devices,
             audio::set_output_device,
             audio::get_volume,

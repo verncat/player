@@ -37,6 +37,29 @@ const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "ogg", "opus", "aac", "m4a", "wav", "wv", "ape",
 ];
 
+const SIDECAR_COVER_FILENAMES: &[&str] = &[
+    "cover.jpg",
+    "cover.jpeg",
+    "cover.png",
+    "cover.webp",
+    "folder.jpg",
+    "folder.jpeg",
+    "folder.png",
+    "folder.webp",
+    "front.jpg",
+    "front.jpeg",
+    "front.png",
+    "front.webp",
+    "album.jpg",
+    "album.jpeg",
+    "album.png",
+    "album.webp",
+    "art.jpg",
+    "art.jpeg",
+    "art.png",
+    "art.webp",
+];
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Clone)]
@@ -63,6 +86,9 @@ pub struct Track {
 pub struct DeviceSettings {
     pub emoji: String,
     pub device_name: String,
+    pub soulseek_enabled: bool,
+    pub soulseek_username: String,
+    pub soulseek_password: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -85,6 +111,15 @@ struct Meta {
     /// Raw bytes of the embedded cover image.
     cover_data: Option<Vec<u8>>,
     cover_mime: Option<String>,
+    cover_source_path: Option<String>,
+    cover_source_mtime: i64,
+}
+
+struct SidecarCoverCandidate {
+    abs_path: PathBuf,
+    rel_path: String,
+    modified_secs: i64,
+    mime: String,
 }
 
 // ── Managed state ─────────────────────────────────────────────────────────────
@@ -175,37 +210,76 @@ impl LibraryState {
 
     pub fn get_device_settings(&self) -> Result<DeviceSettings, BoxError> {
         let conn = self.conn.lock().unwrap();
-        let existing: Result<(String, String), _> = conn.query_row(
-            "SELECT emoji, COALESCE(device_name, '') FROM device_config WHERE id = 1",
+        let existing: Result<(String, String, i64, String, String), _> = conn.query_row(
+            "SELECT emoji,
+                    COALESCE(device_name, ''),
+                    COALESCE(soulseek_enabled, 0),
+                    COALESCE(soulseek_username, ''),
+                    COALESCE(soulseek_password, '')
+               FROM device_config
+              WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         );
 
         match existing {
-            Ok((emoji, device_name)) => Ok(DeviceSettings {
+            Ok((emoji, device_name, soulseek_enabled, soulseek_username, soulseek_password)) => Ok(DeviceSettings {
                 emoji,
                 device_name,
+                soulseek_enabled: soulseek_enabled != 0,
+                soulseek_username,
+                soulseek_password,
             }),
             Err(_) => {
                 let emoji = random_emoji();
                 let device_name = whoami::devicename().trim().to_string();
                 conn.execute(
-                    "INSERT OR REPLACE INTO device_config (id, emoji, device_name) VALUES (1, ?1, ?2)",
+                    "INSERT OR REPLACE INTO device_config (
+                        id,
+                        emoji,
+                        device_name,
+                        soulseek_enabled,
+                        soulseek_username,
+                        soulseek_password
+                    ) VALUES (1, ?1, ?2, 0, '', '')",
                     params![&emoji, &device_name],
                 )?;
                 Ok(DeviceSettings {
                     emoji,
                     device_name,
+                    soulseek_enabled: false,
+                    soulseek_username: String::new(),
+                    soulseek_password: String::new(),
                 })
             }
         }
     }
 
-    pub fn set_device_settings(&self, emoji: &str, device_name: &str) -> Result<(), BoxError> {
+    pub fn set_device_settings(
+        &self,
+        emoji: &str,
+        device_name: &str,
+        soulseek_enabled: bool,
+        soulseek_username: &str,
+        soulseek_password: &str,
+    ) -> Result<(), BoxError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO device_config (id, emoji, device_name) VALUES (1, ?1, ?2)",
-            params![emoji, device_name],
+            "INSERT OR REPLACE INTO device_config (
+                id,
+                emoji,
+                device_name,
+                soulseek_enabled,
+                soulseek_username,
+                soulseek_password
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+            params![
+                emoji,
+                device_name,
+                if soulseek_enabled { 1 } else { 0 },
+                soulseek_username.trim(),
+                soulseek_password,
+            ],
         )?;
         Ok(())
     }
@@ -216,7 +290,13 @@ impl LibraryState {
 
     pub fn set_device_emoji(&self, emoji: &str) -> Result<(), BoxError> {
         let current = self.get_device_settings()?;
-        self.set_device_settings(emoji, &current.device_name)
+        self.set_device_settings(
+            emoji,
+            &current.device_name,
+            current.soulseek_enabled,
+            &current.soulseek_username,
+            &current.soulseek_password,
+        )
     }
 }
 
@@ -247,7 +327,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             duration_secs REAL,
             modified_secs INTEGER NOT NULL DEFAULT 0,
             cover_data    BLOB,
-            cover_mime    TEXT
+            cover_mime    TEXT,
+            cover_source_path TEXT,
+            cover_source_mtime INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_artist ON tracks(artist COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS idx_album  ON tracks(album  COLLATE NOCASE);
@@ -256,6 +338,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     // Migrate existing databases that predate the cover columns.
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_data BLOB");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_mime TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_source_path TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_source_mtime INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN rarity TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0");
@@ -277,7 +361,10 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS device_config (
             id        INTEGER PRIMARY KEY CHECK(id=1),
             emoji     TEXT NOT NULL DEFAULT '🎵',
-            device_name TEXT NOT NULL DEFAULT ''
+            device_name TEXT NOT NULL DEFAULT '',
+            soulseek_enabled INTEGER NOT NULL DEFAULT 0,
+            soulseek_username TEXT NOT NULL DEFAULT '',
+            soulseek_password TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS playlists (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -294,6 +381,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_pt_playlist ON playlist_tracks(playlist_id, position);",
     )?;
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
+    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_enabled INTEGER NOT NULL DEFAULT 0");
+    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_username TEXT NOT NULL DEFAULT ''");
+    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_password TEXT NOT NULL DEFAULT ''");
     // Smart (flexible) playlists — previously in localStorage, now in DB for sync.
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS smart_playlists (
@@ -484,58 +574,86 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
 /// Returns `Ok(true)` if a new/updated row was written, `Ok(false)` if skipped.
 fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, BoxError> {
     let rel = rel_path(data_dir, abs);
+    let sidecar_cover = find_sidecar_cover_candidate(data_dir, abs);
 
-    let modified_secs = abs
-        .metadata()
-        .and_then(|m| m.modified())
-        .map(|t| {
-            t.duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        })
-        .unwrap_or(0);
+    let modified_secs = path_modified_secs(abs);
 
     // Skip unchanged files that already have a hash.
-    let cached: Option<(i64, Option<String>, bool)> = conn
+    let cached: Option<(i64, Option<String>, bool, Option<String>, i64)> = conn
         .query_row(
-            "SELECT modified_secs, file_hash, manually_edited FROM tracks WHERE path = ?1",
+            "SELECT modified_secs,
+                    file_hash,
+                    manually_edited,
+                    cover_source_path,
+                    COALESCE(cover_source_mtime, 0)
+               FROM tracks
+              WHERE path = ?1",
             params![rel],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2).unwrap_or(0) != 0)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get::<_, i64>(2).unwrap_or(0) != 0,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .ok();
     if modified_secs > 0 {
-        if let Some((ms, Some(_), _)) = &cached {
-            if *ms == modified_secs {
+        if let Some((ms, Some(_), _, cached_cover_source_path, cached_cover_source_mtime)) = &cached {
+            if *ms == modified_secs
+                && sidecar_cover_state_matches(
+                    cached_cover_source_path.as_deref(),
+                    *cached_cover_source_mtime,
+                    sidecar_cover.as_ref(),
+                )
+            {
                 return Ok(false);
             }
         }
     }
 
     // If manually edited, only update file hash, rarity, duration, cover — preserve metadata.
-    if let Some((_, _, true)) = &cached {
-        let meta = read_audio_meta(abs);
+    if let Some((_, _, true, _, _)) = &cached {
+        let meta = read_audio_meta(abs, sidecar_cover.as_ref());
         let file_hash = hash_file(abs);
         let rarity = file_hash.as_deref().map(rarity_from_hash);
         conn.execute(
             "UPDATE tracks SET modified_secs = ?1, file_hash = ?2, rarity = ?3,
-             duration_secs = COALESCE(?4, duration_secs), cover_data = ?5, cover_mime = ?6
-             WHERE path = ?7",
-            params![modified_secs, file_hash, rarity, meta.duration_secs, meta.cover_data, meta.cover_mime, rel],
+             duration_secs = COALESCE(?4, duration_secs), cover_data = ?5, cover_mime = ?6,
+             cover_source_path = ?7, cover_source_mtime = ?8
+             WHERE path = ?9",
+            params![
+                modified_secs,
+                file_hash,
+                rarity,
+                meta.duration_secs,
+                meta.cover_data,
+                meta.cover_mime,
+                meta.cover_source_path,
+                meta.cover_source_mtime,
+                rel,
+            ],
         )?;
         return Ok(true);
     }
 
-    let mut meta = read_audio_meta(abs);
+    let mut meta = read_audio_meta(abs, sidecar_cover.as_ref());
 
     // Fall back to path / filename inference when the file has no tags.
     if meta.title.is_none() && meta.artist.is_none() {
         let duration = meta.duration_secs;
         let cover_data = meta.cover_data.take();
         let cover_mime = meta.cover_mime.take();
+        let cover_source_path = meta.cover_source_path.take();
+        let cover_source_mtime = meta.cover_source_mtime;
         meta = infer_from_path(&rel);
         meta.duration_secs = duration;
         meta.cover_data = cover_data;
         meta.cover_mime = cover_mime;
+        meta.cover_source_path = cover_source_path;
+        meta.cover_source_mtime = cover_source_mtime;
     }
 
     // Hash file contents for gacha rarity.
@@ -549,8 +667,8 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
 
     conn.execute(
         "INSERT INTO tracks
-             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, file_hash, rarity, year, genre, date_added)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, cover_source_path, cover_source_mtime, file_hash, rarity, year, genre, date_added)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(path) DO UPDATE SET
              title         = excluded.title,
              artist        = excluded.artist,
@@ -560,6 +678,8 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
              modified_secs = excluded.modified_secs,
              cover_data    = excluded.cover_data,
              cover_mime    = excluded.cover_mime,
+             cover_source_path = excluded.cover_source_path,
+             cover_source_mtime = excluded.cover_source_mtime,
              file_hash     = excluded.file_hash,
              rarity        = excluded.rarity,
              year          = excluded.year,
@@ -574,6 +694,8 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
             modified_secs,
             meta.cover_data,
             meta.cover_mime,
+            meta.cover_source_path,
+            meta.cover_source_mtime,
             file_hash,
             rarity,
             meta.year,
@@ -599,6 +721,132 @@ fn track_name_from_rel(rel: &str) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or(rel)
         .to_string()
+}
+
+fn path_modified_secs(path: &Path) -> i64 {
+    path.metadata()
+        .and_then(|metadata| metadata.modified())
+        .map(|timestamp| {
+            timestamp
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        })
+        .unwrap_or(0)
+}
+
+fn sidecar_cover_state_matches(
+    cached_cover_source_path: Option<&str>,
+    cached_cover_source_mtime: i64,
+    current_sidecar_cover: Option<&SidecarCoverCandidate>,
+) -> bool {
+    match (cached_cover_source_path, current_sidecar_cover) {
+        (None, None) => true,
+        (Some(cached_path), Some(current)) => {
+            cached_path == current.rel_path && cached_cover_source_mtime == current.modified_secs
+        }
+        _ => false,
+    }
+}
+
+fn find_sidecar_cover_candidate(data_dir: &Path, audio_path: &Path) -> Option<SidecarCoverCandidate> {
+    let directory = audio_path.parent()?;
+    let mut best_match: Option<(usize, PathBuf)> = None;
+
+    for entry in std::fs::read_dir(directory).ok()? {
+        let entry = entry.ok()?;
+        if !entry.file_type().ok()?.is_file() {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let file_name = file_name.to_str()?.to_ascii_lowercase();
+        let Some(priority) = SIDECAR_COVER_FILENAMES
+            .iter()
+            .position(|candidate| *candidate == file_name)
+        else {
+            continue;
+        };
+
+        match &best_match {
+            Some((current_priority, _)) if *current_priority <= priority => {}
+            _ => best_match = Some((priority, entry.path())),
+        }
+    }
+
+    let (_, abs_path) = best_match?;
+    let mime = sidecar_cover_mime(&abs_path)?;
+    Some(SidecarCoverCandidate {
+        rel_path: rel_path(data_dir, &abs_path),
+        modified_secs: path_modified_secs(&abs_path),
+        abs_path,
+        mime,
+    })
+}
+
+fn read_sidecar_cover(
+    sidecar_cover: Option<&SidecarCoverCandidate>,
+) -> (Option<Vec<u8>>, Option<String>, Option<String>, i64) {
+    let Some(sidecar_cover) = sidecar_cover else {
+        return (None, None, None, 0);
+    };
+
+    match std::fs::read(&sidecar_cover.abs_path) {
+        Ok(data) => (
+            Some(data),
+            Some(sidecar_cover.mime.clone()),
+            Some(sidecar_cover.rel_path.clone()),
+            sidecar_cover.modified_secs,
+        ),
+        Err(_) => (None, None, None, 0),
+    }
+}
+
+fn sidecar_cover_mime(path: &Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return None,
+    };
+    Some(mime.to_string())
+}
+
+fn is_sidecar_cover_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .map(|file_name| file_name.to_ascii_lowercase())
+        .map(|file_name| SIDECAR_COVER_FILENAMES.contains(&file_name.as_str()))
+        .unwrap_or(false)
+}
+
+fn sibling_audio_files(directory: &Path) -> Vec<PathBuf> {
+    let mut audio_files = Vec::new();
+
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(_) => return audio_files,
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_type().map(|file_type| file_type.is_file()).unwrap_or(false) {
+            continue;
+        }
+
+        let path = entry.path();
+        let ext = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+            audio_files.push(path);
+        }
+    }
+
+    audio_files
 }
 
 // ── Hashing & Gacha rarity ────────────────────────────────────────────────────
@@ -637,11 +885,21 @@ fn rarity_from_hash(hex: &str) -> String {
 
 // ── Metadata extraction ───────────────────────────────────────────────────────
 
-/// Tries to read embedded tags + duration. Returns `Meta::default()` on failure.
-fn read_audio_meta(path: &Path) -> Meta {
+/// Tries to read embedded tags + duration. Falls back to adjacent cover files when present.
+fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -> Meta {
     let tagged = match Probe::open(path).ok().and_then(|p| p.read().ok()) {
         Some(t) => t,
-        None => return Meta::default(),
+        None => {
+            let (cover_data, cover_mime, cover_source_path, cover_source_mtime) =
+                read_sidecar_cover(sidecar_cover);
+            return Meta {
+                cover_data,
+                cover_mime,
+                cover_source_path,
+                cover_source_mtime,
+                ..Default::default()
+            };
+        }
     };
 
     let duration_secs = {
@@ -651,10 +909,22 @@ fn read_audio_meta(path: &Path) -> Meta {
 
     let tag = match tagged.primary_tag().or_else(|| tagged.first_tag()) {
         Some(t) => t,
-        None => return Meta { duration_secs, ..Default::default() },
+        None => {
+            let (cover_data, cover_mime, cover_source_path, cover_source_mtime) =
+                read_sidecar_cover(sidecar_cover);
+            return Meta {
+                duration_secs,
+                cover_data,
+                cover_mime,
+                cover_source_path,
+                cover_source_mtime,
+                ..Default::default()
+            };
+        }
     };
 
-    let (cover_data, cover_mime) = extract_cover(tag);
+    let (cover_data, cover_mime, cover_source_path, cover_source_mtime) =
+        extract_cover(tag, sidecar_cover);
 
     Meta {
         title: tag.title().as_deref().map(str::to_owned),
@@ -666,11 +936,16 @@ fn read_audio_meta(path: &Path) -> Meta {
         genre: tag.genre().as_deref().map(str::to_owned),
         cover_data,
         cover_mime,
+        cover_source_path,
+        cover_source_mtime,
     }
 }
 
-/// Extracts the first embedded cover image from a tag.
-fn extract_cover(tag: &lofty::tag::Tag) -> (Option<Vec<u8>>, Option<String>) {
+/// Extracts the first embedded cover image from a tag, falling back to sidecar folder art.
+fn extract_cover(
+    tag: &lofty::tag::Tag,
+    sidecar_cover: Option<&SidecarCoverCandidate>,
+) -> (Option<Vec<u8>>, Option<String>, Option<String>, i64) {
     let pictures = tag.pictures();
     let pic = pictures
         .iter()
@@ -679,9 +954,9 @@ fn extract_cover(tag: &lofty::tag::Tag) -> (Option<Vec<u8>>, Option<String>) {
     match pic {
         Some(p) => {
             let mime = p.mime_type().map(|m| m.to_string());
-            (Some(p.data().to_vec()), mime)
+            (Some(p.data().to_vec()), mime, None, 0)
         }
-        None => (None, None),
+        None => read_sidecar_cover(sidecar_cover),
     }
 }
 
@@ -811,11 +1086,24 @@ fn handle_fs_events_batch(
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
                     if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
                         to_index.push(path);
+                    } else if is_sidecar_cover_path(&path) {
+                        if let Some(directory) = path.parent() {
+                            to_index.extend(sibling_audio_files(directory));
+                        }
                     }
                 }
             }
             EventKind::Remove(_) => {
-                to_remove.extend(event.paths);
+                for path in event.paths {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                    if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+                        to_remove.push(path);
+                    } else if is_sidecar_cover_path(&path) {
+                        if let Some(directory) = path.parent() {
+                            to_index.extend(sibling_audio_files(directory));
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -1057,10 +1345,24 @@ pub fn get_device_settings(state: tauri::State<'_, LibraryState>) -> Result<Devi
 pub fn set_device_settings(
     emoji: String,
     device_name: String,
+    soulseek_enabled: Option<bool>,
+    soulseek_username: Option<String>,
+    soulseek_password: Option<String>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<(), String> {
+    let current = state.get_device_settings().map_err(|e| e.to_string())?;
     state
-        .set_device_settings(&emoji, device_name.trim())
+        .set_device_settings(
+            &emoji,
+            device_name.trim(),
+            soulseek_enabled.unwrap_or(current.soulseek_enabled),
+            soulseek_username
+                .as_deref()
+                .unwrap_or(&current.soulseek_username),
+            soulseek_password
+                .as_deref()
+                .unwrap_or(&current.soulseek_password),
+        )
         .map_err(|e| e.to_string())
 }
 

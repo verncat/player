@@ -8,6 +8,44 @@ import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 interface AudioDevice { name: string }
 interface DeviceList { devices: AudioDevice[]; current: string | null }
 
+interface SoulseekStatus {
+  enabled: boolean;
+  configured: boolean;
+  username: string | null;
+  activeSession: boolean;
+}
+
+interface SoulseekSearchResult {
+  username: string;
+  filename: string;
+  basename: string;
+  coverFilename: string | null;
+  coverSize: number | null;
+  size: number;
+  bitrate: number | null;
+  duration: number | null;
+  sampleRate: number | null;
+  bitDepth: number | null;
+  vbr: boolean | null;
+  peerSpeed: number;
+  freeUploadSlots: number;
+  extension: string | null;
+}
+
+interface SoulseekDownloadEvent {
+  transferId: string;
+  username: string;
+  filename: string;
+  basename: string;
+  state: string;
+  bytesDownloaded: number | null;
+  totalBytes: number | null;
+  speedBytesPerSec: number | null;
+  queuePosition: number | null;
+  localPath: string | null;
+  error: string | null;
+}
+
 interface Track {
   id: number;
   path: string;
@@ -160,10 +198,11 @@ const indexLogRef = ref<HTMLElement | null>(null);
 const indexLogOpen = ref(false);
 
 /* ── Queue state ── */
-type QueueSource = 'recent' | 'library' | 'playlist';
+type QueueSource = 'recent' | 'library' | 'playlist' | 'soulseek';
 const queueSource = ref<QueueSource>('library');
 const queueSourceIndex = ref(0);       // index into source list of the LAST item pushed
 const queuePlaylistTracks = ref<Track[]>([]); // tracks for 'playlist' source
+const queueSoulseekTracks = ref<Track[]>([]);
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
 const recentTracks = ref<Track[]>([]);
@@ -565,10 +604,30 @@ const peerDeviceNames = ref<Record<string, string>>({});
 const deviceEmoji = ref('🎵');
 const EMOJI_OPTIONS = ['🎵', '🎶', '🎤', '🎧', '🎼', '🎹', '🎸', '🥁', '📱', '💻', '🖥️', '⌚', '📻', '📡', '🔊', '🎺', '🎻', '🪕', '🎷', '🍕'];
 const settingsOpen = ref(false);
+const soulseekSettingsOpen = ref(false);
 const settingsEmoji = ref('🎵');
 const settingsDeviceName = ref('');
+const settingsSoulseekEnabled = ref(false);
+const settingsSoulseekUsername = ref('');
+const settingsSoulseekPassword = ref('');
 const settingsSaving = ref(false);
 const settingsError = ref('');
+const soulseekSettingsSaving = ref(false);
+const soulseekSettingsError = ref('');
+const soulseekStatus = ref<SoulseekStatus | null>(null);
+const soulseekResults = ref<SoulseekSearchResult[]>([]);
+const soulseekLoading = ref(false);
+const soulseekSearching = ref(false);
+const soulseekError = ref('');
+const soulseekDownloads = ref<Record<string, SoulseekDownloadEvent>>({});
+const soulseekCoverUrls = ref<Record<string, string | null>>({});
+const libraryDataDir = ref<string | null>(null);
+let soulseekSearchTimer: ReturnType<typeof setTimeout> | null = null;
+let soulseekSearchSeq = 0;
+let unlistenSoulseekDownload: (() => void) | null = null;
+const SOULSEEK_SEARCH_DEBOUNCE_MS = 450;
+const soulseekCoverLoading = new Set<string>();
+const soulseekPendingPlayback = new Set<string>();
 
 const tracksByHash = computed<Record<string, Track>>(() => {
   const index: Record<string, Track> = {};
@@ -583,30 +642,437 @@ const remoteOutputDevices = computed(() => peers.value);
 interface DeviceSettings {
   emoji: string;
   device_name: string;
+  soulseek_enabled: boolean;
+  soulseek_username: string;
+  soulseek_password: string;
+}
+
+async function fetchDeviceSettings() {
+  return invoke<DeviceSettings>('get_device_settings');
 }
 
 async function openDeviceSettings() {
   settingsError.value = '';
-  const cfg = await invoke<DeviceSettings>('get_device_settings');
+  const cfg = await fetchDeviceSettings();
   settingsEmoji.value = cfg.emoji || '🎵';
   settingsDeviceName.value = cfg.device_name || '';
   settingsOpen.value = true;
+}
+
+async function openSoulseekSettings() {
+  soulseekSettingsError.value = '';
+  const cfg = await fetchDeviceSettings();
+  settingsSoulseekEnabled.value = !!cfg.soulseek_enabled;
+  settingsSoulseekUsername.value = cfg.soulseek_username || '';
+  settingsSoulseekPassword.value = cfg.soulseek_password || '';
+  soulseekSettingsOpen.value = true;
 }
 
 async function saveDeviceSettings() {
   settingsSaving.value = true;
   settingsError.value = '';
   try {
+    const cfg = await fetchDeviceSettings();
     await invoke('set_device_settings', {
       emoji: settingsEmoji.value,
       deviceName: settingsDeviceName.value,
+      soulseekEnabled: cfg.soulseek_enabled,
+      soulseekUsername: cfg.soulseek_username,
+      soulseekPassword: cfg.soulseek_password,
     });
     deviceEmoji.value = settingsEmoji.value;
+    await loadSoulseekStatus();
     settingsOpen.value = false;
   } catch (e: any) {
     settingsError.value = String(e ?? 'Failed to save settings');
   } finally {
     settingsSaving.value = false;
+  }
+}
+
+async function saveSoulseekSettings() {
+  soulseekSettingsSaving.value = true;
+  soulseekSettingsError.value = '';
+  try {
+    const cfg = await fetchDeviceSettings();
+    await invoke('set_device_settings', {
+      emoji: cfg.emoji,
+      deviceName: cfg.device_name,
+      soulseekEnabled: settingsSoulseekEnabled.value,
+      soulseekUsername: settingsSoulseekUsername.value,
+      soulseekPassword: settingsSoulseekPassword.value,
+    });
+    await loadSoulseekStatus();
+    soulseekSettingsOpen.value = false;
+  } catch (e: any) {
+    soulseekSettingsError.value = String(e ?? 'Failed to save Soulseek settings');
+  } finally {
+    soulseekSettingsSaving.value = false;
+  }
+}
+
+const soulseekReady = computed(() => !!soulseekStatus.value?.enabled && !!soulseekStatus.value?.configured);
+
+function soulseekResultKey(username: string, filename: string) {
+  return `${username}\u0000${filename}`;
+}
+
+function soulseekCoverKey(username: string, filename: string) {
+  return soulseekResultKey(username, filename);
+}
+
+function soulseekCoverUrl(result: SoulseekSearchResult) {
+  if (!result.coverFilename) return null;
+  return soulseekCoverUrls.value[soulseekCoverKey(result.username, result.coverFilename)] || null;
+}
+
+function soulseekTrackId(result: SoulseekSearchResult) {
+  const key = soulseekResultKey(result.username, result.filename);
+  let hash = 0;
+  for (let index = 0; index < key.length; index += 1) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(index);
+    hash |= 0;
+  }
+  return -1 - Math.abs(hash);
+}
+
+function soulseekDownloadState(result: SoulseekSearchResult) {
+  return soulseekDownloads.value[soulseekResultKey(result.username, result.filename)] || null;
+}
+
+function soulseekDownloadActionLabel(result: SoulseekSearchResult) {
+  const state = soulseekDownloadState(result)?.state;
+  switch (state) {
+    case 'starting':
+      return 'Starting…';
+    case 'queued_local':
+    case 'queued_remote':
+      return 'Queued';
+    case 'progress':
+      return 'Downloading…';
+    case 'completed':
+      return 'Saved';
+    case 'failed':
+    case 'timed_out':
+    case 'cancelled':
+      return 'Retry';
+    default:
+      return 'Download';
+  }
+}
+
+function soulseekDownloadBusy(result: SoulseekSearchResult) {
+  const state = soulseekDownloadState(result)?.state;
+  return state === 'starting' || state === 'queued_local' || state === 'queued_remote' || state === 'progress';
+}
+
+function formatBytes(bytes: number | null | undefined) {
+  if (bytes == null) return '—';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = unitIndex === 0 || value >= 100 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatTransferRate(bytesPerSecond: number | null | undefined) {
+  if (bytesPerSecond == null) return '—';
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+function formatSampleRate(sampleRate: number | null | undefined) {
+  if (!sampleRate) return '';
+  const khz = sampleRate / 1000;
+  return `${Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)} kHz`;
+}
+
+async function loadSoulseekStatus() {
+  try {
+    soulseekStatus.value = await invoke<SoulseekStatus>('soulseek_get_status');
+  } catch (e) {
+    console.error('Failed to load Soulseek status:', e);
+    soulseekStatus.value = null;
+  }
+}
+
+async function ensureLibraryDataDir() {
+  if (!libraryDataDir.value) {
+    libraryDataDir.value = await invoke<string>('get_data_dir');
+  }
+  return libraryDataDir.value;
+}
+
+function normalizePath(path: string) {
+  return path.replace(/\\/g, '/');
+}
+
+async function soulseekLocalRelativePath(localPath: string) {
+  const dataDir = normalizePath(await ensureLibraryDataDir()).replace(/\/$/, '');
+  const normalizedLocalPath = normalizePath(localPath);
+  const prefix = `${dataDir}/`;
+  if (normalizedLocalPath.startsWith(prefix)) {
+    return normalizedLocalPath.slice(prefix.length);
+  }
+  return null;
+}
+
+function makeSoulseekTrack(result: SoulseekSearchResult, relativePath: string): Track {
+  return {
+    id: soulseekTrackId(result),
+    path: relativePath,
+    title: result.basename,
+    artist: result.username,
+    album: null,
+    track_number: null,
+    duration_secs: result.duration,
+    file_hash: null,
+    rarity: null,
+    manually_edited: false,
+    is_liked: false,
+    play_count: 0,
+    year: null,
+    genre: null,
+    date_added: null,
+  };
+}
+
+async function playDownloadedSoulseekResult(result: SoulseekSearchResult, localPath: string) {
+  const relativePath = await soulseekLocalRelativePath(localPath);
+  if (!relativePath) {
+    throw new Error('Downloaded Soulseek file is outside the library data directory');
+  }
+
+  if (remoteOutputPeer.value) {
+    try {
+      await invoke('remote_playback_pause', remotePeerArgs(remoteOutputPeer.value));
+    } catch (_) {}
+    remoteOutputPeer.value = null;
+  }
+
+  bumpPlaybackTransitionSequence();
+  const contentScrollTop = contentRef.value?.scrollTop ?? null;
+  const track = makeSoulseekTrack(result, relativePath);
+  queueSoulseekTracks.value = [track];
+  queueSource.value = 'soulseek';
+  queueSourceIndex.value = 0;
+  nowPlaying.value = track;
+  duration.value = track.duration_secs || 0;
+  currentTime.value = 0;
+  queue.value = [];
+  refillQueue();
+  await playTrackLocally(track, true, 0);
+  isPlaying.value = true;
+  await refreshPlaybackState();
+  startTicker();
+  syncAndroid();
+  restoreContentScroll(contentScrollTop);
+}
+
+async function runSoulseekSearch(query: string, requestId: number) {
+  try {
+    const results = await invoke<SoulseekSearchResult[]>('soulseek_search', { query });
+    if (requestId !== soulseekSearchSeq) return;
+    soulseekResults.value = results;
+    soulseekError.value = '';
+    void fetchSoulseekCovers(results, requestId);
+  } catch (e: any) {
+    if (requestId !== soulseekSearchSeq) return;
+    soulseekResults.value = [];
+    soulseekError.value = String(e ?? 'Soulseek search failed');
+  } finally {
+    if (requestId === soulseekSearchSeq) {
+      soulseekLoading.value = false;
+      soulseekSearching.value = false;
+    }
+  }
+}
+
+function resetSoulseekSearchState() {
+  soulseekLoading.value = false;
+  soulseekSearching.value = false;
+  soulseekError.value = '';
+  soulseekResults.value = [];
+}
+
+async function fetchSoulseekCovers(results: SoulseekSearchResult[], requestId: number) {
+  const uniqueResults = new Map<string, SoulseekSearchResult>();
+
+  for (const result of results) {
+    if (!result.coverFilename || !result.coverSize) continue;
+    const key = soulseekCoverKey(result.username, result.coverFilename);
+    if (soulseekCoverUrls.value[key] !== undefined || soulseekCoverLoading.has(key)) continue;
+    uniqueResults.set(key, result);
+  }
+
+  for (const [key, result] of uniqueResults) {
+    if (requestId !== soulseekSearchSeq) return;
+
+    soulseekCoverLoading.add(key);
+    try {
+      const url = await invoke<string | null>('soulseek_fetch_cover', {
+        request: {
+          username: result.username,
+          coverFilename: result.coverFilename,
+          coverSize: result.coverSize,
+        },
+      });
+      soulseekCoverUrls.value = {
+        ...soulseekCoverUrls.value,
+        [key]: url,
+      };
+    } catch (error) {
+      console.error('Failed to fetch Soulseek cover preview:', error);
+      soulseekCoverUrls.value = {
+        ...soulseekCoverUrls.value,
+        [key]: null,
+      };
+    } finally {
+      soulseekCoverLoading.delete(key);
+    }
+  }
+}
+
+function scheduleSoulseekSearch(query = searchQuery.value) {
+  if (soulseekSearchTimer) {
+    clearTimeout(soulseekSearchTimer);
+    soulseekSearchTimer = null;
+  }
+
+  soulseekSearchSeq += 1;
+  const requestId = soulseekSearchSeq;
+  const trimmed = query.trim();
+  const enabled = soulseekStatus.value?.enabled;
+  const configured = soulseekStatus.value?.configured;
+
+  if (activeNav.value !== 'search' || !trimmed) {
+    resetSoulseekSearchState();
+    return;
+  }
+
+  if (!enabled || !configured) {
+    resetSoulseekSearchState();
+    return;
+  }
+
+  soulseekSearching.value = true;
+  soulseekLoading.value = false;
+  soulseekError.value = '';
+  soulseekSearchTimer = setTimeout(() => {
+    soulseekLoading.value = true;
+    void runSoulseekSearch(trimmed, requestId);
+  }, SOULSEEK_SEARCH_DEBOUNCE_MS);
+}
+
+function handleSearchInput() {
+  if (!searchQuery.value.trim()) {
+    scheduleSoulseekSearch('');
+  }
+}
+
+function handleSearchKeyup(event: KeyboardEvent) {
+  if (
+    event.isComposing
+    || ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)
+  ) {
+    return;
+  }
+
+  scheduleSoulseekSearch(searchQuery.value);
+}
+
+watch(
+  [activeNav, () => soulseekStatus.value?.enabled, () => soulseekStatus.value?.configured],
+  ([nav, enabled, configured]) => {
+    if (nav !== 'search' || !enabled || !configured) {
+      scheduleSoulseekSearch('');
+      return;
+    }
+
+    if (searchQuery.value.trim()) {
+      scheduleSoulseekSearch(searchQuery.value);
+    }
+  }
+);
+
+async function downloadSoulseekResult(result: SoulseekSearchResult) {
+  const key = soulseekResultKey(result.username, result.filename);
+  if (soulseekDownloadBusy(result)) return;
+
+  soulseekDownloads.value = {
+    ...soulseekDownloads.value,
+    [key]: {
+      transferId: soulseekDownloads.value[key]?.transferId || '',
+      username: result.username,
+      filename: result.filename,
+      basename: result.basename,
+      state: 'starting',
+      bytesDownloaded: 0,
+      totalBytes: result.size,
+      speedBytesPerSec: null,
+      queuePosition: null,
+      localPath: null,
+      error: null,
+    },
+  };
+
+  try {
+    const transferId = await invoke<string>('soulseek_download', {
+      request: {
+        username: result.username,
+        filename: result.filename,
+        coverFilename: result.coverFilename,
+        coverSize: result.coverSize,
+        size: result.size,
+      },
+    });
+    const current = soulseekDownloads.value[key];
+    if (!current) return;
+    soulseekDownloads.value = {
+      ...soulseekDownloads.value,
+      [key]: {
+        ...current,
+        transferId,
+      },
+    };
+  } catch (e: any) {
+    soulseekDownloads.value = {
+      ...soulseekDownloads.value,
+      [key]: {
+        transferId: '',
+        username: result.username,
+        filename: result.filename,
+        basename: result.basename,
+        state: 'failed',
+        bytesDownloaded: null,
+        totalBytes: result.size,
+        speedBytesPerSec: null,
+        queuePosition: null,
+        localPath: null,
+        error: String(e ?? 'Download failed'),
+      },
+    };
+  }
+}
+
+async function activateSoulseekResult(result: SoulseekSearchResult) {
+  if (shouldSuppressTrackRowClick()) return;
+
+  const key = soulseekResultKey(result.username, result.filename);
+  const currentState = soulseekDownloadState(result);
+  soulseekPendingPlayback.add(key);
+
+  if (currentState?.state === 'completed' && currentState.localPath) {
+    soulseekPendingPlayback.delete(key);
+    await playDownloadedSoulseekResult(result, currentState.localPath);
+    return;
+  }
+
+  if (!currentState || ['failed', 'timed_out', 'cancelled'].includes(currentState.state)) {
+    await downloadSoulseekResult(result);
   }
 }
 
@@ -1023,6 +1489,7 @@ const displayProgressPercent = computed(() => {
 function sourceList(src: QueueSource): Track[] {
   if (src === 'recent') return recentTracks.value.length ? recentTracks.value : libraryTracks.value.slice(0, 12);
   if (src === 'playlist') return queuePlaylistTracks.value;
+  if (src === 'soulseek') return queueSoulseekTracks.value;
   // 'library' – flattened in grouped order (same as libraryFlatList)
   return libraryFlatList.value;
 }
@@ -1039,7 +1506,7 @@ function refillQueue() {
   while (queue.value.length < 5) {
     const nextIdx = queueSourceIndex.value + 1;
     if (nextIdx >= list.length) {
-      if (queueSource.value === 'playlist' && repeatMode.value !== 1) break; // stop at end of playlist
+      if ((queueSource.value === 'playlist' || queueSource.value === 'soulseek') && repeatMode.value !== 1) break; // stop at end of finite queue sources
       queueSourceIndex.value = -1; // wrap (library or repeat-all)
     } else {
       queueSourceIndex.value = nextIdx;
@@ -1630,10 +2097,9 @@ const searchRecentTracks = computed(() => {
   return libraryTracks.value.slice(0, 10);
 });
 
-const libraryArtistCount = computed(() => countUniqueArtists(libraryTracks.value));
-const libraryAlbumCount = computed(() => countUniqueAlbums(libraryTracks.value));
 const searchArtistCount = computed(() => countUniqueArtists(searchResults.value));
 const searchAlbumCount = computed(() => countUniqueAlbums(searchResults.value));
+const searchSoulseekCountLabel = computed(() => (soulseekSearching.value ? '?' : String(soulseekResults.value.length)));
 
 const groupedByArtist = computed(() => {
   const map = new Map<string, Track[]>();
@@ -1814,9 +2280,35 @@ onMounted(() => {
   loadRecent();
   loadPlaylists();
   loadSmartPlaylists();
+  void loadSoulseekStatus();
   invoke<DeviceSettings>('get_device_settings')
     .then((cfg) => {
       if (cfg?.emoji) deviceEmoji.value = cfg.emoji;
+    })
+    .catch(() => {});
+  ensureLibraryDataDir().catch(() => {});
+  listen<SoulseekDownloadEvent>('soulseek-download', (e) => {
+    const payload = e.payload;
+    const key = soulseekResultKey(payload.username, payload.filename);
+    soulseekDownloads.value = {
+      ...soulseekDownloads.value,
+      [key]: payload,
+    };
+
+    if (payload.state === 'completed' && payload.localPath && soulseekPendingPlayback.has(key)) {
+      soulseekPendingPlayback.delete(key);
+      const matchingResult = soulseekResults.value.find((result) => soulseekResultKey(result.username, result.filename) === key);
+      if (matchingResult) {
+        void playDownloadedSoulseekResult(matchingResult, payload.localPath).catch((error) => {
+          console.error('Failed to start Soulseek playback:', error);
+        });
+      }
+    } else if (['failed', 'timed_out', 'cancelled'].includes(payload.state)) {
+      soulseekPendingPlayback.delete(key);
+    }
+  })
+    .then((unlisten) => {
+      unlistenSoulseekDownload = unlisten;
     })
     .catch(() => {});
   
@@ -1975,6 +2467,8 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onKeyDown);
   delete (window as any)._playbackFinished;
   clearTrackLongPress();
+  if (soulseekSearchTimer) clearTimeout(soulseekSearchTimer);
+  if (unlistenSoulseekDownload) unlistenSoulseekDownload();
   if (beatRafId !== null) cancelAnimationFrame(beatRafId);
   if (_mouseRafId) cancelAnimationFrame(_mouseRafId);
   cancelAnimationFrame(cardSpringRaf);
@@ -2229,6 +2723,8 @@ onUnmounted(() => {
               <input
                 v-model="searchQuery"
                 class="library-search"
+                @input="handleSearchInput"
+                @keyup="handleSearchKeyup"
                 type="text"
                 placeholder="Search tracks, artists, albums, genres..."
               />
@@ -2236,83 +2732,73 @@ onUnmounted(() => {
 
             <div v-if="libraryLoading" class="library-empty">Loading...</div>
 
-            <template v-else-if="!searchQuery.trim()">
-              <p class="search-empty-copy">Search across track titles, artists, albums, genres, years, and file paths.</p>
-
-              <div class="search-stat-grid">
-                <div class="search-stat-card">
-                  <span class="search-stat-label">Tracks</span>
-                  <strong class="search-stat-value">{{ libraryTracks.length }}</strong>
-                </div>
-                <div class="search-stat-card">
-                  <span class="search-stat-label">Artists</span>
-                  <strong class="search-stat-value">{{ libraryArtistCount }}</strong>
-                </div>
-                <div class="search-stat-card">
-                  <span class="search-stat-label">Albums</span>
-                  <strong class="search-stat-value">{{ libraryAlbumCount }}</strong>
-                </div>
-              </div>
-
-              <div v-if="searchRecentTracks.length" class="section-head search-section-head">
-                <h2>Start From Recent</h2>
-              </div>
-
-              <div v-if="searchRecentTracks.length" class="track-list">
-                <div
-                  v-for="(track, idx) in searchRecentTracks"
-                  :key="track.id"
-                  class="track-row"
-                  :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
-                  :style="rarityVars(track.rarity)"
-                  @click="playPlaylistTrack(searchRecentTracks, idx)"
-                  @touchstart.passive="startTrackRowLongPress($event, track)"
-                  @touchmove.passive="moveTrackRowLongPress"
-                  @touchend="endTrackRowLongPress"
-                  @touchcancel="endTrackRowLongPress"
-                >
-                  <div class="track-cover-sm" :style="covers[track.id]
-                    ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                    : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                  />
-                  <div class="track-info">
-                    <div class="track-title-row">
-                      <span class="track-title">{{ track.title || track.path }}</span>
-                      <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
-                      </span>
-                      <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
-                        <span class="track-playback-step">1</span>
-                      </span>
-                    </div>
-                    <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
-                  </div>
-                  <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
-                  </button>
-                  <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
-                    <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                    <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
-                  </button>
-                  <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
-                </div>
-              </div>
-            </template>
-
             <template v-else>
-              <div v-if="searchResults.length === 0" class="library-empty">
-                Nothing found for "{{ searchQuery }}".
-              </div>
+              <template v-if="!searchQuery.trim()">
+                <p class="search-empty-copy">Search across your local library and, when enabled, Soulseek.</p>
+
+                <div v-if="searchRecentTracks.length" class="section-head search-section-head">
+                  <h2>Start From Recent</h2>
+                </div>
+
+                <div v-if="searchRecentTracks.length" class="track-list">
+                  <div
+                    v-for="(track, idx) in searchRecentTracks"
+                    :key="track.id"
+                    class="track-row"
+                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
+                    :style="rarityVars(track.rarity)"
+                    @click="playPlaylistTrack(searchRecentTracks, idx)"
+                    @touchstart.passive="startTrackRowLongPress($event, track)"
+                    @touchmove.passive="moveTrackRowLongPress"
+                    @touchend="endTrackRowLongPress"
+                    @touchcancel="endTrackRowLongPress"
+                  >
+                    <div class="track-cover-sm" :style="covers[track.id]
+                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                    />
+                    <div class="track-info">
+                      <div class="track-title-row">
+                        <span class="track-title">{{ track.title || track.path }}</span>
+                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        </span>
+                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <span class="track-playback-step">1</span>
+                        </span>
+                      </div>
+                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
+                    </div>
+                    <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
+                    </button>
+                    <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
+                      <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                      <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                    </button>
+                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                  </div>
+                </div>
+              </template>
 
               <template v-else>
                 <div class="search-summary">
-                  <span><strong>{{ searchResults.length }}</strong> tracks</span>
+                  <span><strong>{{ searchResults.length }}</strong> local tracks</span>
                   <span><strong>{{ searchArtistCount }}</strong> artists</span>
                   <span><strong>{{ searchAlbumCount }}</strong> albums</span>
+                  <span v-if="soulseekReady"><strong>{{ searchSoulseekCountLabel }}</strong> Soulseek tracks</span>
                 </div>
 
-                <div class="track-list">
+                <div class="section-head search-section-head">
+                  <h2>Local Library</h2>
+                </div>
+
+                <div v-if="searchResults.length === 0" class="library-empty search-inline-empty">
+                  Nothing in your library for "{{ searchQuery }}".
+                </div>
+
+                <div v-else class="track-list">
                   <div
                     v-for="(track, idx) in searchResults"
                     :key="track.id"
@@ -2353,6 +2839,82 @@ onUnmounted(() => {
                   </div>
                 </div>
               </template>
+
+              <div class="section-head search-section-head soulseek-section-head">
+                <h2>Soulseek</h2>
+                <button class="text-action-btn soulseek-settings-link" @click="openSoulseekSettings">
+                  {{ soulseekStatus?.enabled ? 'Settings' : 'Enable' }}
+                </button>
+              </div>
+
+              <div v-if="!soulseekStatus?.enabled" class="library-empty search-inline-empty">
+                Soulseek search is off. Enable it in Soulseek settings.
+              </div>
+              <div v-else-if="!soulseekStatus?.configured" class="library-empty search-inline-empty">
+                Add Soulseek username and password in Soulseek settings to search the network.
+              </div>
+              <div v-else-if="!searchQuery.trim()" class="library-empty search-inline-empty">
+                Soulseek search is ready. Start typing to search the network.
+              </div>
+              <div v-else-if="soulseekLoading" class="library-empty search-inline-empty">
+                Searching Soulseek…
+              </div>
+              <div v-else-if="soulseekError" class="library-empty search-inline-empty soulseek-inline-error">
+                {{ soulseekError }}
+              </div>
+              <div v-else-if="soulseekResults.length === 0" class="library-empty search-inline-empty">
+                No Soulseek matches for "{{ searchQuery }}".
+              </div>
+              <div v-else class="track-list soulseek-list">
+                <div
+                  v-for="result in soulseekResults"
+                  :key="`${result.username}\u0000${result.filename}`"
+                  class="track-row soulseek-row"
+                  @click="activateSoulseekResult(result)"
+                >
+                  <div class="track-cover-sm soulseek-cover-sm" :style="soulseekCoverUrl(result)
+                    ? `background-image: url(${soulseekCoverUrl(result)}); background-size: cover; background-position: center`
+                    : ''">
+                    <span v-if="!soulseekCoverUrl(result)">{{ result.coverFilename ? 'ART' : 'SL' }}</span>
+                  </div>
+                  <div class="track-info">
+                    <div class="track-title-row">
+                      <span class="track-title">{{ result.basename }}</span>
+                      <span v-if="soulseekDownloadState(result)" class="soulseek-status-pill" :class="`state-${soulseekDownloadState(result)?.state}`">
+                        {{ soulseekDownloadActionLabel(result) }}
+                      </span>
+                    </div>
+                    <span class="track-album">
+                      {{ result.username }} · {{ formatBytes(result.size) }}
+                      <template v-if="result.duration"> · {{ formatDuration(result.duration) }}</template>
+                      <template v-if="result.bitrate"> · {{ result.bitrate }} kbps</template>
+                      <template v-if="result.sampleRate"> · {{ formatSampleRate(result.sampleRate) }}</template>
+                      <template v-if="result.bitDepth"> · {{ result.bitDepth }}-bit</template>
+                      <template v-if="result.coverFilename"> · cover art</template>
+                      <template v-if="result.freeUploadSlots > 0"> · {{ result.freeUploadSlots }} slots</template>
+                    </span>
+                    <span v-if="soulseekDownloadState(result)?.state === 'progress'" class="soulseek-progress-copy">
+                      {{ formatBytes(soulseekDownloadState(result)?.bytesDownloaded) }} / {{ formatBytes(soulseekDownloadState(result)?.totalBytes) }}
+                      · {{ formatTransferRate(soulseekDownloadState(result)?.speedBytesPerSec) }}
+                    </span>
+                    <span v-else-if="soulseekDownloadState(result)?.state === 'queued_remote' && soulseekDownloadState(result)?.queuePosition != null" class="soulseek-progress-copy">
+                      Queue position {{ soulseekDownloadState(result)?.queuePosition }}
+                    </span>
+                    <span v-else-if="soulseekDownloadState(result)?.state === 'completed'" class="soulseek-progress-copy">
+                      Saved to local library
+                    </span>
+                    <span v-else-if="soulseekDownloadState(result)?.error" class="soulseek-progress-copy soulseek-inline-error">
+                      {{ soulseekDownloadState(result)?.error }}
+                    </span>
+                  </div>
+                  <div class="soulseek-side">
+                    <span class="soulseek-speed">{{ formatTransferRate(result.peerSpeed) }}</span>
+                    <button class="btn-secondary soulseek-download-btn" :disabled="soulseekDownloadBusy(result)" @click.stop="downloadSoulseekResult(result)">
+                      {{ soulseekDownloadActionLabel(result) }}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </template>
           </section>
         </template>
@@ -2708,14 +3270,15 @@ onUnmounted(() => {
         <!-- Discovery view -->
         <template v-else-if="activeNav === 'discovery'">
           <section>
-            <div class="library-header">
-              <h2>Devices on Network</h2>
-              <div style="display:flex; align-items:center; gap:12px">
+            <div class="library-header discovery-header">
+              <div class="discovery-header-copy">
+                <h2>Devices on Network</h2>
+              </div>
+              <div class="discovery-toolbar">
                 <button class="sync-toggle" @click="openDeviceSettings" title="Device settings">
                   <span class="device-emoji">{{ deviceEmoji }}</span>
                   Settings
                 </button>
-                <span class="discovery-caption">mDNS · auto discovery</span>
                 <button
                   class="sync-toggle"
                   :class="{ active: syncEnabled }"
@@ -2727,53 +3290,63 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
-            <div v-if="!peers.length" class="discovery-empty">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" style="color:#535353"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
-              <p>No other instances found</p>
-              <p class="discovery-help-text">Make sure devices are on the same Wi-Fi network</p>
+            <div class="search-summary discovery-summary">
+              <span><strong>{{ peers.length }}</strong> devices</span>
+              <span><strong>{{ syncEnabled ? 'On' : 'Off' }}</strong> sync</span>
+              <span><strong>mDNS</strong> auto discovery</span>
             </div>
-            <div v-else class="peer-list">
-              <div v-for="peer in peers" :key="peer.host" class="peer-item">
-                <div class="peer-icon">{{ peer.device_emoji || syncProgress[peer.name]?.device_emoji || '🎵' }}</div>
-                <div class="peer-info">
-                  <span class="peer-name">{{ peer.device_name || peerDeviceNames[peer.name] || peer.name }}</span>
-                  <span class="peer-status-row">
-                    <span class="peer-playback-icon" :class="peerPlaybackClass(peer)" aria-hidden="true">
-                      <svg v-if="peer.playback?.state === 'playing'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
-                      <svg v-else-if="peer.playback?.state === 'paused'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
-                      <svg v-else viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M7 7h10v10H7z"/></svg>
+            <div v-if="!peers.length" class="library-empty discovery-empty">
+              <span>No other instances found.</span>
+              <span class="discovery-help-text">Make sure devices are on the same Wi-Fi network.</span>
+            </div>
+            <div v-else class="track-list discovery-list">
+              <div v-for="peer in peers" :key="peer.host" class="track-row discovery-row">
+                <div class="track-cover-sm peer-icon">{{ peer.device_emoji || syncProgress[peer.name]?.device_emoji || '🎵' }}</div>
+                <div class="track-info discovery-info">
+                  <div class="track-title-row">
+                    <span class="track-title">{{ peer.device_name || peerDeviceNames[peer.name] || peer.name }}</span>
+                    <span v-if="isRemoteOutputPeer(peer)" class="track-playback-badge next discovery-output-pill">Output</span>
+                    <span class="discovery-status-pill" :class="peerPlaybackClass(peer)">
+                      <span class="peer-playback-icon" aria-hidden="true">
+                        <svg v-if="peer.playback?.state === 'playing'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
+                        <svg v-else-if="peer.playback?.state === 'paused'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+                        <svg v-else viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M7 7h10v10H7z"/></svg>
+                      </span>
+                      {{ peerPlaybackLabel(peer) }}
                     </span>
-                    <span class="peer-now-playing">{{ peerNowPlayingText(peer) || peerPlaybackLabel(peer) }}</span>
+                  </div>
+                  <span class="track-album discovery-meta">
+                    {{ peerNowPlayingText(peer) || 'No active playback' }} · {{ peer.host }}:{{ peer.port }}
                   </span>
-                  <span class="peer-addr">{{ peer.host }}:{{ peer.port }}</span>
-                  <!-- sync progress for this peer -->
                   <template v-if="syncProgress[peer.name]">
-                    <div class="sync-bar-wrap" v-if="syncProgress[peer.name].phase === 'download'">
-                      <div
-                        class="sync-bar"
-                        :style="{ width: syncProgress[peer.name].total > 0
-                          ? (syncProgress[peer.name].done / syncProgress[peer.name].total * 100) + '%'
-                          : '0%' }"
-                      />
+                    <div class="discovery-sync-block">
+                      <div class="sync-bar-wrap" v-if="syncProgress[peer.name].phase === 'download'">
+                        <div
+                          class="sync-bar"
+                          :style="{ width: syncProgress[peer.name].total > 0
+                            ? (syncProgress[peer.name].done / syncProgress[peer.name].total * 100) + '%'
+                            : '0%' }"
+                        />
+                      </div>
+                      <span class="sync-status" :class="'sync-' + syncProgress[peer.name].phase">
+                        <template v-if="syncProgress[peer.name].phase === 'index'">{{ syncProgress[peer.name].message || 'Fetching index...' }}</template>
+                        <template v-else-if="syncProgress[peer.name].phase === 'download'">
+                          Loading {{ syncProgress[peer.name].done }}/{{ syncProgress[peer.name].total }}
+                        </template>
+                        <template v-else-if="syncProgress[peer.name].phase === 'reindex'">Indexing</template>
+                        <template v-else-if="syncProgress[peer.name].phase === 'done'">
+                          {{ syncProgress[peer.name].message }}
+                        </template>
+                        <template v-else-if="syncProgress[peer.name].phase === 'error'">
+                          {{ syncProgress[peer.name].message }}
+                        </template>
+                      </span>
                     </div>
-                    <span class="sync-status" :class="'sync-' + syncProgress[peer.name].phase">
-                      <template v-if="syncProgress[peer.name].phase === 'index'">{{ syncProgress[peer.name].message || 'Fetching index...' }}</template>
-                      <template v-else-if="syncProgress[peer.name].phase === 'download'">
-                        Loading {{ syncProgress[peer.name].done }}/{{ syncProgress[peer.name].total }}
-                      </template>
-                      <template v-else-if="syncProgress[peer.name].phase === 'reindex'">Indexing</template>
-                      <template v-else-if="syncProgress[peer.name].phase === 'done'">
-                        {{ syncProgress[peer.name].message }}
-                      </template>
-                      <template v-else-if="syncProgress[peer.name].phase === 'error'">
-                        {{ syncProgress[peer.name].message }}
-                      </template>
-                    </span>
                   </template>
                 </div>
                 <button
                   v-if="syncEnabled"
-                  class="sync-now-btn"
+                  class="sync-now-btn discovery-sync-btn"
                   @click="syncPeer(peer)"
                   :disabled="['index','download','reindex'].includes(syncProgress[peer.name]?.phase ?? '')"
                   title="Sync now"
@@ -2901,6 +3474,60 @@ onUnmounted(() => {
             <button class="btn-secondary" @click="settingsOpen = false">Cancel</button>
             <button class="btn-primary" :disabled="settingsSaving" @click="saveDeviceSettings">
               {{ settingsSaving ? 'Saving...' : 'Save' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="modal">
+      <div v-if="soulseekSettingsOpen" class="modal-overlay" @click.self="soulseekSettingsOpen = false">
+        <div class="modal identify-modal">
+          <div class="modal-header">
+            <h3>Soulseek settings</h3>
+            <button class="icon-btn" title="Close" @click="soulseekSettingsOpen = false">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+          <div class="modal-body settings-body">
+            <div class="settings-toggle-row">
+              <div>
+                <span class="settings-toggle-title">Soulseek search</span>
+                <span class="settings-toggle-copy">Search the Soulseek network and save selected files directly into your local library.</span>
+              </div>
+              <button
+                type="button"
+                class="sync-toggle settings-toggle-action"
+                :class="{ active: settingsSoulseekEnabled }"
+                :aria-pressed="settingsSoulseekEnabled"
+                :title="settingsSoulseekEnabled ? 'Soulseek search on — click to disable' : 'Soulseek search off — click to enable'"
+                @click="settingsSoulseekEnabled = !settingsSoulseekEnabled"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16a6.47 6.47 0 0 0 4.23-1.57l.27.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                Search
+              </button>
+            </div>
+
+            <template v-if="settingsSoulseekEnabled">
+              <label class="field">
+                <span>Soulseek username</span>
+                <input v-model="settingsSoulseekUsername" autocomplete="username" placeholder="username" />
+              </label>
+
+              <label class="field">
+                <span>Soulseek password</span>
+                <input v-model="settingsSoulseekPassword" type="password" autocomplete="current-password" placeholder="password" />
+              </label>
+
+              <p class="settings-note">Downloaded Soulseek files are placed into the Soulseek folder inside your library.</p>
+            </template>
+
+            <div v-if="soulseekSettingsError" class="settings-error">{{ soulseekSettingsError }}</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" @click="soulseekSettingsOpen = false">Cancel</button>
+            <button class="btn-primary" :disabled="soulseekSettingsSaving" @click="saveSoulseekSettings">
+              {{ soulseekSettingsSaving ? 'Saving...' : 'Save' }}
             </button>
           </div>
         </div>
@@ -3398,30 +4025,48 @@ a, button, [role="button"] {
   padding: 0 5px;
 }
 
-.discovery-empty {
-  display: flex; flex-direction: column; align-items: center;
-  gap: 12px; padding: 60px 0; color: #a7a7a7; font-size: var(--fs-empty);
+.discovery-header {
+  align-items: flex-end;
 }
-.peer-list { display: flex; flex-direction: column; gap: 8px; }
-.peer-item {
-  display: flex; align-items: center; gap: 14px;
-  background: #181818; border-radius: 8px;
-  padding: 14px 16px;
+.discovery-header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.discovery-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.discovery-summary {
+  margin: 0 0 18px;
+}
+.discovery-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 0 22px;
+}
+.discovery-list { display: flex; flex-direction: column; gap: 0; }
+.discovery-row {
+  align-items: flex-start;
+  cursor: default;
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 .peer-icon {
-  width: 40px; height: 40px; border-radius: 6px; background: #282828;
-  display: flex; align-items: center; justify-content: center;
-  color: #a7a7a7; flex-shrink: 0;
-}
-.peer-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
-.peer-name { font-size: var(--fs-peer-title); font-weight: 600; color: #fff; }
-.peer-alias { font-size: var(--fs-body-sm); color: #7b7b7b; }
-.peer-status-row {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: var(--fs-body-sm);
-  min-width: 0;
+  justify-content: center;
+  background: linear-gradient(135deg, #24304a, #11161f);
+  color: #fff;
+  font-size: 18px;
+}
+.discovery-info {
+  gap: 4px;
 }
 .peer-playback-icon {
   width: 14px;
@@ -3431,18 +4076,36 @@ a, button, [role="button"] {
   justify-content: center;
   flex-shrink: 0;
 }
-.peer-status-playing { color: #1db954; }
-.peer-status-paused { color: #f3c969; }
-.peer-status-stopped, .peer-status-ended, .peer-status-idle { color: #8b8b8b; }
-.peer-now-playing {
-  font-size: var(--fs-body-sm);
+.discovery-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--fs-badge);
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.08);
   color: #d7d7d7;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-shrink: 0;
 }
-.peer-addr { font-size: var(--fs-peer-meta); color: #a7a7a7; }
+.discovery-status-pill.peer-status-playing { background: rgba(29, 185, 84, 0.16); color: #8de2a7; }
+.discovery-status-pill.peer-status-paused { background: rgba(243, 201, 105, 0.16); color: #f3c969; }
+.discovery-status-pill.peer-status-stopped,
+.discovery-status-pill.peer-status-ended,
+.discovery-status-pill.peer-status-idle { background: rgba(255, 255, 255, 0.06); color: #9a9a9a; }
+.discovery-meta {
+  white-space: normal;
+}
+.discovery-sync-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+  max-width: 420px;
+}
+.discovery-output-pill {
+  flex-shrink: 0;
+}
 
 .sync-toggle {
   display: flex; align-items: center; gap: 6px;
@@ -3455,6 +4118,38 @@ a, button, [role="button"] {
 
 .settings-body { gap: 12px; }
 .settings-label { font-size: var(--fs-field-label); font-weight: 700; color: #a7a7a7; margin-top: 2px; }
+.settings-toggle-row {
+  padding: 0;
+  border: none;
+  background: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.settings-toggle-title {
+  display: block;
+  color: #fff;
+  font-size: var(--fs-body-md);
+  font-weight: 700;
+}
+.settings-toggle-copy {
+  display: block;
+  margin-top: 4px;
+  color: #a7a7a7;
+  font-size: var(--fs-body-sm);
+  line-height: 1.45;
+}
+.settings-toggle-action {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.settings-note {
+  margin: -4px 0 0;
+  color: #a7a7a7;
+  font-size: var(--fs-body-sm);
+  line-height: 1.45;
+}
 .emoji-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -3481,6 +4176,7 @@ a, button, [role="button"] {
 }
 .sync-now-btn:hover:not(:disabled) { background: #1db954; color: #000; }
 .sync-now-btn:disabled { opacity: 0.4; cursor: default; }
+.discovery-sync-btn { margin-left: 10px; }
 
 .sync-bar-wrap {
   height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-top: 2px;
@@ -3756,35 +4452,11 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   font-size: var(--fs-body-md);
   margin: 0 0 16px;
 }
-.search-stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
-}
-.search-stat-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-.search-stat-label {
-  color: #a7a7a7;
-  font-size: var(--fs-eyebrow);
-  font-weight: 700;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}
-.search-stat-value {
-  color: #fff;
-  font-size: calc(var(--fs-h2) - 2px);
-  font-weight: 700;
-}
 .search-section-head {
   margin-top: 6px;
+}
+.search-inline-empty {
+  padding: 14px 0 18px;
 }
 .search-summary {
   display: flex;
@@ -3797,6 +4469,90 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .search-summary strong {
   color: #fff;
   font-weight: 700;
+}
+.soulseek-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 22px;
+}
+.soulseek-settings-link {
+  background: transparent;
+  border: none;
+  color: #8de2a7;
+  cursor: pointer;
+  padding: 0;
+}
+.soulseek-list {
+  gap: 0;
+}
+.soulseek-row {
+  align-items: center;
+}
+.soulseek-cover-sm {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #21453a, #0f1820);
+  color: #8de2a7;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.soulseek-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--fs-badge);
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.08);
+  color: #d7d7d7;
+}
+.soulseek-status-pill.state-completed {
+  background: rgba(29, 185, 84, 0.16);
+  color: #8de2a7;
+}
+.soulseek-status-pill.state-failed,
+.soulseek-status-pill.state-timed_out,
+.soulseek-status-pill.state-cancelled {
+  background: rgba(233, 40, 62, 0.16);
+  color: #ff98a3;
+}
+.soulseek-progress-copy {
+  font-size: var(--fs-body-sm);
+  color: #a7a7a7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.soulseek-inline-error {
+  color: #ff98a3;
+}
+.soulseek-side {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 12px;
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.soulseek-speed {
+  font-size: var(--fs-body-sm);
+  color: #a7a7a7;
+  white-space: nowrap;
+}
+.soulseek-download-btn {
+  min-width: 96px;
+  padding: 6px 14px;
+}
+.soulseek-download-btn:disabled,
+.btn-primary:disabled {
+  opacity: 0.72;
+  cursor: default;
+  transform: none;
 }
 .text-action-btn { font-size: var(--fs-button); font-weight: 600; }
 .track-play-count {
@@ -4582,6 +5338,15 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
   .track-row { gap: 8px; padding: 6px 4px; }
   .track-cover-sm { width: 32px; height: 32px; }
+  .discovery-toolbar { justify-content: flex-start; }
+  .discovery-summary { margin-bottom: 14px; }
+  .discovery-row { align-items: center; }
+  .discovery-sync-btn { margin-left: 0; }
+  .soulseek-row { align-items: center; }
+  .soulseek-side { min-width: 0; gap: 8px; }
+  .soulseek-speed { display: none; }
+  .soulseek-download-btn { padding: 6px 12px; min-width: 92px; }
+  .soulseek-progress-copy { white-space: normal; }
   .track-num { display: none; }
   .edit-btn { opacity: 1; }
   .track-inline-action { display: none !important; }
@@ -4727,6 +5492,17 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
   .track-title { font-size: var(--fs-track-title); }
   .track-album { display: none; }
+  .discovery-row .track-title-row {
+    flex-wrap: wrap;
+  }
+  .discovery-row .track-album {
+    display: block;
+    white-space: normal;
+  }
+  .soulseek-row .track-album {
+    display: block;
+    white-space: normal;
+  }
   .track-dur { display: none; }
 
   .player {
