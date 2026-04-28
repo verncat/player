@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::actor::server_actor::ServerCommand;
+use crate::actor::ActorHandle;
 use super::download_slot::DownloadSlot;
 use crate::client::context::ClientContext;
 use crate::client::ClientOperation;
@@ -21,6 +23,7 @@ const QUEUE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 /// thin dispatcher — each arm delegates to a single method here.
 pub struct DownloadManager {
     op_tx: UnboundedSender<ClientOperation>,
+    server_handle: ActorHandle<ServerCommand>,
     context: Arc<ClientContext>,
     pub logged_in: bool,
     /// Tokens of downloads waiting for a concurrency slot.
@@ -35,6 +38,7 @@ pub struct DownloadManager {
 impl DownloadManager {
     pub fn new(
         op_tx: UnboundedSender<ClientOperation>,
+        server_handle: ActorHandle<ServerCommand>,
         context: Arc<ClientContext>,
         max_concurrent: Option<u32>,
         logged_in: bool,
@@ -43,6 +47,7 @@ impl DownloadManager {
     ) -> Self {
         Self {
             op_tx,
+            server_handle,
             context,
             logged_in,
             pending,
@@ -76,7 +81,18 @@ impl DownloadManager {
             None => return,
         };
 
-        let _ = self.context.peer_registry.queue_upload(&username, filename);
+        if let Err(error) = self.context.peer_registry.queue_upload(&username, filename) {
+            trace!(
+                "[dm] queue_upload failed for {}: {}. Requesting fresh peer address.",
+                username,
+                error
+            );
+            if let Err(send_error) = self.server_handle.send(ServerCommand::GetPeerAddress(username)) {
+                error!("[dm] failed to request peer address: {}", send_error);
+            }
+            return;
+        }
+
         self.active_slots.insert(token, DownloadSlot);
         if let Some(d) = self.downloads.get_mut(&token) {
             d.status = DownloadStatus::QueuedLocally;
@@ -90,6 +106,30 @@ impl DownloadManager {
         .abort_handle();
         if let Some(d) = self.downloads.get_mut(&token) {
             d.queue_timeout_handle = Some(handle);
+        }
+    }
+
+    /// Retry downloads that were never initiated because the peer actor had gone stale.
+    pub fn retry_queued_local_for_peer(&mut self, username: &str) {
+        let tokens: Vec<_> = self
+            .downloads
+            .iter()
+            .filter_map(|(token, download)| {
+                (download.username == username
+                    && matches!(download.status, DownloadStatus::QueuedLocally)
+                    && !self.active_slots.contains_key(token))
+                    .then_some(*token)
+            })
+            .collect();
+
+        for token in tokens {
+            if self
+                .max_concurrent
+                .is_some_and(|max| (self.active_slots.len() as u32) >= max)
+            {
+                break;
+            }
+            self.try_initiate(token);
         }
     }
 

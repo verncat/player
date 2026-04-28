@@ -245,7 +245,6 @@ async function loadPlaylists() {
 
 async function createPlaylist() {
   const name = newPlaylistName.value.trim();
-  if (!name) return;
   await invoke('create_playlist', { name });
   newPlaylistName.value = '';
   showNewPlaylistInput.value = false;
@@ -390,10 +389,27 @@ function removeTrackFromPlaylistFromTrackContext() {
 }
 
 // ── Smart Playlists ──────────────────────────────────────────────────────────
-type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'extension' | 'year' | 'play_count' | 'is_liked' | 'date_added';
-type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false';
+type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'extension' | 'year' | 'play_count' | 'is_liked' | 'date_added' | 'sort';
+type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false' | 'sort_asc' | 'sort_desc';
+type SPSortField = Exclude<SPField, 'any' | 'sort'>;
+type SPSortOp = Extract<SPOp, 'sort_asc' | 'sort_desc'>;
 interface SPRule { id: string; field: SPField; op: SPOp; value: string; }
 interface SmartPlaylist { id: string; name: string; match: 'all' | 'any'; rules: SPRule[]; }
+
+const SP_SORT_FIELD_OPTIONS: Array<{ value: SPSortField; label: string }> = [
+  { value: 'title', label: 'Title' },
+  { value: 'artist', label: 'Artist' },
+  { value: 'album', label: 'Album' },
+  { value: 'genre', label: 'Genre' },
+  { value: 'extension', label: 'Extension' },
+  { value: 'year', label: 'Year' },
+  { value: 'play_count', label: 'Play count' },
+  { value: 'is_liked', label: 'Is liked' },
+  { value: 'date_added', label: 'Date added' },
+];
+
+const SP_SORT_FIELD_SET = new Set<SPSortField>(SP_SORT_FIELD_OPTIONS.map((option) => option.value));
+const smartPlaylistSortCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
 const smartPlaylists = ref<SmartPlaylist[]>([]);
 const smartView = ref<SmartPlaylist | null>(null);
@@ -425,11 +441,11 @@ async function loadSmartPlaylists() {
 }
 async function createSmartPlaylist() {
   const name = newSPName.value.trim();
-  if (!name) return;
-  const sp: SmartPlaylist = { id: crypto.randomUUID(), name, match: 'all', rules: [] };
-  await invoke('save_smart_playlist', {
-    id: sp.id, name: sp.name, matchMode: sp.match, rulesJson: '[]',
+  const id = crypto.randomUUID();
+  const savedName = await invoke<string>('save_smart_playlist', {
+    id, name, matchMode: 'all', rulesJson: '[]',
   });
+  const sp: SmartPlaylist = { id, name: savedName, match: 'all', rules: [] };
   smartPlaylists.value.push(sp);
   newSPName.value = '';
   showNewSPInput.value = false;
@@ -446,9 +462,20 @@ function saveSP() {
   const idx = smartPlaylists.value.findIndex(p => p.id === editingSP.value!.id);
   if (idx !== -1) smartPlaylists.value[idx] = { ...editingSP.value };
   const sp = editingSP.value;
-  invoke('save_smart_playlist', {
+  invoke<string>('save_smart_playlist', {
     id: sp.id, name: sp.name, matchMode: sp.match,
     rulesJson: JSON.stringify(sp.rules),
+  }).then((savedName) => {
+    if (editingSP.value?.id === sp.id) {
+      editingSP.value.name = savedName;
+    }
+    const playlistIndex = smartPlaylists.value.findIndex((playlist) => playlist.id === sp.id);
+    if (playlistIndex !== -1) {
+      smartPlaylists.value[playlistIndex] = {
+        ...smartPlaylists.value[playlistIndex],
+        name: savedName,
+      };
+    }
   });
 }
 function addSPRule() {
@@ -463,14 +490,16 @@ function removeSPRule(ruleId: string) {
 }
 function onSPRuleFieldChange(rule: SPRule) {
   const f = rule.field;
-  if (f === 'is_liked') { rule.op = 'is_true'; rule.value = ''; }
+  if (f === 'sort') { rule.op = 'sort_asc'; rule.value = 'title'; }
+  else if (f === 'is_liked') { rule.op = 'is_true'; rule.value = ''; }
   else if (f === 'year' || f === 'play_count') { rule.op = 'gte'; rule.value = '0'; }
   else if (f === 'date_added') { rule.op = 'gte'; rule.value = new Date().toISOString().slice(0, 10); }
   else if (f === 'genre' || f === 'extension' || f === 'artist' || f === 'album') { rule.op = 'in'; rule.value = '[]'; }
   else { rule.op = 'contains'; rule.value = ''; }
   saveSP();
 }
-function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool' | 'date' {
+function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool' | 'date' | 'sort' {
+  if (field === 'sort') return 'sort';
   if (field === 'is_liked') return 'bool';
   if (field === 'year' || field === 'play_count') return 'number';
   if (field === 'date_added') return 'date';
@@ -497,6 +526,72 @@ function spToggleValue(rule: SPRule, v: string) {
 function spIsSelected(rule: SPRule, v: string): boolean {
   try { return (JSON.parse(rule.value) as string[]).includes(v); } catch { return false; }
 }
+
+function isSPSortField(value: string): value is SPSortField {
+  return SP_SORT_FIELD_SET.has(value as SPSortField);
+}
+
+function normalizeSPSortField(value: string): SPSortField {
+  return isSPSortField(value) ? value : 'title';
+}
+
+function normalizeSPSortOp(value: string): SPSortOp {
+  return value === 'sort_desc' ? 'sort_desc' : 'sort_asc';
+}
+
+function smartPlaylistSortRules(sp: SmartPlaylist): Array<{ field: SPSortField; op: SPSortOp }> {
+  return sp.rules.flatMap((rule) => {
+    if (rule.field !== 'sort') return [];
+    return [{
+      field: normalizeSPSortField(rule.value),
+      op: normalizeSPSortOp(rule.op),
+    }];
+  });
+}
+
+function compareOptionalText(left: string | null | undefined, right: string | null | undefined) {
+  const leftText = left?.trim() ?? '';
+  const rightText = right?.trim() ?? '';
+  if (!leftText && !rightText) return 0;
+  if (!leftText) return 1;
+  if (!rightText) return -1;
+  return smartPlaylistSortCollator.compare(leftText, rightText);
+}
+
+function compareOptionalNumber(left: number | null | undefined, right: number | null | undefined) {
+  if (left == null && right == null) return 0;
+  if (left == null) return 1;
+  if (right == null) return -1;
+  return left - right;
+}
+
+function trackSortExtension(track: Track) {
+  return track.path.split('.').pop()?.toLowerCase() || '';
+}
+
+function compareTracksForSortField(left: Track, right: Track, field: SPSortField) {
+  switch (field) {
+    case 'title':
+      return compareOptionalText(left.title || left.path, right.title || right.path);
+    case 'artist':
+      return compareOptionalText(left.artist, right.artist);
+    case 'album':
+      return compareOptionalText(left.album, right.album);
+    case 'genre':
+      return compareOptionalText(left.genre, right.genre);
+    case 'extension':
+      return compareOptionalText(trackSortExtension(left), trackSortExtension(right));
+    case 'year':
+      return compareOptionalNumber(left.year, right.year);
+    case 'play_count':
+      return compareOptionalNumber(left.play_count, right.play_count);
+    case 'is_liked':
+      return compareOptionalNumber(left.is_liked ? 1 : 0, right.is_liked ? 1 : 0);
+    case 'date_added':
+      return compareOptionalNumber(left.date_added, right.date_added);
+  }
+}
+
 function matchesRule(track: Track, rule: SPRule): boolean {
   switch (rule.field) {
     case 'any': {
@@ -548,14 +643,36 @@ function matchesRule(track: Track, rule: SPRule): boolean {
       if (rule.op === 'eq') return track.date_added >= dayStart && track.date_added < dayStart + 86400;
       return false;
     }
+    case 'sort': return true;
     default: return true;
   }
 }
 function smartPlaylistTracks(sp: SmartPlaylist): Track[] {
   if (sp.rules.length === 0) return [];
-  return libraryTracks.value.filter(t =>
-    sp.match === 'all' ? sp.rules.every(r => matchesRule(t, r)) : sp.rules.some(r => matchesRule(t, r))
-  );
+  const filterRules = sp.rules.filter((rule) => rule.field !== 'sort');
+  const sortRules = smartPlaylistSortRules(sp);
+  const filteredTracks = filterRules.length === 0
+    ? libraryTracks.value.slice()
+    : libraryTracks.value.filter((track) =>
+      sp.match === 'all'
+        ? filterRules.every((rule) => matchesRule(track, rule))
+        : filterRules.some((rule) => matchesRule(track, rule))
+    );
+
+  if (sortRules.length === 0) {
+    return filteredTracks;
+  }
+
+  return filteredTracks.sort((left, right) => {
+    for (const rule of sortRules) {
+      const comparison = compareTracksForSortField(left, right, rule.field);
+      if (comparison !== 0) {
+        return rule.op === 'sort_desc' ? -comparison : comparison;
+      }
+    }
+
+    return smartPlaylistSortCollator.compare(left.path, right.path);
+  });
 }
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -642,6 +759,7 @@ const remoteOutputDevices = computed(() => peers.value);
 interface DeviceSettings {
   emoji: string;
   device_name: string;
+  sync_enabled: boolean;
   soulseek_enabled: boolean;
   soulseek_username: string;
   soulseek_password: string;
@@ -1077,13 +1195,19 @@ async function activateSoulseekResult(result: SoulseekSearchResult) {
 }
 
 async function toggleSync() {
-  syncEnabled.value = !syncEnabled.value;
-  await invoke('sync_set_enabled', { enabled: syncEnabled.value });
-  if (syncEnabled.value) {
-    // Kick off sync with all currently known peers
-    for (const peer of peers.value) {
-      invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
+  const nextEnabled = !syncEnabled.value;
+  syncEnabled.value = nextEnabled;
+  try {
+    await invoke('sync_set_enabled', { enabled: nextEnabled });
+    if (nextEnabled) {
+      // Kick off sync with all currently known peers
+      for (const peer of peers.value) {
+        invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
+      }
     }
+  } catch (error) {
+    syncEnabled.value = !nextEnabled;
+    console.error('Failed to update sync setting:', error);
   }
 }
 
@@ -2284,6 +2408,7 @@ onMounted(() => {
   invoke<DeviceSettings>('get_device_settings')
     .then((cfg) => {
       if (cfg?.emoji) deviceEmoji.value = cfg.emoji;
+      syncEnabled.value = !!cfg?.sync_enabled;
     })
     .catch(() => {});
   ensureLibraryDataDir().catch(() => {});
@@ -2538,7 +2663,7 @@ onUnmounted(() => {
           Devices
           <span v-if="peers.length" class="peer-badge">{{ peers.length }}</span>
         </a>
-        <a class="nav-item" href="#" @click.prevent="openDataDir; showMobileNav = false">
+        <a class="nav-item" href="#" @click.prevent="openDataDir(); showMobileNav = false">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
           Open Data Folder
         </a>
@@ -3104,6 +3229,7 @@ onUnmounted(() => {
                       <option value="play_count">Play count</option>
                       <option value="is_liked">Is liked</option>
                       <option value="date_added">Date added</option>
+                      <option value="sort">Sort by</option>
                     </select>
 
                     <template v-if="spFieldType(rule.field) === 'text'">
@@ -3129,6 +3255,16 @@ onUnmounted(() => {
                         <option value="eq">on</option>
                       </select>
                       <input class="library-search sp-text-input" type="date" v-model="rule.value" @change="saveSP()" />
+                    </template>
+                    <template v-else-if="spFieldType(rule.field) === 'sort'">
+                      <span class="sp-op-label">by</span>
+                      <select class="sp-select" :value="normalizeSPSortField(rule.value)" @change="rule.value = normalizeSPSortField(($event.target as HTMLSelectElement).value); saveSP()">
+                        <option v-for="option in SP_SORT_FIELD_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+                      </select>
+                      <select class="sp-select" :value="normalizeSPSortOp(rule.op)" @change="rule.op = normalizeSPSortOp(($event.target as HTMLSelectElement).value); saveSP()">
+                        <option value="sort_asc">ASC</option>
+                        <option value="sort_desc">DESC</option>
+                      </select>
                     </template>
                     <template v-else>
                       <div class="sp-multiselect">

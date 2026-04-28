@@ -164,6 +164,7 @@ impl Client {
             server_handle: server_handle.clone(),
             downloads: DownloadManager::new(
                 op_tx.clone(),
+                server_handle.clone(),
                 context.clone(),
                 max_concurrent,
                 false,

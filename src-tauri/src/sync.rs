@@ -160,10 +160,10 @@ struct SyncInner {
 }
 
 impl SyncState {
-    pub fn new() -> Self {
+    pub fn new(enabled: bool) -> Self {
         SyncState {
             inner: Arc::new(Mutex::new(SyncInner {
-                enabled: false,
+                enabled,
                 server_started: false,
             })),
         }
@@ -1152,6 +1152,17 @@ pub fn sync_set_enabled(
     app: AppHandle,
 ) -> Result<(), String> {
     ensure_http_server_started(&state, &library, &app);
+    let current = library.get_device_settings().map_err(|e| e.to_string())?;
+    library
+        .set_device_settings(
+            &current.emoji,
+            &current.device_name,
+            enabled,
+            current.soulseek_enabled,
+            &current.soulseek_username,
+            &current.soulseek_password,
+        )
+        .map_err(|e| e.to_string())?;
     let mut inner = state.inner.lock().unwrap();
     inner.enabled = enabled;
     Ok(())

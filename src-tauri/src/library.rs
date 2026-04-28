@@ -86,6 +86,7 @@ pub struct Track {
 pub struct DeviceSettings {
     pub emoji: String,
     pub device_name: String,
+    pub sync_enabled: bool,
     pub soulseek_enabled: bool,
     pub soulseek_username: String,
     pub soulseek_password: String,
@@ -210,22 +211,24 @@ impl LibraryState {
 
     pub fn get_device_settings(&self) -> Result<DeviceSettings, BoxError> {
         let conn = self.conn.lock().unwrap();
-        let existing: Result<(String, String, i64, String, String), _> = conn.query_row(
+        let existing: Result<(String, String, i64, i64, String, String), _> = conn.query_row(
             "SELECT emoji,
                     COALESCE(device_name, ''),
+                    COALESCE(sync_enabled, 0),
                     COALESCE(soulseek_enabled, 0),
                     COALESCE(soulseek_username, ''),
                     COALESCE(soulseek_password, '')
                FROM device_config
               WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         );
 
         match existing {
-            Ok((emoji, device_name, soulseek_enabled, soulseek_username, soulseek_password)) => Ok(DeviceSettings {
+            Ok((emoji, device_name, sync_enabled, soulseek_enabled, soulseek_username, soulseek_password)) => Ok(DeviceSettings {
                 emoji,
                 device_name,
+                sync_enabled: sync_enabled != 0,
                 soulseek_enabled: soulseek_enabled != 0,
                 soulseek_username,
                 soulseek_password,
@@ -238,15 +241,17 @@ impl LibraryState {
                         id,
                         emoji,
                         device_name,
+                        sync_enabled,
                         soulseek_enabled,
                         soulseek_username,
                         soulseek_password
-                    ) VALUES (1, ?1, ?2, 0, '', '')",
+                    ) VALUES (1, ?1, ?2, 0, 0, '', '')",
                     params![&emoji, &device_name],
                 )?;
                 Ok(DeviceSettings {
                     emoji,
                     device_name,
+                    sync_enabled: false,
                     soulseek_enabled: false,
                     soulseek_username: String::new(),
                     soulseek_password: String::new(),
@@ -259,6 +264,7 @@ impl LibraryState {
         &self,
         emoji: &str,
         device_name: &str,
+        sync_enabled: bool,
         soulseek_enabled: bool,
         soulseek_username: &str,
         soulseek_password: &str,
@@ -269,13 +275,15 @@ impl LibraryState {
                 id,
                 emoji,
                 device_name,
+                sync_enabled,
                 soulseek_enabled,
                 soulseek_username,
                 soulseek_password
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 emoji,
                 device_name,
+                if sync_enabled { 1 } else { 0 },
                 if soulseek_enabled { 1 } else { 0 },
                 soulseek_username.trim(),
                 soulseek_password,
@@ -293,6 +301,7 @@ impl LibraryState {
         self.set_device_settings(
             emoji,
             &current.device_name,
+            current.sync_enabled,
             current.soulseek_enabled,
             &current.soulseek_username,
             &current.soulseek_password,
@@ -362,6 +371,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             id        INTEGER PRIMARY KEY CHECK(id=1),
             emoji     TEXT NOT NULL DEFAULT '🎵',
             device_name TEXT NOT NULL DEFAULT '',
+            sync_enabled INTEGER NOT NULL DEFAULT 0,
             soulseek_enabled INTEGER NOT NULL DEFAULT 0,
             soulseek_username TEXT NOT NULL DEFAULT '',
             soulseek_password TEXT NOT NULL DEFAULT ''
@@ -381,6 +391,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_pt_playlist ON playlist_tracks(playlist_id, position);",
     )?;
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
+    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_enabled INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_username TEXT NOT NULL DEFAULT ''");
     let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_password TEXT NOT NULL DEFAULT ''");
@@ -1345,6 +1356,7 @@ pub fn get_device_settings(state: tauri::State<'_, LibraryState>) -> Result<Devi
 pub fn set_device_settings(
     emoji: String,
     device_name: String,
+    sync_enabled: Option<bool>,
     soulseek_enabled: Option<bool>,
     soulseek_username: Option<String>,
     soulseek_password: Option<String>,
@@ -1355,6 +1367,7 @@ pub fn set_device_settings(
         .set_device_settings(
             &emoji,
             device_name.trim(),
+            sync_enabled.unwrap_or(current.sync_enabled),
             soulseek_enabled.unwrap_or(current.soulseek_enabled),
             soulseek_username
                 .as_deref()
@@ -1416,9 +1429,18 @@ pub fn get_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<Playli
 #[tauri::command]
 pub fn create_playlist(name: String, state: tauri::State<'_, LibraryState>) -> Result<i64, String> {
     let conn = state.conn.lock().unwrap();
+    let trimmed = name.trim();
+    let playlist_name = if trimmed.is_empty() {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM playlists", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        format!("Playlist {}", count + 1)
+    } else {
+        trimmed.to_string()
+    };
     conn.execute(
         "INSERT INTO playlists (name) VALUES (?1)",
-        params![name],
+        params![playlist_name],
     ).map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
 }
@@ -1517,8 +1539,17 @@ pub fn save_smart_playlist(
     match_mode: String,
     rules_json: String,
     state: tauri::State<'_, LibraryState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let conn = state.conn.lock().unwrap();
+    let trimmed = name.trim();
+    let playlist_name = if trimmed.is_empty() {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM smart_playlists", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        format!("Playlist {}", count + 1)
+    } else {
+        trimmed.to_string()
+    };
     conn.execute(
         "INSERT INTO smart_playlists (id, name, match_mode, rules_json, updated_at)
          VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
@@ -1527,9 +1558,9 @@ pub fn save_smart_playlist(
            match_mode = excluded.match_mode,
            rules_json = excluded.rules_json,
            updated_at = strftime('%s','now')",
-        params![id, name, match_mode, rules_json],
+        params![id, playlist_name, match_mode, rules_json],
     ).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(playlist_name)
 }
 
 #[tauri::command]

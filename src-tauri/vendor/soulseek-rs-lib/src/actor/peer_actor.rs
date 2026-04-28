@@ -484,7 +484,7 @@ impl Actor for PeerActor {
     type Message = PeerCommand;
 
     fn handle(&mut self, msg: Self::Message) {
-        if matches!(self.connection_state, ConnectionState::Connecting { .. }) {
+        if !matches!(self.connection_state, ConnectionState::Connected) || self.stream.is_none() {
             self.queued_commands.push(msg);
             return;
         }

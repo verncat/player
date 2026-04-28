@@ -78,12 +78,16 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?.join("data");
             let library = library::LibraryState::new(data_dir, app.handle().clone())
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            let sync_enabled = library
+                .get_device_settings()
+                .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?
+                .sync_enabled;
             app.manage(library);
             app.manage(audio::AudioState::new());
             app.manage(playback::PlaybackState::new(app.handle().clone()));
             app.manage(discovery::DiscoveryState::new());
             app.manage(soulseek::SoulseekState::new());
-            app.manage(sync::SyncState::new());
+            app.manage(sync::SyncState::new(sync_enabled));
             // Auto-start discovery
             let _ = discovery::discovery_start(
                 app.state::<discovery::DiscoveryState>(),

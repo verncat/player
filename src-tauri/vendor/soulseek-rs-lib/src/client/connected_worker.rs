@@ -194,6 +194,7 @@ impl ConnectedWorker {
                     }
                     ConnectionType::D => error!("ConnectionType::D not implemented"),
                 }
+                self.downloads.retry_queued_local_for_peer(&new_peer.username);
             }
             ClientOperation::GetPeerAddressResponse {
                 username,
@@ -211,7 +212,7 @@ impl ConnectedWorker {
 
                 if !peer_exists {
                     let peer = Peer::new(
-                        username,
+                        username.clone(),
                         ConnectionType::P,
                         host,
                         port,
@@ -221,8 +222,9 @@ impl ConnectedWorker {
                         obfuscated_port.try_into().unwrap(),
                     );
                     let connector = self.peer_connector();
-                    tokio::spawn(async move { connector.connect_p(peer, None) });
+                    connector.connect_p(peer, None);
                 }
+                self.downloads.retry_queued_local_for_peer(&username);
             }
 
             // ── Search events ─────────────────────────────────────────────────
