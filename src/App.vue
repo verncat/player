@@ -86,6 +86,7 @@ const showDeviceMenu = ref(false);
 const showMobileNav = ref(false);
 const outputDevices = ref<AudioDevice[]>([]);
 const currentDevice = ref<string | null>(null);
+const deviceMenuError = ref('');
 const activeNav = ref("home");
 const libraryTracks = ref<Track[]>([]);
 const libraryLoading = ref(false);
@@ -522,9 +523,19 @@ function smartPlaylistTracks(sp: SmartPlaylist): Track[] {
 
 interface PeerPlayback {
   state: 'playing' | 'paused' | 'stopped' | 'ended';
+  hash?: string | null;
   title?: string | null;
   artist?: string | null;
   album?: string | null;
+  position?: number;
+  duration?: number;
+}
+
+interface RemoteDeviceStatus {
+  version: string;
+  device_name?: string | null;
+  device_emoji?: string | null;
+  playback?: PeerPlayback | null;
 }
 
 interface Peer {
@@ -537,6 +548,7 @@ interface Peer {
   playback?: PeerPlayback | null;
 }
 const peers = ref<Peer[]>([]);
+const remoteOutputPeer = ref<Peer | null>(null);
 
 interface SyncProgress {
   peer: string;
@@ -557,6 +569,16 @@ const settingsEmoji = ref('🎵');
 const settingsDeviceName = ref('');
 const settingsSaving = ref(false);
 const settingsError = ref('');
+
+const tracksByHash = computed<Record<string, Track>>(() => {
+  const index: Record<string, Track> = {};
+  for (const track of libraryTracks.value) {
+    if (track.file_hash) index[track.file_hash] = track;
+  }
+  return index;
+});
+
+const remoteOutputDevices = computed(() => peers.value);
 
 interface DeviceSettings {
   emoji: string;
@@ -603,6 +625,22 @@ function syncPeer(peer: Peer) {
   invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
 }
 
+function peerLabel(peer: Peer) {
+  return peer.device_name || peerDeviceNames.value[peer.name] || peer.name;
+}
+
+function samePeer(a: Peer | null | undefined, b: Peer | null | undefined) {
+  return !!a && !!b && a.host === b.host && a.port === b.port;
+}
+
+function remotePeerArgs(peer: Peer) {
+  return { peerHost: peer.host, peerAddresses: peer.addresses, peerPort: peer.port };
+}
+
+function isRemoteOutputPeer(peer: Peer) {
+  return samePeer(remoteOutputPeer.value, peer);
+}
+
 function peerPlaybackLabel(peer: Peer) {
   switch (peer.playback?.state) {
     case 'playing': return 'Playing';
@@ -627,6 +665,18 @@ function peerNowPlayingText(peer: Peer) {
   if (artist) return artist;
   return album || '';
 }
+
+watch(peers, (list) => {
+  if (!remoteOutputPeer.value) return;
+  const updated = list.find((peer) => samePeer(peer, remoteOutputPeer.value));
+  if (updated) {
+    remoteOutputPeer.value = updated;
+    return;
+  }
+  remoteOutputPeer.value = null;
+  stopTicker();
+  refreshPlaybackState().catch(() => {});
+});
 
 const currentTrack = computed<{ title: string; artist: string; colors: [string, string] }>(() => {
   if (nowPlaying.value) {
@@ -1048,7 +1098,7 @@ async function mobileSeekHoldEnd(e: PointerEvent) {
     : seekPosFromEvent(e, el);
   seekPreviewPos.value = pos;
   currentTime.value = Math.round(pos);
-  await invoke('playback_seek', { position: pos });
+  await seekCurrentOutput(pos);
   const st = await refreshPlaybackState();
   if (st.playing) {
     startTicker();
@@ -1112,9 +1162,8 @@ async function playTrackFrom(src: QueueSource, index: number) {
   queueSourceIndex.value = index;
   queue.value = [];
   refillQueue();
-  await invoke('playback_play', { path: track.path });
+  await playTrackOnCurrentOutput(track, wasPlaying, 0);
   if (!wasPlaying) {
-    await invoke('playback_pause');
     isPlaying.value = false;
     stopTicker();
   } else {
@@ -1133,7 +1182,7 @@ async function playNext() {
   if (!queue.value.length) {
     isPlaying.value = false;
     stopTicker();
-    await invoke('playback_stop');
+    await stopCurrentOutput();
     syncAndroid();
     return;
   }
@@ -1142,7 +1191,7 @@ async function playNext() {
   duration.value = next.duration_secs || 0;
   currentTime.value = 0;
   refillQueue();
-  await invoke('playback_play', { path: next.path });
+  await playTrackOnCurrentOutput(next, true, 0);
   isPlaying.value = true;
   await refreshPlaybackState();
   isPlaying.value = true;
@@ -1157,7 +1206,7 @@ async function playPrev() {
   bumpPlaybackTransitionSequence();
   if (currentTime.value > 3) {
     currentTime.value = 0;
-    await invoke('playback_seek', { position: 0 });
+    await seekCurrentOutput(0);
     return;
   }
   const list = sourceList(queueSource.value);
@@ -1172,7 +1221,7 @@ async function playPrev() {
   queue.value = [];
   refillQueue();
   isPlaying.value = true;
-  await invoke('playback_play', { path: track.path });
+  await playTrackOnCurrentOutput(track, true, 0);
   await refreshPlaybackState();
   isPlaying.value = true;
   track.play_count++;
@@ -1190,7 +1239,114 @@ function jumpToQueueItem(index: number) {
 
 interface PlaybackStatus { playing: boolean; finished: boolean; position: number; duration: number; }
 
+function trackForHash(hash?: string | null) {
+  if (!hash) return null;
+  return tracksByHash.value[hash] ?? null;
+}
+
+async function playTrackLocally(track: Track, autoplay: boolean, position = 0) {
+  await invoke('playback_play', { path: track.path });
+  if (position > 0) {
+    await invoke('playback_seek', { position });
+  }
+  if (!autoplay) {
+    await invoke('playback_pause');
+  }
+}
+
+async function playTrackRemotely(track: Track, autoplay: boolean, position = 0, peer = remoteOutputPeer.value) {
+  if (!peer) throw new Error('No remote player selected');
+  if (!track.file_hash) throw new Error('Track is not indexed yet and cannot be transferred');
+  await invoke('remote_playback_transfer', {
+    ...remotePeerArgs(peer),
+    hash: track.file_hash,
+    position,
+    autoplay,
+  });
+}
+
+async function playTrackOnCurrentOutput(track: Track, autoplay: boolean, position = 0) {
+  if (remoteOutputPeer.value) {
+    await playTrackRemotely(track, autoplay, position, remoteOutputPeer.value);
+  } else {
+    await playTrackLocally(track, autoplay, position);
+  }
+}
+
+async function pauseCurrentOutput() {
+  if (remoteOutputPeer.value) {
+    await invoke('remote_playback_pause', remotePeerArgs(remoteOutputPeer.value));
+  } else {
+    await invoke('playback_pause');
+  }
+}
+
+async function resumeCurrentOutput() {
+  if (remoteOutputPeer.value) {
+    await invoke('remote_playback_resume', remotePeerArgs(remoteOutputPeer.value));
+  } else {
+    await invoke('playback_resume');
+  }
+}
+
+async function stopCurrentOutput() {
+  if (remoteOutputPeer.value) {
+    await invoke('remote_playback_stop', remotePeerArgs(remoteOutputPeer.value));
+  } else {
+    await invoke('playback_stop');
+  }
+}
+
+async function seekCurrentOutput(position: number) {
+  if (remoteOutputPeer.value) {
+    await invoke('remote_playback_seek', { ...remotePeerArgs(remoteOutputPeer.value), position });
+  } else {
+    await invoke('playback_seek', { position });
+  }
+}
+
+function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
+  const playback = status.playback;
+  if (status.device_name && remoteOutputPeer.value) {
+    peerDeviceNames.value = { ...peerDeviceNames.value, [remoteOutputPeer.value.name]: status.device_name };
+  }
+  const remoteTrack = trackForHash(playback?.hash) ?? nowPlaying.value;
+  if (remoteTrack && playback?.hash && nowPlaying.value?.id !== remoteTrack.id) {
+    nowPlaying.value = remoteTrack;
+  }
+  isPlaying.value = playback?.state === 'playing';
+  currentTime.value = Math.floor(playback?.position ?? 0);
+  if ((playback?.duration ?? 0) > 0) {
+    duration.value = Math.floor(playback?.duration ?? 0);
+  }
+  return {
+    playing: isPlaying.value,
+    finished: playback?.state === 'ended',
+    position: playback?.position ?? 0,
+    duration: playback?.duration ?? 0,
+  };
+}
+
+async function capturePlaybackSnapshot() {
+  if (remoteOutputPeer.value || isPlaying.value) {
+    try {
+      await refreshPlaybackState();
+    } catch (_) {
+      // Keep the current UI snapshot if the active output cannot be refreshed.
+    }
+  }
+  return {
+    track: nowPlaying.value,
+    position: currentTime.value,
+    playing: isPlaying.value,
+  };
+}
+
 async function refreshPlaybackState() {
+  if (remoteOutputPeer.value) {
+    const st = await invoke<RemoteDeviceStatus>('remote_playback_status', remotePeerArgs(remoteOutputPeer.value));
+    return applyRemotePlaybackStatus(st);
+  }
   const st = await invoke<PlaybackStatus>('playback_status');
   isPlaying.value = st.playing;
   currentTime.value = Math.floor(st.position);
@@ -1224,7 +1380,7 @@ async function handleFinishedPlayback(expectedSequence = playbackTransitionSeque
     if (repeatMode.value === 2) {
       if (nowPlaying.value) {
         bumpPlaybackTransitionSequence();
-        await invoke('playback_play', { path: nowPlaying.value.path });
+        await playTrackOnCurrentOutput(nowPlaying.value, true, 0);
         startTicker();
         syncAndroid();
       }
@@ -1255,17 +1411,32 @@ function startTicker() {
 }
 
 async function togglePlay() {
+  if (remoteOutputPeer.value && !nowPlaying.value) {
+    await refreshPlaybackState();
+  }
   if (!nowPlaying.value) {
+    if (remoteOutputPeer.value) {
+      if (isPlaying.value) {
+        await pauseCurrentOutput();
+        stopTicker();
+      } else {
+        await resumeCurrentOutput();
+        startTicker();
+      }
+      await refreshPlaybackState();
+      syncAndroid();
+      return;
+    }
     if (libraryTracks.value.length) {
       await playTrackFrom('library', 0);
     }
     return;
   }
   if (isPlaying.value) {
-    await invoke('playback_pause');
+    await pauseCurrentOutput();
     stopTicker();
   } else {
-    await invoke('playback_resume');
+    await resumeCurrentOutput();
     startTicker();
   }
   await refreshPlaybackState();
@@ -1290,7 +1461,7 @@ async function seek(e: MouseEvent) {
   const el = e.currentTarget as HTMLElement;
   const pos = seekPosFromEvent(e, el);
   currentTime.value = Math.round(pos);
-  await invoke('playback_seek', { position: pos });
+  await seekCurrentOutput(pos);
   const st = await refreshPlaybackState();
   if (st.playing) {
     startTicker();
@@ -1308,6 +1479,7 @@ function setVolume(e: MouseEvent) {
 
 async function toggleDeviceMenu() {
   if (!showDeviceMenu.value) {
+    deviceMenuError.value = '';
     const res = await invoke<DeviceList>('get_output_devices');
     outputDevices.value = res.devices;
     currentDevice.value = res.current;
@@ -1315,11 +1487,68 @@ async function toggleDeviceMenu() {
   showDeviceMenu.value = !showDeviceMenu.value;
 }
 
-async function pickDevice(name: string) {
-  const useDefault = name === currentDevice.value;
-  await invoke('set_output_device', { name: useDefault ? null : name });
-  currentDevice.value = useDefault ? null : name;
-  showDeviceMenu.value = false;
+async function pickLocalDevice(name: string) {
+  deviceMenuError.value = '';
+  try {
+    if (remoteOutputPeer.value) {
+      const previousRemotePeer = remoteOutputPeer.value;
+      const snapshot = await capturePlaybackSnapshot();
+      await invoke('set_output_device', { name });
+      currentDevice.value = name;
+      if (snapshot.track) {
+        await playTrackLocally(snapshot.track, false, snapshot.position);
+      }
+      if (snapshot.playing) {
+        await invoke('remote_playback_pause', remotePeerArgs(previousRemotePeer));
+      }
+      remoteOutputPeer.value = null;
+      if (snapshot.playing && snapshot.track) {
+        await invoke('playback_resume');
+      }
+      const st = await refreshPlaybackState();
+      if (st.playing) startTicker(); else stopTicker();
+      syncAndroid();
+    } else {
+      const useDefault = name === currentDevice.value;
+      await invoke('set_output_device', { name: useDefault ? null : name });
+      currentDevice.value = useDefault ? null : name;
+    }
+    showDeviceMenu.value = false;
+  } catch (e: any) {
+    deviceMenuError.value = String(e ?? 'Failed to switch output device');
+  }
+}
+
+async function pickRemoteDevice(peer: Peer) {
+  deviceMenuError.value = '';
+  try {
+    if (isRemoteOutputPeer(peer)) {
+      showDeviceMenu.value = false;
+      return;
+    }
+    const previousRemotePeer = remoteOutputPeer.value;
+    const snapshot = await capturePlaybackSnapshot();
+    if (snapshot.track) {
+      await playTrackRemotely(snapshot.track, false, snapshot.position, peer);
+    }
+    if (snapshot.playing) {
+      if (previousRemotePeer) {
+        await invoke('remote_playback_pause', remotePeerArgs(previousRemotePeer));
+      } else {
+        await invoke('playback_pause');
+      }
+      if (snapshot.track) {
+        await invoke('remote_playback_resume', remotePeerArgs(peer));
+      }
+    }
+    remoteOutputPeer.value = peer;
+    const st = await refreshPlaybackState();
+    if (st.playing) startTicker(); else stopTicker();
+    syncAndroid();
+    showDeviceMenu.value = false;
+  } catch (e: any) {
+    deviceMenuError.value = String(e ?? 'Failed to switch to remote player');
+  }
 }
 
 function onDocClick(e: MouseEvent) {
@@ -1680,7 +1909,7 @@ onMounted(() => {
       const pos = parseFloat(action.slice(5));
       if (!isNaN(pos)) {
         currentTime.value = Math.round(pos);
-        await invoke('playback_seek', { position: pos });
+        await seekCurrentOutput(pos);
         syncAndroid();
       }
     }
@@ -2913,12 +3142,24 @@ onUnmounted(() => {
                   :key="dev.name"
                   href="#"
                   class="device-item"
-                  @click.prevent="pickDevice(dev.name)"
+                  @click.prevent="pickLocalDevice(dev.name)"
                 >
-                  <span class="device-check">{{ dev.name === currentDevice ? '✓' : '' }}</span>
+                  <span class="device-check">{{ !remoteOutputPeer && dev.name === currentDevice ? '✓' : '' }}</span>
                   <span class="device-name">{{ dev.name }}</span>
                 </a>
+                <div v-if="remoteOutputDevices.length" class="device-section-label">Player devices</div>
+                <a
+                  v-for="peer in remoteOutputDevices"
+                  :key="`${peer.host}:${peer.port}`"
+                  href="#"
+                  class="device-item"
+                  @click.prevent="pickRemoteDevice(peer)"
+                >
+                  <span class="device-check">{{ isRemoteOutputPeer(peer) ? '✓' : '' }}</span>
+                  <span class="device-name">{{ peerLabel(peer) }}</span>
+                </a>
               </div>
+              <div v-if="deviceMenuError" class="device-error">{{ deviceMenuError }}</div>
             </div>
           </Transition>
         </div>
@@ -3823,6 +4064,14 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   max-height: 240px;
   overflow-y: auto;
 }
+.device-section-label {
+  padding: 10px 16px 6px;
+  color: #8b8b8b;
+  font-size: var(--fs-eyebrow);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
 .device-list::-webkit-scrollbar { width: 6px; }
 .device-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
 .device-list::-webkit-scrollbar-track { background: transparent; }
@@ -3848,6 +4097,11 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.device-error {
+  padding: 0 16px 12px;
+  color: #e9283e;
+  font-size: var(--fs-body-sm);
 }
 
 /* ── Queue popup ── */

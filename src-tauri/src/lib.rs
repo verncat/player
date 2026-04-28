@@ -118,6 +118,12 @@ pub fn run() {
             sync::sync_set_enabled,
             sync::sync_get_enabled,
             sync::sync_with_peer,
+            sync::remote_playback_status,
+            sync::remote_playback_transfer,
+            sync::remote_playback_pause,
+            sync::remote_playback_resume,
+            sync::remote_playback_stop,
+            sync::remote_playback_seek,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

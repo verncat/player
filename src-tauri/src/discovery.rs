@@ -27,7 +27,7 @@ const BROWSE_RESTART_INTERVAL: Duration = Duration::from_secs(15);
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-#[derive(Clone, Serialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, PartialEq)]
 pub struct Peer {
     pub name: String,  // instance name (human-readable hostname)
     pub host: String,  // resolved hostname or IP

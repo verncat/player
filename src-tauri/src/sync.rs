@@ -14,6 +14,7 @@
 //!   { peer, phase: "index"|"download"|"reindex"|"done"|"error", total, done, message }
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -21,6 +22,7 @@ use std::thread;
 use std::time::Duration;
 
 use rusqlite::{params, Connection};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tiny_http::Header;
@@ -50,12 +52,15 @@ pub struct TracksResponse {
 }
 
 /// Lightweight device state for discovery and device list UI.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RemotePlaybackInfo {
     pub state: String,
+    pub hash: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    pub position: f64,
+    pub duration: f64,
 }
 
 /// `/status` response payload for lightweight peer polling.
@@ -65,6 +70,18 @@ pub struct DeviceStatusResponse {
     pub device_name: Option<String>,
     pub device_emoji: Option<String>,
     pub playback: Option<RemotePlaybackInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RemotePlaybackTransferRequest {
+    pub hash: String,
+    pub position: f64,
+    pub autoplay: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RemotePlaybackSeekRequest {
+    pub position: f64,
 }
 
 /// Progress event payload.
@@ -201,6 +218,21 @@ fn handle_request(
     if url == "/status" {
         let playback = app.state::<crate::playback::PlaybackState>();
         serve_status(request, &conn, &data_dir, &playback);
+    } else if url == "/control/play-hash" {
+        let playback = app.state::<crate::playback::PlaybackState>();
+        serve_control_play_hash(request, &conn, &data_dir, &playback);
+    } else if url == "/control/pause" {
+        let playback = app.state::<crate::playback::PlaybackState>();
+        serve_control_pause(request, &playback);
+    } else if url == "/control/resume" {
+        let playback = app.state::<crate::playback::PlaybackState>();
+        serve_control_resume(request, &playback);
+    } else if url == "/control/stop" {
+        let playback = app.state::<crate::playback::PlaybackState>();
+        serve_control_stop(request, &playback);
+    } else if url == "/control/seek" {
+        let playback = app.state::<crate::playback::PlaybackState>();
+        serve_control_seek(request, &playback);
     } else if url == "/tracks" {
         serve_tracks(request, &conn);
     } else if url == "/sync-data" {
@@ -234,6 +266,41 @@ fn normalize_rel_path(path: &Path) -> String {
         .join("/")
 }
 
+fn rel_path_to_abs(data_dir: &Path, rel: &str) -> PathBuf {
+    rel.split('/').fold(data_dir.to_path_buf(), |mut p, s| {
+        p.push(s);
+        p
+    })
+}
+
+fn respond_status(request: tiny_http::Request, status: u16) {
+    let _ = request.respond(tiny_http::Response::empty(status));
+}
+
+fn respond_json<T: Serialize>(request: tiny_http::Request, payload: &T) {
+    let body = serde_json::to_vec(payload).unwrap_or_default();
+    let content_type = Header::from_bytes(b"Content-Type", b"application/json").unwrap();
+    let _ = request.respond(tiny_http::Response::from_data(body).with_header(content_type));
+}
+
+fn respond_error(request: tiny_http::Request, status: u16, message: &str) {
+    let content_type = Header::from_bytes(b"Content-Type", b"text/plain; charset=utf-8").unwrap();
+    let _ = request.respond(
+        tiny_http::Response::from_string(message.to_string())
+            .with_status_code(status)
+            .with_header(content_type),
+    );
+}
+
+fn read_json_request<T: DeserializeOwned>(request: &mut tiny_http::Request) -> Result<T, String> {
+    let mut body = Vec::new();
+    request
+        .as_reader()
+        .read_to_end(&mut body)
+        .map_err(|e| e.to_string())?;
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
+}
+
 fn current_playback_info(
     conn: &Connection,
     data_dir: &Path,
@@ -246,13 +313,14 @@ fn current_playback_info(
         .map(normalize_rel_path);
     let metadata = rel_path.as_ref().and_then(|rel| {
         conn.query_row(
-            "SELECT title, artist, album FROM tracks WHERE path = ?1 LIMIT 1",
+            "SELECT file_hash, title, artist, album FROM tracks WHERE path = ?1 LIMIT 1",
             params![rel],
             |row| {
                 Ok((
                     row.get::<_, Option<String>>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
@@ -262,7 +330,7 @@ fn current_playback_info(
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
         .filter(|value| !value.trim().is_empty());
-    let (title, artist, album) = metadata.unwrap_or((fallback_title, None, None));
+    let (hash, title, artist, album) = metadata.unwrap_or((None, fallback_title, None, None));
     let state = if playback.is_playing() {
         "playing"
     } else if playback.is_finished() {
@@ -274,9 +342,12 @@ fn current_playback_info(
     };
     Some(RemotePlaybackInfo {
         state: state.to_string(),
+        hash,
         title,
         artist,
         album,
+        position: playback.position_secs(),
+        duration: playback.duration_secs(),
     })
 }
 
@@ -288,18 +359,93 @@ fn serve_status(
 ) {
     let body = {
         let c = conn.lock().unwrap();
-        let (device_name, device_emoji) = device_identity(&c);
-        let playback = current_playback_info(&c, data_dir, playback);
-        serde_json::to_vec(&DeviceStatusResponse {
-            version: APP_VERSION.to_string(),
-            device_name,
-            device_emoji,
-            playback,
-        })
-        .unwrap_or_default()
+        let status = build_device_status(&c, data_dir, playback);
+        serde_json::to_vec(&status).unwrap_or_default()
     };
     let content_type = Header::from_bytes(b"Content-Type", b"application/json").unwrap();
     let _ = request.respond(tiny_http::Response::from_data(body).with_header(content_type));
+}
+
+fn build_device_status(
+    conn: &Connection,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+) -> DeviceStatusResponse {
+    let (device_name, device_emoji) = device_identity(conn);
+    let playback = current_playback_info(conn, data_dir, playback);
+    DeviceStatusResponse {
+        version: APP_VERSION.to_string(),
+        device_name,
+        device_emoji,
+        playback,
+    }
+}
+
+fn serve_control_play_hash(
+    mut request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+) {
+    let payload = match read_json_request::<RemotePlaybackTransferRequest>(&mut request) {
+        Ok(payload) => payload,
+        Err(e) => {
+            respond_error(request, 400, &format!("invalid request: {e}"));
+            return;
+        }
+    };
+    let rel: Option<String> = conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT path FROM tracks WHERE file_hash = ?1 LIMIT 1",
+            params![payload.hash],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(rel) = rel else {
+        respond_error(request, 404, "track not found");
+        return;
+    };
+    let abs = rel_path_to_abs(data_dir, &rel);
+    if let Err(e) = playback.play(abs) {
+        respond_error(request, 500, &e);
+        return;
+    }
+    if payload.position.is_finite() && payload.position > 0.0 {
+        playback.seek(payload.position.max(0.0));
+    }
+    if !payload.autoplay {
+        playback.pause();
+    }
+    respond_status(request, 204);
+}
+
+fn serve_control_pause(request: tiny_http::Request, playback: &crate::playback::PlaybackState) {
+    playback.pause();
+    respond_status(request, 204);
+}
+
+fn serve_control_resume(request: tiny_http::Request, playback: &crate::playback::PlaybackState) {
+    playback.resume();
+    respond_status(request, 204);
+}
+
+fn serve_control_stop(request: tiny_http::Request, playback: &crate::playback::PlaybackState) {
+    playback.stop();
+    respond_status(request, 204);
+}
+
+fn serve_control_seek(mut request: tiny_http::Request, playback: &crate::playback::PlaybackState) {
+    let payload = match read_json_request::<RemotePlaybackSeekRequest>(&mut request) {
+        Ok(payload) => payload,
+        Err(e) => {
+            respond_error(request, 400, &format!("invalid request: {e}"));
+            return;
+        }
+    };
+    playback.seek(payload.position.max(0.0));
+    respond_status(request, 204);
 }
 
 fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
@@ -532,6 +678,88 @@ fn peer_get(client: &reqwest::blocking::Client, base_urls: &[String], path: &str
         }
     }
     Err(last_err)
+}
+
+fn peer_post_json<T: Serialize>(
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+    path: &str,
+    payload: &T,
+) -> Result<(), String> {
+    let mut last_err = String::from("no reachable peer address");
+    for base in base_urls {
+        let url = format!("{}{}", base, path);
+        match client.post(&url).json(payload).send() {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                last_err = if body.trim().is_empty() {
+                    format!("HTTP {}", status)
+                } else {
+                    format!("HTTP {}: {}", status, body)
+                };
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+    }
+    Err(last_err)
+}
+
+fn peer_post_empty(
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+    path: &str,
+) -> Result<(), String> {
+    let mut last_err = String::from("no reachable peer address");
+    for base in base_urls {
+        let url = format!("{}{}", base, path);
+        match client.post(&url).send() {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                last_err = if body.trim().is_empty() {
+                    format!("HTTP {}", status)
+                } else {
+                    format!("HTTP {}: {}", status, body)
+                };
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+    }
+    Err(last_err)
+}
+
+fn build_remote_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn remote_status_via_http(base_urls: &[String]) -> Result<DeviceStatusResponse, String> {
+    let client = build_remote_client(Duration::from_secs(5))?;
+    let bytes = peer_get(&client, base_urls, "/status")?;
+    serde_json::from_slice::<DeviceStatusResponse>(&bytes).map_err(|e| e.to_string())
+}
+
+fn remote_control_post<T: Serialize>(
+    base_urls: &[String],
+    path: &str,
+    payload: &T,
+) -> Result<(), String> {
+    let client = build_remote_client(Duration::from_secs(10))?;
+    peer_post_json(&client, base_urls, path, payload)
+}
+
+fn remote_control_post_empty(base_urls: &[String], path: &str) -> Result<(), String> {
+    let client = build_remote_client(Duration::from_secs(10))?;
+    peer_post_empty(&client, base_urls, path)
 }
 // ── Sync worker ───────────────────────────────────────────────────────────────
 
@@ -952,4 +1180,76 @@ pub fn sync_with_peer(
     let port = peer_port.unwrap_or(SYNC_PORT);
     thread::spawn(move || do_sync(peer_host, peer_name, peer_addresses, port, app));
     Ok(())
+}
+
+#[tauri::command]
+pub fn remote_playback_status(
+    peer_host: String,
+    peer_addresses: Vec<String>,
+    peer_port: Option<u16>,
+) -> Result<DeviceStatusResponse, String> {
+    let base_urls = peer_base_urls(&peer_host, &peer_addresses, peer_port.unwrap_or(SYNC_PORT));
+    remote_status_via_http(&base_urls)
+}
+
+#[tauri::command]
+pub fn remote_playback_transfer(
+    peer_host: String,
+    peer_addresses: Vec<String>,
+    peer_port: Option<u16>,
+    hash: String,
+    position: f64,
+    autoplay: bool,
+) -> Result<(), String> {
+    let base_urls = peer_base_urls(&peer_host, &peer_addresses, peer_port.unwrap_or(SYNC_PORT));
+    remote_control_post(
+        &base_urls,
+        "/control/play-hash",
+        &RemotePlaybackTransferRequest { hash, position, autoplay },
+    )
+}
+
+#[tauri::command]
+pub fn remote_playback_pause(
+    peer_host: String,
+    peer_addresses: Vec<String>,
+    peer_port: Option<u16>,
+) -> Result<(), String> {
+    let base_urls = peer_base_urls(&peer_host, &peer_addresses, peer_port.unwrap_or(SYNC_PORT));
+    remote_control_post_empty(&base_urls, "/control/pause")
+}
+
+#[tauri::command]
+pub fn remote_playback_resume(
+    peer_host: String,
+    peer_addresses: Vec<String>,
+    peer_port: Option<u16>,
+) -> Result<(), String> {
+    let base_urls = peer_base_urls(&peer_host, &peer_addresses, peer_port.unwrap_or(SYNC_PORT));
+    remote_control_post_empty(&base_urls, "/control/resume")
+}
+
+#[tauri::command]
+pub fn remote_playback_stop(
+    peer_host: String,
+    peer_addresses: Vec<String>,
+    peer_port: Option<u16>,
+) -> Result<(), String> {
+    let base_urls = peer_base_urls(&peer_host, &peer_addresses, peer_port.unwrap_or(SYNC_PORT));
+    remote_control_post_empty(&base_urls, "/control/stop")
+}
+
+#[tauri::command]
+pub fn remote_playback_seek(
+    peer_host: String,
+    peer_addresses: Vec<String>,
+    peer_port: Option<u16>,
+    position: f64,
+) -> Result<(), String> {
+    let base_urls = peer_base_urls(&peer_host, &peer_addresses, peer_port.unwrap_or(SYNC_PORT));
+    remote_control_post(
+        &base_urls,
+        "/control/seek",
+        &RemotePlaybackSeekRequest { position },
+    )
 }
