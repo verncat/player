@@ -40,5 +40,6 @@ mdns-sd = "0.11"
 hostname = "0.4"
 whoami = "1"
 soulseek_rs = { package = "soulseek-rs-lib", path = "vendor/soulseek-rs-lib", features = ["tracing"] }
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

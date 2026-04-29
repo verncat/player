@@ -154,6 +154,8 @@ impl LibraryState {
             index_directory(&conn, &data_dir)?;
         }
 
+        log_library_snapshot("startup", &data_dir, &db_path, &conn);
+
         let conn = Arc::new(Mutex::new(conn));
         start_watcher(data_dir.clone(), Arc::clone(&conn), app_handle)?;
 
@@ -309,6 +311,31 @@ impl LibraryState {
             &current.soulseek_password,
         )
     }
+}
+
+fn table_count(conn: &Connection, table: &str) -> i64 {
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    conn.query_row(&sql, [], |row| row.get(0)).unwrap_or(-1)
+}
+
+fn log_library_snapshot(label: &str, data_dir: &Path, db_path: &Path, conn: &Connection) {
+    let db_size = std::fs::metadata(db_path).map(|meta| meta.len()).unwrap_or(0);
+    let tracks = table_count(conn, "tracks");
+    let playlists = table_count(conn, "playlists");
+    let smart_playlists = table_count(conn, "smart_playlists");
+    let play_history = table_count(conn, "play_history");
+    tracing::info!(
+        target: "player_lib::library",
+        label,
+        data_dir = %data_dir.display(),
+        db_path = %db_path.display(),
+        db_size,
+        tracks,
+        playlists,
+        smart_playlists,
+        play_history,
+        "library snapshot"
+    );
 }
 
 fn random_emoji() -> String {
@@ -1220,7 +1247,14 @@ pub fn search_tracks(
 
 #[tauri::command]
 pub fn get_all_tracks(state: tauri::State<'_, LibraryState>) -> Result<Vec<Track>, String> {
-    state.all_tracks().map_err(|e| e.to_string())
+    let tracks = state.all_tracks().map_err(|e| e.to_string())?;
+    tracing::info!(
+        target: "player_lib::library",
+        data_dir = %state.data_dir.display(),
+        count = tracks.len(),
+        "get_all_tracks"
+    );
+    Ok(tracks)
 }
 
 #[tauri::command]
@@ -1457,7 +1491,16 @@ pub fn get_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<Playli
         pinned: row.get::<_, i64>(4).unwrap_or(0) != 0,
         pinned_at: row.get(5).unwrap_or(None),
     })).map_err(|e| e.to_string())?;
-    rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    let playlists: Result<Vec<_>, _> = rows.map(|r| r.map_err(|e| e.to_string())).collect();
+    if let Ok(ref playlists) = playlists {
+        tracing::info!(
+            target: "player_lib::library",
+            data_dir = %state.data_dir.display(),
+            count = playlists.len(),
+            "get_playlists"
+        );
+    }
+    playlists
 }
 
 #[tauri::command]
@@ -1586,7 +1629,16 @@ pub fn get_smart_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<
         pinned_at: row.get(5).unwrap_or(None),
         updated_at: row.get(6)?,
     })).map_err(|e| e.to_string())?;
-    rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    let playlists: Result<Vec<_>, _> = rows.map(|r| r.map_err(|e| e.to_string())).collect();
+    if let Ok(ref playlists) = playlists {
+        tracing::info!(
+            target: "player_lib::library",
+            data_dir = %state.data_dir.display(),
+            count = playlists.len(),
+            "get_smart_playlists"
+        );
+    }
+    playlists
 }
 
 #[tauri::command]

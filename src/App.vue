@@ -326,7 +326,11 @@ let homePinnedLongPressContext: { item: HomePinnedPlaylistItem; x: number; y: nu
 let suppressTrackRowClickUntil = 0;
 
 async function loadPlaylists() {
-  playlists.value = await invoke<Playlist[]>('get_playlists');
+  try {
+    playlists.value = await invoke<Playlist[]>('get_playlists');
+  } catch (e) {
+    console.error('Failed to load playlists:', e);
+  }
 }
 
 async function createPlaylist() {
@@ -2914,6 +2918,70 @@ async function loadLibrary() {
   }
 }
 
+let startupLibraryRetryCount = 0;
+let startupLibraryRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let initialAppDataTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearStartupLibraryRetry() {
+  if (startupLibraryRetryTimer) {
+    clearTimeout(startupLibraryRetryTimer);
+    startupLibraryRetryTimer = null;
+  }
+}
+
+function clearInitialAppDataTimer() {
+  if (initialAppDataTimer) {
+    clearTimeout(initialAppDataTimer);
+    initialAppDataTimer = null;
+  }
+}
+
+function scheduleInitialAppDataLoad() {
+  clearInitialAppDataTimer();
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      void loadAppData('mount');
+    });
+  });
+  initialAppDataTimer = setTimeout(() => {
+    initialAppDataTimer = null;
+    void loadAppData('retry');
+  }, 1200);
+}
+
+function onWindowFocus() {
+  void loadAppData('resume');
+}
+
+function onDocumentVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    void loadAppData('resume');
+  }
+}
+
+async function loadAppData(reason: 'mount' | 'resume' | 'sync' | 'retry' = 'mount') {
+  await Promise.allSettled([
+    loadLibrary(),
+    loadRecent(),
+    loadPlaylists(),
+    loadSmartPlaylists(),
+  ]);
+
+  if (reason !== 'sync' && startupLibraryRetryCount < 2 && libraryTracks.value.length === 0 && playlists.value.length === 0 && smartPlaylists.value.length === 0) {
+    clearStartupLibraryRetry();
+    startupLibraryRetryCount += 1;
+    const delayMs = startupLibraryRetryCount === 1 ? 900 : 2200;
+    startupLibraryRetryTimer = setTimeout(() => {
+      startupLibraryRetryTimer = null;
+      void loadAppData('retry');
+    }, delayMs);
+    return;
+  }
+
+  startupLibraryRetryCount = 0;
+  clearStartupLibraryRetry();
+}
+
 async function loadRecent() {
   try {
     recentTracks.value = await invoke<Track[]>('get_recent_tracks', { limit: 12 });
@@ -3088,10 +3156,9 @@ function identifyStatusIcon(status: string) {
 onMounted(() => {
   document.addEventListener('click', onDocClick);
   document.addEventListener('keydown', onKeyDown);
-  loadLibrary();
-  loadRecent();
-  loadPlaylists();
-  loadSmartPlaylists();
+  window.addEventListener('focus', onWindowFocus);
+  document.addEventListener('visibilitychange', onDocumentVisibilityChange);
+  scheduleInitialAppDataLoad();
   void loadSoulseekStatus();
   invoke<DeviceSettings>('get_device_settings')
     .then((cfg) => {
@@ -3164,6 +3231,7 @@ onMounted(() => {
   
   // Listen for app coming back to foreground (Android)
   listen('tauri://resumed', async () => {
+    void loadAppData('resume');
     const transitionSequence = playbackTransitionSequence;
     const st = await refreshPlaybackState();
     if (st.finished) {
@@ -3180,7 +3248,7 @@ onMounted(() => {
     await handleFinishedPlayback(playbackTransitionSequence);
   });
   
-  listen('library-changed', () => { loadLibrary(); loadRecent(); });
+  listen('library-changed', () => { void loadAppData('sync'); });
   listen<number>('beat', (e) => {
     const lag = Math.max(0, Date.now() - e.payload);
     startBeatAnimation(lag);
@@ -3230,7 +3298,8 @@ onMounted(() => {
       session.finishedAt = Date.now();
       indexLog.value = [...indexLog.value];
       delete syncSessions[p.peer];
-      loadLibrary(); loadPlaylists(); loadSmartPlaylists(); loadHistory();
+      void loadAppData('sync');
+      loadHistory();
     } else if (p.phase === 'error') {
       session.status = 'error';
       session.errorMsg = p.message || 'Connection failed';
@@ -3315,9 +3384,13 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
+  window.removeEventListener('focus', onWindowFocus);
+  document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   delete (window as any)._playbackFinished;
   clearTrackLongPress();
   clearHomePinnedLongPress();
+  clearStartupLibraryRetry();
+  clearInitialAppDataTimer();
   if (unlistenSoulseekDownload) unlistenSoulseekDownload();
   if (unlistenSoulseekPreview) unlistenSoulseekPreview();
   if (beatRafId !== null) cancelAnimationFrame(beatRafId);
