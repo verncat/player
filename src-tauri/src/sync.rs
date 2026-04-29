@@ -157,6 +157,7 @@ pub struct SyncState {
 struct SyncInner {
     enabled: bool,
     server_started: bool,
+    in_flight_hashes: HashSet<String>,
 }
 
 impl SyncState {
@@ -165,6 +166,7 @@ impl SyncState {
             inner: Arc::new(Mutex::new(SyncInner {
                 enabled,
                 server_started: false,
+                in_flight_hashes: HashSet::new(),
             })),
         }
     }
@@ -787,6 +789,72 @@ fn emit(
     );
 }
 
+fn local_hash_exists(conn: &Connection, hash: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM tracks WHERE file_hash = ?1 LIMIT 1",
+        params![hash],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+fn claim_in_flight_hash(app: &AppHandle, conn: &Arc<Mutex<Connection>>, hash: &str) -> bool {
+    let c = conn.lock().unwrap();
+    if local_hash_exists(&c, hash) {
+        return false;
+    }
+
+    let sync = app.state::<SyncState>();
+    let mut inner = sync.inner.lock().unwrap();
+    if inner.in_flight_hashes.contains(hash) {
+        return false;
+    }
+
+    inner.in_flight_hashes.insert(hash.to_string());
+    true
+}
+
+fn release_in_flight_hash(app: &AppHandle, hash: &str) {
+    let sync = app.state::<SyncState>();
+    let mut inner = sync.inner.lock().unwrap();
+    inner.in_flight_hashes.remove(hash);
+}
+
+fn register_downloaded_hash(
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    abs_path: &Path,
+    hash: &str,
+) -> Result<(), String> {
+    let rel = abs_path
+        .strip_prefix(data_dir)
+        .map_err(|_| {
+            format!(
+                "downloaded file {} is outside data dir {}",
+                abs_path.display(),
+                data_dir.display()
+            )
+        })?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    conn.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO tracks (path, modified_secs, file_hash, date_added)
+             VALUES (?1, 0, ?2, ?3)
+             ON CONFLICT(path) DO UPDATE SET file_hash = excluded.file_hash",
+            params![rel, hash, now_secs],
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, peer_port: u16, app: AppHandle) {
     emit(&app, &peer_name, None, None, "index", 0, 0, Some("Connecting...".to_string()));
 
@@ -899,6 +967,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
     let sync_root = data_dir.join("Sync").join(&peer_name);
 
     let mut done = 0usize;
+    let mut added = 0usize;
     for track in &missing {
         // Build target path from peer's relative path
         let save_path: PathBuf = track
@@ -909,8 +978,34 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
                 p
             });
 
+        // Recheck the DB at download time and reserve this hash across
+        // concurrent sync workers so two peers can't fetch the same track.
+        if !claim_in_flight_hash(&app, &conn, &track.hash) {
+            done += 1;
+            let label = track.title.as_deref()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| track.path.rsplit('/').next().unwrap_or(track.path.as_str()));
+            emit(
+                &app,
+                &peer_name,
+                remote_device_name.as_deref(),
+                remote_device_emoji.as_deref(),
+                "download",
+                total,
+                done,
+                Some(label.to_string()),
+            );
+            continue;
+        }
+
         // Guard: if a file already exists at that path, skip (e.g. re-sync after crash)
         if save_path.exists() {
+            if let Err(e) = register_downloaded_hash(&conn, &data_dir, &save_path, &track.hash) {
+                eprintln!("[sync] failed to register existing file for hash {}: {e}", track.hash);
+            } else {
+                added += 1;
+            }
+            release_in_flight_hash(&app, &track.hash);
             done += 1;
             let label = track.title.as_deref()
                 .filter(|t| !t.is_empty())
@@ -934,8 +1029,15 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
 
         let path = format!("/file/{}", track.hash);
         if let Ok(bytes) = peer_get(&client, &base_urls, &path) {
-            let _ = std::fs::write(&save_path, &bytes);
+            if std::fs::write(&save_path, &bytes).is_ok() {
+                if let Err(e) = register_downloaded_hash(&conn, &data_dir, &save_path, &track.hash) {
+                    eprintln!("[sync] failed to register downloaded file for hash {}: {e}", track.hash);
+                } else {
+                    added += 1;
+                }
+            }
         }
+        release_in_flight_hash(&app, &track.hash);
 
         done += 1;
         let label = track.title.as_deref()
@@ -991,7 +1093,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         "done",
         total,
         done,
-        Some(format!("{done} new track(s) added")),
+        Some(format!("{added} new track(s) added")),
     );
 }
 
