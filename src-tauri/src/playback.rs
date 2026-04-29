@@ -281,6 +281,7 @@ struct Shared {
     ring_cvar: Condvar,
     playing: AtomicBool,
     stop: AtomicBool,
+    follow_growing: AtomicBool,
     /// current position in seconds × 1000 (millisecond precision)
     position_ms: AtomicU64,
     /// total duration in seconds × 1000
@@ -309,6 +310,7 @@ impl PlaybackState {
                 ring_cvar: Condvar::new(),
                 playing: AtomicBool::new(false),
                 stop: AtomicBool::new(false),
+                follow_growing: AtomicBool::new(false),
                 position_ms: AtomicU64::new(0),
                 duration_ms: AtomicU64::new(0),
                 volume: AtomicU64::new(7000), // 0.7
@@ -324,6 +326,14 @@ impl PlaybackState {
 
     /// Start playing a file. Stops any previous playback first.
     pub fn play(&self, path: PathBuf) -> Result<(), String> {
+        self.play_inner(path, false)
+    }
+
+    pub fn play_growing(&self, path: PathBuf) -> Result<(), String> {
+        self.play_inner(path, true)
+    }
+
+    fn play_inner(&self, path: PathBuf, follow_growing: bool) -> Result<(), String> {
         // Signal previous threads to stop
         self.inner.stop.store(true, Ordering::SeqCst);
         self.inner.ring_cvar.notify_all();
@@ -334,6 +344,7 @@ impl PlaybackState {
         self.inner.stop.store(false, Ordering::SeqCst);
         self.inner.finished.store(false, Ordering::SeqCst);
         self.inner.playing.store(true, Ordering::SeqCst);
+        self.inner.follow_growing.store(follow_growing, Ordering::SeqCst);
         self.inner.position_ms.store(0, Ordering::SeqCst);
         {
             let mut ring = self.inner.ring.lock().unwrap();
@@ -344,7 +355,7 @@ impl PlaybackState {
 
         let shared = Arc::clone(&self.inner);
         thread::spawn(move || {
-            if let Err(e) = decode_thread(shared, &path) {
+            if let Err(e) = decode_thread(shared, &path, follow_growing) {
                 eprintln!("[playback] decode error: {e}");
             }
         });
@@ -395,8 +406,9 @@ impl PlaybackState {
 
             let shared = Arc::clone(&self.inner);
             let seek_to = position_secs;
+            let follow_growing = self.inner.follow_growing.load(Ordering::SeqCst);
             thread::spawn(move || {
-                if let Err(e) = decode_thread_seek(shared, &path, seek_to) {
+                if let Err(e) = decode_thread_seek(shared, &path, seek_to, follow_growing) {
                     eprintln!("[playback] decode-seek error: {e}");
                 }
             });
@@ -452,8 +464,8 @@ impl PlaybackState {
 
 // ── Decode thread ─────────────────────────────────────────────────────────────
 
-fn decode_thread(shared: Arc<Shared>, path: &Path) -> Result<(), String> {
-    decode_thread_seek(shared, path, 0.0)
+fn decode_thread(shared: Arc<Shared>, path: &Path, follow_growing: bool) -> Result<(), String> {
+    decode_thread_seek(shared, path, 0.0, follow_growing)
 }
 
 fn notify_playback_finished(shared: &Shared) {
@@ -474,7 +486,57 @@ fn notify_playback_finished(shared: &Shared) {
     let _ = shared.app_handle.emit("playback-finished", ());
 }
 
-fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Result<(), String> {
+fn finish_playback(shared: &Shared) {
+    loop {
+        let avail = shared.ring.lock().unwrap().available();
+        if avail == 0 || shared.stop.load(Ordering::SeqCst) {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+    shared.playing.store(false, Ordering::SeqCst);
+    shared.finished.store(true, Ordering::SeqCst);
+    clear_spectrum(shared);
+    notify_playback_finished(shared);
+}
+
+enum GrowingFileWaitResult {
+    Grew,
+    Completed,
+    Terminal,
+}
+
+fn wait_for_growing_file(shared: &Shared, path: &Path, last_known_size: &mut u64) -> GrowingFileWaitResult {
+    loop {
+        if shared.stop.load(Ordering::SeqCst) {
+            return GrowingFileWaitResult::Terminal;
+        }
+
+        let current_size = path.metadata().map(|meta| meta.len()).unwrap_or(*last_known_size);
+        if current_size > *last_known_size {
+            *last_known_size = current_size;
+            return GrowingFileWaitResult::Grew;
+        }
+
+        match crate::soulseek::preview_transfer_state(path) {
+            Some(crate::soulseek::PreviewTransferState::Active) => {
+                thread::sleep(std::time::Duration::from_millis(150));
+            }
+            Some(crate::soulseek::PreviewTransferState::Completed) | None => {
+                return GrowingFileWaitResult::Completed;
+            }
+            Some(
+                crate::soulseek::PreviewTransferState::Failed
+                | crate::soulseek::PreviewTransferState::TimedOut
+                | crate::soulseek::PreviewTransferState::Cancelled,
+            ) => {
+                return GrowingFileWaitResult::Terminal;
+            }
+        }
+    }
+}
+
+fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64, follow_growing: bool) -> Result<(), String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -532,6 +594,7 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
     start_output_stream(Arc::clone(&shared), sample_rate, channels as u16)?;
 
     let mut beat_state = BeatState::new();
+    let mut last_known_size = path.metadata().map(|meta| meta.len()).unwrap_or(0);
 
     loop {
         if shared.stop.load(Ordering::SeqCst) {
@@ -543,19 +606,22 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64) -> Resul
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
-                // End of file
-                // Wait for ring to drain
-                loop {
-                    let avail = shared.ring.lock().unwrap().available();
-                    if avail == 0 || shared.stop.load(Ordering::SeqCst) {
-                        break;
+                if follow_growing {
+                    match wait_for_growing_file(&shared, path, &mut last_known_size) {
+                        GrowingFileWaitResult::Grew => continue,
+                        GrowingFileWaitResult::Completed => {
+                            finish_playback(&shared);
+                            break;
+                        }
+                        GrowingFileWaitResult::Terminal => {
+                            shared.playing.store(false, Ordering::SeqCst);
+                            clear_spectrum(&shared);
+                            break;
+                        }
                     }
-                    thread::sleep(std::time::Duration::from_millis(10));
                 }
-                shared.playing.store(false, Ordering::SeqCst);
-                shared.finished.store(true, Ordering::SeqCst);
-                clear_spectrum(&shared);
-                notify_playback_finished(&shared);
+
+                finish_playback(&shared);
                 break;
             }
             Err(e) => {
@@ -793,6 +859,20 @@ pub fn playback_play(
 ) -> Result<(), String> {
     let full = lib.data_dir().join(&path);
     state.play(full)
+}
+
+#[tauri::command]
+pub fn playback_play_absolute(
+    path: String,
+    growing: Option<bool>,
+    state: tauri::State<'_, PlaybackState>,
+) -> Result<(), String> {
+    let full = PathBuf::from(path);
+    if growing.unwrap_or(false) {
+        state.play_growing(full)
+    } else {
+        state.play(full)
+    }
 }
 
 #[tauri::command]

@@ -388,6 +388,9 @@ impl DownloadPeer {
 
             // Send progress if the initial chunk is already large enough.
             if total_bytes >= PROGRESS_UPDATE_CHUNKS * READ_BUFFER_SIZE {
+                writer
+                    .flush()
+                    .map_err(|e| (Some(token), DownloadError::FileWriteError(e)))?;
                 let _ = download.sender.send(DownloadStatus::InProgress {
                     bytes_downloaded: total_bytes as u64,
                     total_bytes: download.size,
@@ -466,6 +469,7 @@ impl DownloadPeer {
                     }
 
                     if chunk_counter.is_multiple_of(PROGRESS_UPDATE_CHUNKS) {
+                        writer.flush().map_err(DownloadError::FileWriteError)?;
                         let elapsed = last_update_time.elapsed().as_secs_f64();
                         let speed = if elapsed > 0.0 {
                             (PROGRESS_UPDATE_CHUNKS * READ_BUFFER_SIZE) as f64 / elapsed

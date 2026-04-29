@@ -6,7 +6,7 @@ use soulseek_rs::{Client, DownloadHandle, DownloadStatus, File};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const AUDIO_EXTENSIONS: &[&str] = &[
@@ -16,6 +16,33 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 const COVER_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
 const COVER_BASENAME_PRIORITY: &[&str] = &["cover", "folder", "front", "album", "art"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewTransferState {
+    Active,
+    Completed,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+static PREVIEW_TRANSFERS: LazyLock<Mutex<HashMap<String, PreviewTransferState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn preview_transfer_state(path: &Path) -> Option<PreviewTransferState> {
+    PREVIEW_TRANSFERS
+        .lock()
+        .unwrap()
+        .get(&path.to_string_lossy().to_string())
+        .copied()
+}
+
+fn set_preview_transfer_state(path: &Path, state: PreviewTransferState) {
+    PREVIEW_TRANSFERS
+        .lock()
+        .unwrap()
+        .insert(path.to_string_lossy().to_string(), state);
+}
 
 #[derive(Clone, PartialEq, Eq)]
 struct SoulseekConfig {
@@ -320,9 +347,11 @@ pub async fn soulseek_download(
 
     tauri::async_runtime::spawn(monitor_download(
         app,
+        "soulseek-download",
         transfer_id.clone(),
         download,
         handle,
+        false,
     ));
 
     eprintln!(
@@ -332,6 +361,68 @@ pub async fn soulseek_download(
         request.filename,
         download_dir.display()
     );
+
+    Ok(transfer_id)
+}
+
+#[tauri::command]
+pub async fn soulseek_preview(
+    request: SoulseekDownloadRequest,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SoulseekState>,
+    library: tauri::State<'_, LibraryState>,
+) -> Result<String, String> {
+    eprintln!(
+        "[soulseek] preview request: user={} remote={} size={}",
+        request.username,
+        request.filename,
+        request.size,
+    );
+
+    let settings = library.get_device_settings().map_err(|e| e.to_string())?;
+    let client = state.client_for_download(&settings)?;
+    client.connect().await.map_err(|e| e.to_string())?;
+
+    let preview_root = preview_cache_root(&library);
+    let preview_dir = build_download_directory(&preview_root, &request.username, &request.filename);
+    fs::create_dir_all(&preview_dir).map_err(|e| e.to_string())?;
+
+    let local_path = preview_dir.join(soulseek_basename(&request.filename));
+    if local_path.exists() {
+        let _ = fs::remove_file(&local_path);
+    }
+
+    let soulseek_path = soulseek_rs::SoulseekPath::from_wire(request.filename.clone());
+    let (download, handle) = client
+        .download(
+            soulseek_path,
+            request.username.clone(),
+            request.size,
+            preview_dir.to_string_lossy().to_string(),
+            Some(Duration::from_secs(30)),
+            Some(Duration::from_secs(600)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    set_preview_transfer_state(&local_path, PreviewTransferState::Active);
+
+    let transfer_id = format!(
+        "preview-{}-{}",
+        request.username,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    tauri::async_runtime::spawn(monitor_download(
+        app,
+        "soulseek-preview",
+        transfer_id.clone(),
+        download,
+        handle,
+        true,
+    ));
 
     Ok(transfer_id)
 }
@@ -584,6 +675,21 @@ fn build_download_directory(root: &Path, username: &str, remote_filename: &str) 
     directory
 }
 
+fn preview_cache_root(library: &LibraryState) -> PathBuf {
+    library
+        .data_dir()
+        .parent()
+        .unwrap_or_else(|| library.data_dir())
+        .join(".soulseek-preview-cache")
+}
+
+fn resolved_download_path(download: &Download) -> String {
+    Path::new(&download.download_directory)
+        .join(download.filename.filename())
+        .to_string_lossy()
+        .to_string()
+}
+
 fn queue_sidecar_cover_download(
     client: &Client,
     username: &str,
@@ -749,11 +855,15 @@ async fn monitor_aux_download(download: Download, mut handle: DownloadHandle) {
 
 async fn monitor_download(
     app: tauri::AppHandle,
+    event_name: &'static str,
     transfer_id: String,
     download: Download,
     mut handle: DownloadHandle,
+    is_preview: bool,
 ) {
     use tauri::Emitter;
+
+    let local_path = resolved_download_path(&download);
 
     eprintln!(
         "[soulseek] download monitor started: transfer_id={} user={} remote={} destination_dir={} size={}",
@@ -777,7 +887,7 @@ async fn monitor_download(
             total_bytes: Some(download.size),
             speed_bytes_per_sec: None,
             queue_position: None,
-            local_path: None,
+            local_path: Some(local_path.clone()),
             error: None,
         };
 
@@ -790,6 +900,9 @@ async fn monitor_download(
                     download.filename
                 );
                 event.state = "queued_local".to_string();
+                if is_preview {
+                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Active);
+                }
                 false
             }
             DownloadStatus::QueuedRemotely { place } => {
@@ -802,6 +915,9 @@ async fn monitor_download(
                 );
                 event.state = "queued_remote".to_string();
                 event.queue_position = place;
+                if is_preview {
+                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Active);
+                }
                 false
             }
             DownloadStatus::InProgress {
@@ -822,13 +938,12 @@ async fn monitor_download(
                 event.bytes_downloaded = Some(bytes_downloaded);
                 event.total_bytes = Some(total_bytes);
                 event.speed_bytes_per_sec = Some(speed_bytes_per_sec);
+                if is_preview {
+                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Active);
+                }
                 false
             }
             DownloadStatus::Completed => {
-                let local_path = Path::new(&download.download_directory)
-                    .join(download.filename.filename())
-                    .to_string_lossy()
-                    .to_string();
                 eprintln!(
                     "[soulseek] download completed: transfer_id={} user={} remote={} local_path={}",
                     transfer_id,
@@ -838,7 +953,9 @@ async fn monitor_download(
                 );
                 event.state = "completed".to_string();
                 event.bytes_downloaded = Some(download.size);
-                event.local_path = Some(local_path);
+                if is_preview {
+                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Completed);
+                }
                 true
             }
             DownloadStatus::Failed => {
@@ -851,6 +968,9 @@ async fn monitor_download(
                 );
                 event.state = "failed".to_string();
                 event.error = Some("Download failed".to_string());
+                if is_preview {
+                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Failed);
+                }
                 true
             }
             DownloadStatus::TimedOut => {
@@ -863,6 +983,9 @@ async fn monitor_download(
                 );
                 event.state = "timed_out".to_string();
                 event.error = Some("Download timed out".to_string());
+                if is_preview {
+                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::TimedOut);
+                }
                 true
             }
             DownloadStatus::Cancelled => {
@@ -875,11 +998,14 @@ async fn monitor_download(
                 );
                 event.state = "cancelled".to_string();
                 event.error = Some("Download cancelled".to_string());
+                if is_preview {
+                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Cancelled);
+                }
                 true
             }
         };
 
-        if let Err(error) = app.emit("soulseek-download", event) {
+        if let Err(error) = app.emit(event_name, event) {
             eprintln!(
                 "[soulseek] failed to emit download event: transfer_id={} user={} remote={} error={}",
                 transfer_id,

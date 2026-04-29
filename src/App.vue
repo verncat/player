@@ -63,6 +63,8 @@ interface Track {
   genre: string | null;
   tags: string | null;
   date_added: number | null;
+  local_preview_path?: string | null;
+  preview_growing?: boolean;
 }
 
 const rarityColors: Record<string, string> = {
@@ -1147,6 +1149,7 @@ const soulseekSettingsSaving = ref(false);
 const soulseekSettingsError = ref('');
 const soulseekStatus = ref<SoulseekStatus | null>(null);
 const soulseekResults = ref<SoulseekSearchResult[]>([]);
+const soulseekPreviews = ref<Record<string, SoulseekDownloadEvent>>({});
 const soulseekVisibleCount = ref(0);
 const soulseekSubmittedQuery = ref('');
 const soulseekLoading = ref(false);
@@ -1157,10 +1160,15 @@ const soulseekCoverUrls = ref<Record<string, string | null>>({});
 const libraryDataDir = ref<string | null>(null);
 let soulseekSearchSeq = 0;
 let unlistenSoulseekDownload: (() => void) | null = null;
+let unlistenSoulseekPreview: (() => void) | null = null;
 const SOULSEEK_RESULTS_PAGE_SIZE = 120;
 const SOULSEEK_SCROLL_LOAD_THRESHOLD = 180;
+const SOULSEEK_PREVIEW_MIN_BUFFER_BYTES = 384 * 1024;
+const SOULSEEK_PREVIEW_TARGET_BUFFER_SECONDS = 18;
+const SOULSEEK_PREVIEW_DEFAULT_BUFFER_BYTES = 1_500_000;
 const soulseekCoverLoading = new Set<string>();
 const soulseekPendingPlayback = new Set<string>();
+const soulseekPendingPreviewPlayback = new Set<string>();
 
 const tracksByHash = computed<Record<string, Track>>(() => {
   const index: Record<string, Track> = {};
@@ -1260,8 +1268,8 @@ function soulseekCoverUrl(result: SoulseekSearchResult) {
   return soulseekCoverUrls.value[soulseekCoverKey(result.username, result.coverFilename)] || null;
 }
 
-function soulseekTrackId(result: SoulseekSearchResult) {
-  const key = soulseekResultKey(result.username, result.filename);
+function soulseekTrackIdFromParts(username: string, filename: string) {
+  const key = soulseekResultKey(username, filename);
   let hash = 0;
   for (let index = 0; index < key.length; index += 1) {
     hash = ((hash << 5) - hash) + key.charCodeAt(index);
@@ -1270,8 +1278,79 @@ function soulseekTrackId(result: SoulseekSearchResult) {
   return -1 - Math.abs(hash);
 }
 
+function soulseekTrackId(result: Pick<SoulseekSearchResult, 'username' | 'filename'>) {
+  return soulseekTrackIdFromParts(result.username, result.filename);
+}
+
 function soulseekDownloadState(result: SoulseekSearchResult) {
   return soulseekDownloads.value[soulseekResultKey(result.username, result.filename)] || null;
+}
+
+function soulseekPreviewState(result: SoulseekSearchResult) {
+  return soulseekPreviews.value[soulseekResultKey(result.username, result.filename)] || null;
+}
+
+function soulseekPreviewThresholdBytes(result: SoulseekSearchResult) {
+  const bytesPerSecond = result.bitrate != null
+    ? Math.round((result.bitrate * 1000) / 8)
+    : null;
+  const target = bytesPerSecond != null
+    ? bytesPerSecond * SOULSEEK_PREVIEW_TARGET_BUFFER_SECONDS
+    : SOULSEEK_PREVIEW_DEFAULT_BUFFER_BYTES;
+
+  return Math.min(result.size, Math.max(SOULSEEK_PREVIEW_MIN_BUFFER_BYTES, target));
+}
+
+function soulseekPreviewCanStart(result: SoulseekSearchResult, state: SoulseekDownloadEvent | null | undefined) {
+  if (!state?.localPath) return false;
+  if (state.state === 'completed') return true;
+  if (state.state !== 'progress') return false;
+  return (state.bytesDownloaded ?? 0) >= soulseekPreviewThresholdBytes(result);
+}
+
+function soulseekPreviewActionLabel(result: SoulseekSearchResult) {
+  const state = soulseekPreviewState(result);
+  if (isCurrentTrack(soulseekTrackId(result)) && !!nowPlaying.value?.local_preview_path && isPlaying.value) {
+    return 'Previewing…';
+  }
+
+  switch (state?.state) {
+    case 'starting':
+    case 'queued_local':
+    case 'queued_remote':
+      return 'Buffering…';
+    case 'progress':
+      return soulseekPreviewCanStart(result, state) ? 'Starting…' : 'Buffering…';
+    case 'completed':
+      return 'Replay';
+    case 'failed':
+    case 'timed_out':
+    case 'cancelled':
+      return 'Retry preview';
+    default:
+      return 'Preview';
+  }
+}
+
+function soulseekPreviewBusy(result: SoulseekSearchResult) {
+  const state = soulseekPreviewState(result)?.state;
+  return state === 'starting' || state === 'queued_local' || state === 'queued_remote' || state === 'progress';
+}
+
+function updateSoulseekPreviewTrackState(username: string, filename: string, previewGrowing: boolean) {
+  const previewTrackId = soulseekTrackIdFromParts(username, filename);
+  const updateTrack = (track: Track) => (
+    track.id === previewTrackId && track.local_preview_path
+      ? { ...track, preview_growing: previewGrowing }
+      : track
+  );
+
+  if (nowPlaying.value?.id === previewTrackId && nowPlaying.value.local_preview_path) {
+    nowPlaying.value = { ...nowPlaying.value, preview_growing: previewGrowing };
+  }
+
+  queueSoulseekTracks.value = queueSoulseekTracks.value.map(updateTrack);
+  queue.value = queue.value.map(updateTrack);
 }
 
 function soulseekDownloadActionLabel(result: SoulseekSearchResult) {
@@ -1372,6 +1451,16 @@ function makeSoulseekTrack(result: SoulseekSearchResult, relativePath: string): 
     genre: null,
     tags: null,
     date_added: null,
+    local_preview_path: null,
+    preview_growing: false,
+  };
+}
+
+function makeSoulseekPreviewTrack(result: SoulseekSearchResult, localPath: string, previewGrowing: boolean): Track {
+  return {
+    ...makeSoulseekTrack(result, `Soulseek Preview/${result.basename}`),
+    local_preview_path: localPath,
+    preview_growing: previewGrowing,
   };
 }
 
@@ -1405,6 +1494,43 @@ async function playDownloadedSoulseekResult(result: SoulseekSearchResult, localP
   startTicker();
   syncAndroid();
   restoreContentScroll(contentScrollTop);
+}
+
+async function playPreviewedSoulseekResult(result: SoulseekSearchResult, localPath: string, previewGrowing: boolean) {
+  if (remoteOutputPeer.value) {
+    try {
+      await invoke('remote_playback_pause', remotePeerArgs(remoteOutputPeer.value));
+    } catch (_) {}
+    remoteOutputPeer.value = null;
+  }
+
+  bumpPlaybackTransitionSequence();
+  const contentScrollTop = contentRef.value?.scrollTop ?? null;
+  const track = makeSoulseekPreviewTrack(result, localPath, previewGrowing);
+  queueSoulseekTracks.value = [track];
+  queueSource.value = 'soulseek';
+  queueSourceIndex.value = 0;
+  nowPlaying.value = track;
+  duration.value = track.duration_secs || 0;
+  currentTime.value = 0;
+  queue.value = [];
+  refillQueue();
+  await playTrackLocally(track, true, 0);
+  isPlaying.value = true;
+  await refreshPlaybackState();
+  startTicker();
+  syncAndroid();
+  restoreContentScroll(contentScrollTop);
+}
+
+async function maybeStartSoulseekPreviewPlayback(result: SoulseekSearchResult, state: SoulseekDownloadEvent | null | undefined) {
+  const key = soulseekResultKey(result.username, result.filename);
+  if (!soulseekPendingPreviewPlayback.has(key) || !soulseekPreviewCanStart(result, state) || !state?.localPath) {
+    return;
+  }
+
+  soulseekPendingPreviewPlayback.delete(key);
+  await playPreviewedSoulseekResult(result, state.localPath, state.state !== 'completed');
 }
 
 async function runSoulseekSearch(query: string, requestId: number) {
@@ -1616,22 +1742,87 @@ async function downloadSoulseekResult(result: SoulseekSearchResult) {
   }
 }
 
+async function startSoulseekPreview(result: SoulseekSearchResult) {
+  const key = soulseekResultKey(result.username, result.filename);
+  const currentState = soulseekPreviewState(result);
+
+  if (currentState?.localPath && soulseekPreviewCanStart(result, currentState)) {
+    await playPreviewedSoulseekResult(result, currentState.localPath, currentState.state !== 'completed');
+    return;
+  }
+
+  if (soulseekPreviewBusy(result)) return;
+
+  soulseekPendingPreviewPlayback.clear();
+  soulseekPendingPreviewPlayback.add(key);
+  soulseekPreviews.value = {
+    ...soulseekPreviews.value,
+    [key]: {
+      transferId: currentState?.transferId || '',
+      username: result.username,
+      filename: result.filename,
+      basename: result.basename,
+      state: 'starting',
+      bytesDownloaded: 0,
+      totalBytes: result.size,
+      speedBytesPerSec: null,
+      queuePosition: null,
+      localPath: currentState?.localPath || null,
+      error: null,
+    },
+  };
+
+  try {
+    const transferId = await invoke<string>('soulseek_preview', {
+      request: {
+        username: result.username,
+        filename: result.filename,
+        coverFilename: result.coverFilename,
+        coverSize: result.coverSize,
+        size: result.size,
+      },
+    });
+    const current = soulseekPreviews.value[key];
+    if (!current) return;
+    soulseekPreviews.value = {
+      ...soulseekPreviews.value,
+      [key]: {
+        ...current,
+        transferId,
+      },
+    };
+  } catch (e: any) {
+    soulseekPendingPreviewPlayback.delete(key);
+    soulseekPreviews.value = {
+      ...soulseekPreviews.value,
+      [key]: {
+        transferId: '',
+        username: result.username,
+        filename: result.filename,
+        basename: result.basename,
+        state: 'failed',
+        bytesDownloaded: null,
+        totalBytes: result.size,
+        speedBytesPerSec: null,
+        queuePosition: null,
+        localPath: currentState?.localPath || null,
+        error: String(e ?? 'Preview failed'),
+      },
+    };
+  }
+}
+
 async function activateSoulseekResult(result: SoulseekSearchResult) {
   if (shouldSuppressTrackRowClick()) return;
 
-  const key = soulseekResultKey(result.username, result.filename);
   const currentState = soulseekDownloadState(result);
-  soulseekPendingPlayback.add(key);
 
   if (currentState?.state === 'completed' && currentState.localPath) {
-    soulseekPendingPlayback.delete(key);
     await playDownloadedSoulseekResult(result, currentState.localPath);
     return;
   }
 
-  if (!currentState || ['failed', 'timed_out', 'cancelled'].includes(currentState.state)) {
-    await downloadSoulseekResult(result);
-  }
+  await startSoulseekPreview(result);
 }
 
 async function toggleSync() {
@@ -2199,8 +2390,7 @@ async function playTrackFrom(src: QueueSource, index: number) {
     stopTicker();
   } else {
     await refreshPlaybackState();
-    track.play_count++;
-    invoke('record_play', { id: track.id }).then(() => loadRecent());
+    recordPlayIfTracked(track);
     startTicker();
   }
   syncAndroid();
@@ -2226,8 +2416,7 @@ async function playNext() {
   isPlaying.value = true;
   await refreshPlaybackState();
   isPlaying.value = true;
-  next.play_count++;
-  invoke('record_play', { id: next.id }).then(() => loadRecent());
+  recordPlayIfTracked(next);
   startTicker();
   syncAndroid();
 }
@@ -2255,8 +2444,7 @@ async function playPrev() {
   await playTrackOnCurrentOutput(track, true, 0);
   await refreshPlaybackState();
   isPlaying.value = true;
-  track.play_count++;
-  invoke('record_play', { id: track.id }).then(() => loadRecent());
+  recordPlayIfTracked(track);
   startTicker();
   syncAndroid();
 }
@@ -2276,7 +2464,11 @@ function trackForHash(hash?: string | null) {
 }
 
 async function playTrackLocally(track: Track, autoplay: boolean, position = 0) {
-  await invoke('playback_play', { path: track.path });
+  if (track.local_preview_path) {
+    await invoke('playback_play_absolute', { path: track.local_preview_path, growing: !!track.preview_growing });
+  } else {
+    await invoke('playback_play', { path: track.path });
+  }
   if (position > 0) {
     await invoke('playback_seek', { position });
   }
@@ -2297,11 +2489,28 @@ async function playTrackRemotely(track: Track, autoplay: boolean, position = 0, 
 }
 
 async function playTrackOnCurrentOutput(track: Track, autoplay: boolean, position = 0) {
+  if (track.local_preview_path) {
+    if (remoteOutputPeer.value) {
+      try {
+        await invoke('remote_playback_pause', remotePeerArgs(remoteOutputPeer.value));
+      } catch (_) {}
+      remoteOutputPeer.value = null;
+    }
+    await playTrackLocally(track, autoplay, position);
+    return;
+  }
+
   if (remoteOutputPeer.value) {
     await playTrackRemotely(track, autoplay, position, remoteOutputPeer.value);
   } else {
     await playTrackLocally(track, autoplay, position);
   }
+}
+
+function recordPlayIfTracked(track: Track) {
+  if (track.id <= 0) return;
+  track.play_count++;
+  invoke('record_play', { id: track.id }).then(() => loadRecent());
 }
 
 async function pauseCurrentOutput() {
@@ -2915,6 +3124,43 @@ onMounted(() => {
       unlistenSoulseekDownload = unlisten;
     })
     .catch(() => {});
+
+  listen<SoulseekDownloadEvent>('soulseek-preview', (e) => {
+    const payload = e.payload;
+    const key = soulseekResultKey(payload.username, payload.filename);
+    soulseekPreviews.value = {
+      ...soulseekPreviews.value,
+      [key]: payload,
+    };
+
+    if (payload.state === 'completed') {
+      updateSoulseekPreviewTrackState(payload.username, payload.filename, false);
+    }
+
+    const matchingResult = soulseekResults.value.find((result) => soulseekResultKey(result.username, result.filename) === key);
+    if (matchingResult && soulseekPendingPreviewPlayback.has(key)) {
+      void maybeStartSoulseekPreviewPlayback(matchingResult, payload).catch((error) => {
+        console.error('Failed to start Soulseek preview:', error);
+      });
+    }
+
+    if (['failed', 'timed_out', 'cancelled'].includes(payload.state)) {
+      soulseekPendingPreviewPlayback.delete(key);
+      if (nowPlaying.value?.id === soulseekTrackIdFromParts(payload.username, payload.filename) && nowPlaying.value.local_preview_path) {
+        void stopCurrentOutput()
+          .then(() => {
+            isPlaying.value = false;
+            stopTicker();
+            syncAndroid();
+          })
+          .catch(() => {});
+      }
+    }
+  })
+    .then((unlisten) => {
+      unlistenSoulseekPreview = unlisten;
+    })
+    .catch(() => {});
   
   // Listen for app coming back to foreground (Android)
   listen('tauri://resumed', async () => {
@@ -3073,6 +3319,7 @@ onUnmounted(() => {
   clearTrackLongPress();
   clearHomePinnedLongPress();
   if (unlistenSoulseekDownload) unlistenSoulseekDownload();
+  if (unlistenSoulseekPreview) unlistenSoulseekPreview();
   if (beatRafId !== null) cancelAnimationFrame(beatRafId);
   for (const timeoutId of scheduledBeatTimeoutIds) {
     clearTimeout(timeoutId);
@@ -3588,6 +3835,9 @@ onUnmounted(() => {
                   <div class="track-info">
                     <div class="track-title-row">
                       <span class="track-title">{{ result.basename }}</span>
+                      <span v-if="soulseekPreviewState(result)" class="soulseek-status-pill" :class="`state-${soulseekPreviewState(result)?.state}`">
+                        {{ soulseekPreviewActionLabel(result) }}
+                      </span>
                       <span v-if="soulseekDownloadState(result)" class="soulseek-status-pill" :class="`state-${soulseekDownloadState(result)?.state}`">
                         {{ soulseekDownloadActionLabel(result) }}
                       </span>
@@ -3601,7 +3851,20 @@ onUnmounted(() => {
                       <template v-if="result.coverFilename"> · cover art</template>
                       <template v-if="result.freeUploadSlots > 0"> · {{ result.freeUploadSlots }} slots</template>
                     </span>
-                    <span v-if="soulseekDownloadState(result)?.state === 'progress'" class="soulseek-progress-copy">
+                    <span v-if="soulseekPreviewState(result)?.state === 'progress'" class="soulseek-progress-copy">
+                      Preview buffer {{ formatBytes(soulseekPreviewState(result)?.bytesDownloaded) }} / {{ formatBytes(soulseekPreviewThresholdBytes(result)) }}
+                      · {{ formatTransferRate(soulseekPreviewState(result)?.speedBytesPerSec) }}
+                    </span>
+                    <span v-else-if="soulseekPreviewState(result)?.state === 'queued_remote' && soulseekPreviewState(result)?.queuePosition != null" class="soulseek-progress-copy">
+                      Preview queue position {{ soulseekPreviewState(result)?.queuePosition }}
+                    </span>
+                    <span v-else-if="soulseekPreviewState(result)?.state === 'completed'" class="soulseek-progress-copy">
+                      Preview ready
+                    </span>
+                    <span v-else-if="soulseekPreviewState(result)?.error" class="soulseek-progress-copy soulseek-inline-error">
+                      {{ soulseekPreviewState(result)?.error }}
+                    </span>
+                    <span v-else-if="soulseekDownloadState(result)?.state === 'progress'" class="soulseek-progress-copy">
                       {{ formatBytes(soulseekDownloadState(result)?.bytesDownloaded) }} / {{ formatBytes(soulseekDownloadState(result)?.totalBytes) }}
                       · {{ formatTransferRate(soulseekDownloadState(result)?.speedBytesPerSec) }}
                     </span>
