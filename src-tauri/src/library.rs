@@ -471,6 +471,21 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
     })
 }
 
+fn get_track_by_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<Track>> {
+    match conn.query_row(
+        "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate
+           FROM tracks
+          WHERE path = ?1
+          LIMIT 1",
+        params![path],
+        row_to_track,
+    ) {
+        Ok(track) => Ok(Some(track)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 // ── Indexing ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize)]
@@ -1258,6 +1273,36 @@ pub fn get_all_tracks(state: tauri::State<'_, LibraryState>) -> Result<Vec<Track
         "get_all_tracks"
     );
     Ok(tracks)
+}
+
+#[tauri::command]
+pub fn index_track_by_path(
+    path: String,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Option<Track>, String> {
+    let requested = PathBuf::from(path.replace('\\', "/"));
+    if requested.is_absolute() {
+        return Err("Expected a library-relative path".to_string());
+    }
+
+    let abs = state.data_dir.join(&requested);
+    if !abs.exists() {
+        return Ok(None);
+    }
+
+    let data_dir = state
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| state.data_dir.clone());
+    let canonical_abs = abs.canonicalize().unwrap_or(abs.clone());
+    if !canonical_abs.starts_with(&data_dir) {
+        return Err("Path escapes library directory".to_string());
+    }
+
+    let rel = rel_path(&state.data_dir, &canonical_abs);
+    let conn = state.conn.lock().unwrap();
+    index_file(&conn, &state.data_dir, &canonical_abs).map_err(|e| e.to_string())?;
+    get_track_by_path(&conn, &rel).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

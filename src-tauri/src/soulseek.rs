@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use crate::library::{DeviceSettings, LibraryState};
-use lofty::prelude::Accessor;
+use lofty::prelude::{Accessor, TaggedFileExt};
 use lofty::probe::Probe;
 use serde::{Deserialize, Serialize};
 use soulseek_rs::types::Download;
@@ -158,6 +158,13 @@ pub struct SoulseekCoverRequest {
     pub username: String,
     pub cover_filename: String,
     pub cover_size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoulseekPromotePreviewRequest {
+    pub local_path: String,
+    pub cover_filename: Option<String>,
 }
 
 struct PendingSearchFile {
@@ -358,6 +365,11 @@ pub async fn soulseek_download(
         handle,
         false,
         data_dir_pathbuf,
+        request
+            .cover_filename
+            .as_ref()
+            .filter(|cover| *cover != &request.filename)
+            .cloned(),
     ));
 
     eprintln!(
@@ -410,6 +422,25 @@ pub async fn soulseek_preview(
         )
         .map_err(|e| e.to_string())?;
 
+    if let (Some(cover_filename), Some(cover_size)) =
+        (request.cover_filename.as_ref(), request.cover_size)
+    {
+        if cover_size > 0 && cover_filename != &request.filename {
+            if let Err(error) = queue_sidecar_cover_download(
+                &client,
+                &request.username,
+                cover_filename,
+                cover_size,
+                &preview_dir,
+            ) {
+                eprintln!(
+                    "[soulseek] failed to queue preview sidecar cover for {}: {}",
+                    cover_filename, error
+                );
+            }
+        }
+    }
+
     set_preview_transfer_state(&local_path, PreviewTransferState::Active);
 
     let transfer_id = format!(
@@ -430,9 +461,50 @@ pub async fn soulseek_preview(
         handle,
         true,
         data_dir_pathbuf,
+        request
+            .cover_filename
+            .as_ref()
+            .filter(|cover| *cover != &request.filename)
+            .cloned(),
     ));
 
     Ok(transfer_id)
+}
+
+#[tauri::command]
+pub fn soulseek_promote_preview(
+    request: SoulseekPromotePreviewRequest,
+    app: tauri::AppHandle,
+    library: tauri::State<'_, LibraryState>,
+) -> Result<String, String> {
+    use tauri::Emitter;
+
+    let preview_path = PathBuf::from(&request.local_path);
+    if preview_path.starts_with(library.data_dir()) && preview_path.exists() {
+        let _ = app.emit("library-changed", ());
+        return Ok(request.local_path);
+    }
+
+    if !preview_path.exists() {
+        return Err(format!(
+            "Preview file not found: {}",
+            preview_path.display()
+        ));
+    }
+
+    let source_dir = preview_path.parent().map(Path::to_path_buf);
+    let final_path = reorganize_downloaded_file(&preview_path, library.data_dir())?;
+
+    if let (Some(source_dir), Some(target_dir)) = (source_dir.as_deref(), final_path.parent()) {
+        move_downloaded_sidecar_cover(
+            source_dir,
+            target_dir,
+            request.cover_filename.as_deref(),
+        )?;
+    }
+
+    let _ = app.emit("library-changed", ());
+    Ok(final_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -782,6 +854,54 @@ fn reorganize_downloaded_file(
     Ok(final_path)
 }
 
+fn move_downloaded_aux_file(source_path: &Path, target_path: &Path) -> Result<(), String> {
+    if !source_path.exists() {
+        return Ok(());
+    }
+
+    if target_path.exists() {
+        let _ = fs::remove_file(source_path);
+        return Ok(());
+    }
+
+    match fs::rename(source_path, target_path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            fs::copy(source_path, target_path).map_err(|e| {
+                format!(
+                    "Failed to copy auxiliary download file {} -> {}: {}",
+                    source_path.display(),
+                    target_path.display(),
+                    e
+                )
+            })?;
+            fs::remove_file(source_path).map_err(|e| {
+                format!(
+                    "Failed to remove original auxiliary download file {}: {}",
+                    source_path.display(),
+                    e
+                )
+            })?;
+            Ok(())
+        }
+    }
+}
+
+fn move_downloaded_sidecar_cover(
+    source_dir: &Path,
+    target_dir: &Path,
+    cover_filename: Option<&str>,
+) -> Result<(), String> {
+    let Some(cover_filename) = cover_filename else {
+        return Ok(());
+    };
+
+    let cover_basename = soulseek_basename(cover_filename);
+    let source_path = source_dir.join(cover_basename);
+    let target_path = target_dir.join(cover_basename);
+    move_downloaded_aux_file(&source_path, &target_path)
+}
+
 fn preview_cache_root(library: &LibraryState) -> PathBuf {
     library
         .data_dir()
@@ -968,6 +1088,7 @@ async fn monitor_download(
     mut handle: DownloadHandle,
     is_preview: bool,
     data_dir: PathBuf,
+    sidecar_cover_filename: Option<String>,
 ) {
     use tauri::Emitter;
 
@@ -1067,6 +1188,20 @@ async fn monitor_download(
                     let file_path = Path::new(&local_path);
                     match reorganize_downloaded_file(file_path, &data_dir) {
                         Ok(final_path) => {
+                            if let (Some(source_dir), Some(target_dir)) =
+                                (file_path.parent(), final_path.parent())
+                            {
+                                if let Err(error) = move_downloaded_sidecar_cover(
+                                    source_dir,
+                                    target_dir,
+                                    sidecar_cover_filename.as_deref(),
+                                ) {
+                                    eprintln!(
+                                        "[soulseek] failed to move sidecar cover for {}: {}",
+                                        local_path, error
+                                    );
+                                }
+                            }
                             let final_path_str = final_path.to_string_lossy().to_string();
                             event.local_path = Some(final_path_str);
                             eprintln!(
