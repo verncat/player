@@ -1,0 +1,75 @@
+name: Tag Version On Main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  tag-version:
+    name: Create Version Tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from Cargo.toml
+        id: version
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          cargo_toml = Path('src-tauri/Cargo.toml')
+          current = tomllib.loads(cargo_toml.read_text(encoding='utf-8'))['package']['version']
+
+          previous = ''
+          before = os.environ.get('GITHUB_EVENT_BEFORE', '')
+          if before and before != '0000000000000000000000000000000000000000':
+              try:
+                  previous_text = subprocess.check_output(
+                      ['git', 'show', f'{before}:src-tauri/Cargo.toml'],
+                      text=True,
+                      stderr=subprocess.DEVNULL,
+                  )
+                  previous = tomllib.loads(previous_text)['package']['version']
+              except Exception:
+                  previous = ''
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'version={current}\n')
+              output.write(f'previous_version={previous}\n')
+              output.write(f'tag=v{current}\n')
+              output.write(f'changed={str(current != previous).lower()}\n')
+          PY
+
+      - name: Check whether tag already exists
+        if: steps.version.outputs.changed == 'true'
+        id: tag_exists
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push version tag
+        if: steps.version.outputs.changed == 'true' && steps.tag_exists.outputs.exists != 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
