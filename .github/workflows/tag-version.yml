@@ -80,6 +80,39 @@ jobs:
               output.write(f'changed={str(current != previous).lower()}\n')
           PY
 
+      - name: Report version comparison
+        shell: bash
+        env:
+          CURRENT_VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS_VERSION: ${{ steps.version.outputs.previous_version }}
+          TARGET_TAG: ${{ steps.version.outputs.tag }}
+          VERSION_CHANGED: ${{ steps.version.outputs.changed }}
+        run: |
+          previous_display="$PREVIOUS_VERSION"
+          if [[ -z "$previous_display" ]]; then
+            previous_display="<none>"
+          fi
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Previous version: $previous_display"
+          echo "Target tag: $TARGET_TAG"
+
+          if [[ "$VERSION_CHANGED" == "true" ]]; then
+            echo "Version changed, tag creation will continue."
+            action_summary="yes"
+          else
+            echo "Version unchanged, skipping tag creation."
+            action_summary="no"
+          fi
+
+          {
+            echo "## Tag Version Decision"
+            echo "- Current version: $CURRENT_VERSION"
+            echo "- Previous version: $previous_display"
+            echo "- Target tag: $TARGET_TAG"
+            echo "- Will create tag: $action_summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check whether tag already exists
         if: steps.version.outputs.changed == 'true'
         id: tag_exists
