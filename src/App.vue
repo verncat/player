@@ -501,6 +501,8 @@ function openTrackContextMenuAt(track: Track, x: number, y: number, playlistId: 
   homePinnedContextMenu.value = null;
   addToPlaylistMenu.value = null;
   trackContextMenu.value = { track, x: pos.x, y: pos.y, playlistId };
+  window.getSelection?.()?.removeAllRanges();
+  void nextTick(() => window.getSelection?.()?.removeAllRanges());
 }
 
 function openTrackContextMenu(e: MouseEvent, track: Track, playlistId: number | null = null) {
@@ -6367,20 +6369,32 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   min-width: 180px; max-width: 240px;
   box-shadow: 0 8px 24px rgba(0,0,0,.5);
   overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .playlist-menu-header {
   font-size: var(--fs-eyebrow); font-weight: 700; text-transform: uppercase;
   letter-spacing: .06em; color: #a7a7a7;
   padding: 10px 14px 6px;
   border-bottom: 1px solid #333;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .playlist-menu-empty {
   font-size: var(--fs-body-sm); color: #777; padding: 10px 14px;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .playlist-menu-item {
   display: block; width: 100%; text-align: left;
   background: none; border: none; color: #e0e0e0;
   font-size: var(--fs-button); padding: 9px 14px; cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .playlist-menu-item:hover { background: #333; }
 .playlist-menu-item.danger { color: #ffb7b7; }
