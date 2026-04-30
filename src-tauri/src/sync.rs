@@ -963,20 +963,51 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
     );
 
     // 3 ── Download missing files ──────────────────────────────────────────────
-    // Saved under data_dir/Sync/<peer_name>/ preserving relative directory structure.
-    let sync_root = data_dir.join("Sync").join(&peer_name);
+    // Organized by metadata: [Artist]/[Album]/filename (or [Artist]/filename, or just filename)
 
     let mut done = 0usize;
     let mut added = 0usize;
     for track in &missing {
-        // Build target path from peer's relative path
-        let save_path: PathBuf = track
-            .path
-            .split('/')
-            .fold(sync_root.clone(), |mut p, seg| {
-                p.push(seg);
-                p
-            });
+        // Build target path based on metadata
+        // Get artist and album, sanitizing them for use as directory names
+        let artist = track.artist.as_deref().map(|a| {
+            a.chars()
+                .map(|ch| match ch {
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                    c if c.is_control() => '_',
+                    c => c,
+                })
+                .collect::<String>()
+                .trim()
+                .trim_matches('.')
+                .to_string()
+        }).filter(|a| !a.is_empty());
+        
+        let album = track.album.as_deref().map(|a| {
+            a.chars()
+                .map(|ch| match ch {
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                    c if c.is_control() => '_',
+                    c => c,
+                })
+                .collect::<String>()
+                .trim()
+                .trim_matches('.')
+                .to_string()
+        }).filter(|a| !a.is_empty());
+
+        // Build the directory path
+        let mut save_dir = data_dir.clone();
+        if let Some(artist_name) = &artist {
+            save_dir.push(artist_name);
+            if let Some(album_name) = &album {
+                save_dir.push(album_name);
+            }
+        }
+
+        // Get the filename from the track path
+        let filename = track.path.rsplit('/').next().unwrap_or(track.path.as_str());
+        let save_path = save_dir.join(filename);
 
         // Recheck the DB at download time and reserve this hash across
         // concurrent sync workers so two peers can't fetch the same track.
@@ -984,7 +1015,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             done += 1;
             let label = track.title.as_deref()
                 .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| track.path.rsplit('/').next().unwrap_or(track.path.as_str()));
+                .unwrap_or_else(|| filename);
             emit(
                 &app,
                 &peer_name,

@@ -23,7 +23,7 @@ use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
@@ -81,6 +81,7 @@ pub struct Track {
     pub genre: Option<String>,
     pub tags: Option<String>,
     pub date_added: Option<i64>,
+    pub is_duplicate: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -174,7 +175,7 @@ impl LibraryState {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate
                FROM tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
@@ -193,7 +194,7 @@ impl LibraryState {
     pub fn all_tracks(&self) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags
+            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate
                FROM tracks
               ORDER BY artist, album, track_number, title",
         )?;
@@ -387,6 +388,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN genre TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN date_added INTEGER");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN tags TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN is_duplicate INTEGER NOT NULL DEFAULT 0");
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre COLLATE NOCASE);
          CREATE INDEX IF NOT EXISTS idx_tags ON tracks(tags COLLATE NOCASE);",
@@ -465,6 +467,7 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         genre: row.get(13).unwrap_or(None),
         date_added: row.get(14).unwrap_or(None),
         tags: row.get(15).unwrap_or(None),
+        is_duplicate: row.get::<_, i64>(16).unwrap_or(0) != 0,
     })
 }
 
@@ -1340,7 +1343,7 @@ pub fn get_recent_tracks(
     let lim = limit.unwrap_or(12) as i64;
     let mut stmt = conn.prepare(
         "SELECT DISTINCT t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags, t.is_duplicate
            FROM play_history h
            JOIN tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
@@ -1363,7 +1366,7 @@ pub fn get_play_history(
     let lim = limit.unwrap_or(500) as i64;
     let mut stmt = conn.prepare(
         "SELECT h.played_at, t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags
+                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags, t.is_duplicate
            FROM play_history h
            JOIN tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
@@ -1389,6 +1392,7 @@ pub fn get_play_history(
                 genre: row.get(14).unwrap_or(None),
                 date_added: row.get(15).unwrap_or(None),
                 tags: row.get(16).unwrap_or(None),
+                is_duplicate: row.get::<_, i64>(17).unwrap_or(0) != 0,
             };
             Ok(PlayHistoryEntry { played_at, track })
         })
@@ -1565,7 +1569,7 @@ pub fn get_playlist_tracks(playlist_id: i64, state: tauri::State<'_, LibraryStat
     let mut stmt = conn.prepare(
         "SELECT t.id, t.path, t.title, t.artist, t.album, t.track_number,
                 t.duration_secs, t.file_hash, t.rarity, t.manually_edited,
-                t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags
+                t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags, t.is_duplicate
          FROM tracks t
          JOIN playlist_tracks pt ON pt.track_id = t.id
          WHERE pt.playlist_id = ?1
@@ -1695,6 +1699,322 @@ pub fn set_smart_playlist_pinned(id: String, pinned: bool, state: tauri::State<'
             params![id],
         )
         .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ── Duplicate finder ──────────────────────────────────────────────────────────
+
+/// A single potential duplicate group returned to the frontend.
+#[derive(Debug, Serialize, Clone)]
+pub struct DuplicateGroup {
+    /// All tracks in this group. Frontend decides which one to keep.
+    pub tracks: Vec<Track>,
+    /// Human-readable reason tokens that explain why these were grouped.
+    pub reasons: Vec<String>,
+}
+
+/// Normalise a string for fuzzy comparison: lowercase, strip non-alphanumeric.
+fn normalize_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Try to derive a "display title" from path alone (for tracks without tags).
+fn title_from_path(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let stem = p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path);
+    // Strip leading track-number prefix so "01 - Song" → "Song"
+    let (_, title) = parse_filename(stem);
+    title
+}
+
+#[derive(Debug, Clone)]
+struct TrackSignature {
+    title_meta: String,
+    title_path: String,
+    artist: String,
+}
+
+/// Build normalized fields used by duplicate matching.
+fn track_signature(track: &Track) -> TrackSignature {
+    TrackSignature {
+        title_meta: track
+            .title
+            .as_deref()
+            .map(normalize_key)
+            .unwrap_or_default(),
+        title_path: normalize_key(&title_from_path(&track.path)),
+        artist: track
+            .artist
+            .as_deref()
+            .map(normalize_key)
+            .unwrap_or_default(),
+    }
+}
+
+/// Levenshtein distance capped at `cap` for efficiency.
+fn edit_distance_capped(a: &str, b: &str, cap: usize) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+    if m.abs_diff(n) >= cap {
+        return cap;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            curr[j] = if a[i - 1] == b[j - 1] {
+                prev[j - 1]
+            } else {
+                1 + prev[j - 1].min(prev[j]).min(curr[j - 1])
+            };
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+/// Return true if two tracks are considered similar enough to be duplicates.
+/// We require a title match (exact or fuzzy); matching artist alone is never enough.
+fn signatures_are_similar(a: &TrackSignature, b: &TrackSignature) -> (bool, Vec<String>) {
+    let mut matched_reasons: Vec<String> = Vec::new();
+    let mut title_matched = false;
+
+    let mut a_titles: Vec<&str> = Vec::new();
+    let mut b_titles: Vec<&str> = Vec::new();
+    if !a.title_meta.is_empty() {
+        a_titles.push(&a.title_meta);
+    }
+    if !a.title_path.is_empty() && a.title_path != a.title_meta {
+        a_titles.push(&a.title_path);
+    }
+    if !b.title_meta.is_empty() {
+        b_titles.push(&b.title_meta);
+    }
+    if !b.title_path.is_empty() && b.title_path != b.title_meta {
+        b_titles.push(&b.title_path);
+    }
+
+    for ta in a_titles {
+        for tb in &b_titles {
+            let tb = *tb;
+            if ta.is_empty() || tb.is_empty() {
+                continue;
+            }
+            if ta == tb {
+                matched_reasons.push(format!("exact: \"{}\"", ta));
+                title_matched = true;
+                continue;
+            }
+            let longer = ta.len().max(tb.len());
+            // Allow a conservative fuzzy threshold only for reasonably long titles.
+            let threshold = if longer >= 6 { (longer / 10).max(1) } else { 0 };
+            if threshold > 0 && edit_distance_capped(ta, tb, threshold + 1) <= threshold {
+                matched_reasons.push(format!("similar: \"{}\" ≈ \"{}\"", ta, tb));
+                title_matched = true;
+            }
+        }
+    }
+
+    if !title_matched {
+        return (false, Vec::new());
+    }
+
+    // Artist compatibility: if both artists are known, require exact normalized match.
+    if !a.artist.is_empty() && !b.artist.is_empty() {
+        if a.artist != b.artist {
+            return (false, Vec::new());
+        }
+        matched_reasons.push(format!("artist: \"{}\"", a.artist));
+    }
+
+    // Deduplicate reasons
+    matched_reasons.sort();
+    matched_reasons.dedup();
+
+    (!matched_reasons.is_empty(), matched_reasons)
+}
+
+#[tauri::command]
+pub fn find_duplicates(
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Vec<DuplicateGroup>, String> {
+    let tracks = state.all_tracks().map_err(|e| e.to_string())?;
+
+    // Build signature index once
+    let indexed: Vec<(Track, TrackSignature)> = tracks
+        .into_iter()
+        .map(|t| {
+            let sig = track_signature(&t);
+            (t, sig)
+        })
+        .collect();
+
+    let n = indexed.len();
+    // Union-Find for grouping
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut group_reasons: Vec<Vec<String>> = vec![Vec::new(); n];
+
+    fn find(parent: &mut Vec<usize>, x: usize) -> usize {
+        if parent[x] != x {
+            parent[x] = find(parent, parent[x]);
+        }
+        parent[x]
+    }
+
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (similar, reasons) = signatures_are_similar(&indexed[i].1, &indexed[j].1);
+            if similar {
+                let ri = find(&mut parent, i);
+                let rj = find(&mut parent, j);
+                if ri != rj {
+                    parent[rj] = ri;
+                    let merged_reasons: Vec<String> = group_reasons[ri]
+                        .iter()
+                        .chain(group_reasons[rj].iter())
+                        .chain(reasons.iter())
+                        .cloned()
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    group_reasons[ri] = {
+                        let mut v = merged_reasons;
+                        v.sort();
+                        v
+                    };
+                    group_reasons[rj] = Vec::new();
+                } else {
+                    for r in &reasons {
+                        if !group_reasons[ri].contains(r) {
+                            group_reasons[ri].push(r.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Collect groups with > 1 member
+    let mut buckets: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        buckets.entry(root).or_default().push(i);
+    }
+
+    let mut groups: Vec<DuplicateGroup> = buckets
+        .into_iter()
+        .filter(|(_, members)| members.len() > 1)
+        .map(|(root, members)| {
+            let mut tracks: Vec<Track> = members.iter().map(|&i| indexed[i].0.clone()).collect();
+            // Sort within group: manually_edited first, then by play_count desc, then path
+            tracks.sort_by(|a, b| {
+                b.manually_edited
+                    .cmp(&a.manually_edited)
+                    .then(b.play_count.cmp(&a.play_count))
+                    .then(a.path.cmp(&b.path))
+            });
+            let mut reasons = group_reasons[root].clone();
+            reasons.sort();
+            DuplicateGroup { tracks, reasons }
+        })
+        .collect();
+
+    // Sort groups by first track artist+title for stable UI ordering
+    groups.sort_by(|a, b| {
+        let ka = a
+            .tracks
+            .first()
+            .map(|t| {
+                format!(
+                    "{} {}",
+                    t.artist.as_deref().unwrap_or(""),
+                    t.title.as_deref().unwrap_or("")
+                )
+            })
+            .unwrap_or_default();
+        let kb = b
+            .tracks
+            .first()
+            .map(|t| {
+                format!(
+                    "{} {}",
+                    t.artist.as_deref().unwrap_or(""),
+                    t.title.as_deref().unwrap_or("")
+                )
+            })
+            .unwrap_or_default();
+        ka.cmp(&kb)
+    });
+
+    Ok(groups)
+}
+
+/// One resolution for a duplicate group: which track to keep, which to mark as duplicate.
+#[derive(Debug, Deserialize)]
+pub struct DedupeResolution {
+    pub keep_id: i64,
+    pub remove_ids: Vec<i64>,
+}
+
+/// Mark selected tracks as duplicates (is_duplicate = 1), clear the flag on the kept track.
+/// Nothing is deleted from disk or the database.
+#[tauri::command]
+pub fn apply_dedup(
+    resolutions: Vec<DedupeResolution>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<usize, String> {
+    let conn = state.conn.lock().unwrap();
+    let mut marked = 0usize;
+
+    for res in &resolutions {
+        // Ensure the kept track is not marked as a duplicate
+        let _ = conn.execute(
+            "UPDATE tracks SET is_duplicate = 0 WHERE id = ?1",
+            params![res.keep_id],
+        );
+        for &rid in &res.remove_ids {
+            if rid == res.keep_id {
+                continue;
+            }
+            conn.execute(
+                "UPDATE tracks SET is_duplicate = 1 WHERE id = ?1",
+                params![rid],
+            )
+            .map_err(|e| e.to_string())?;
+            marked += 1;
+        }
+    }
+
+    Ok(marked)
+}
+
+/// Remove the is_duplicate flag from a list of track IDs (or all if empty).
+#[tauri::command]
+pub fn unmark_duplicates(
+    ids: Vec<i64>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    if ids.is_empty() {
+        conn.execute("UPDATE tracks SET is_duplicate = 0", [])
+            .map_err(|e| e.to_string())?;
+    } else {
+        for id in ids {
+            let _ = conn.execute("UPDATE tracks SET is_duplicate = 0 WHERE id = ?1", params![id]);
+        }
     }
     Ok(())
 }

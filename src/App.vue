@@ -63,6 +63,7 @@ interface Track {
   genre: string | null;
   tags: string | null;
   date_added: number | null;
+  is_duplicate: boolean;
   local_preview_path?: string | null;
   preview_growing?: boolean;
 }
@@ -131,6 +132,7 @@ const currentDevice = ref<string | null>(null);
 const deviceMenuError = ref('');
 const activeNav = ref("home");
 const libraryTracks = ref<Track[]>([]);
+const showDuplicateTracks = ref(false);
 const libraryLoading = ref(false);
 const libraryQuery = ref("");
 const searchQuery = ref("");
@@ -149,6 +151,10 @@ const editForm = ref({
   rarity: '',
 });
 const covers = ref<Record<number, string | null>>({});
+
+function filterDuplicateTracks(tracks: Track[]) {
+  return showDuplicateTracks.value ? tracks : tracks.filter((track) => !track.is_duplicate);
+}
 
 function trackTagsList(track: Pick<Track, 'tags'>): string[] {
   if (!track.tags) return [];
@@ -246,6 +252,83 @@ interface IdentifyItem { track_id: number; track_name: string | null; status: st
 const identifyResults = ref<IdentifyItem[]>([]);
 const identifyLogRef = ref<HTMLElement | null>(null);
 const contentRef = ref<HTMLElement | null>(null);
+
+/* ── Dedup state ── */
+interface DuplicateGroup {
+  tracks: Track[];
+  reasons: string[];
+}
+const dedupLoading = ref(false);
+const dedupGroups = ref<DuplicateGroup[]>([]);
+const dedupError = ref('');
+// Map of groupIndex → chosen keep track id (default: first = already sorted by backend)
+const dedupKeepId = ref<Map<number, number>>(new Map());
+// Filter: 'all' | 'unresolved'
+const dedupFilter = ref<'all' | 'unresolved'>('all');
+// Tracks pending delete after preview confirmation
+const dedupConfirmOpen = ref(false);
+const dedupApplying = ref(false);
+
+async function openDedup() {
+  if (dedupLoading.value) return;
+  dedupLoading.value = true;
+  dedupError.value = '';
+  dedupGroups.value = [];
+  dedupKeepId.value = new Map();
+  try {
+    const groups = await invoke<DuplicateGroup[]>('find_duplicates');
+    dedupGroups.value = groups;
+    const initialKeep = new Map<number, number>();
+    groups.forEach((g, i) => {
+      if (g.tracks.length > 0) initialKeep.set(i, g.tracks[0].id);
+    });
+    dedupKeepId.value = initialKeep;
+  } catch (e) {
+    dedupError.value = String(e ?? 'Failed to scan for duplicates');
+  } finally {
+    dedupLoading.value = false;
+  }
+}
+
+const dedupFilteredGroups = computed(() => {
+  if (dedupFilter.value === 'unresolved') {
+    return dedupGroups.value.map((g, i) => ({ g, i })).filter(({ g, i }) => {
+      const keepId = dedupKeepId.value.get(i);
+      return keepId === undefined || g.tracks.some(t => t.id !== keepId);
+    });
+  }
+  return dedupGroups.value.map((g, i) => ({ g, i }));
+});
+
+function dedupSetKeep(groupIdx: number, trackId: number) {
+  dedupKeepId.value = new Map(dedupKeepId.value).set(groupIdx, trackId);
+}
+
+async function applyDedup() {
+  dedupApplying.value = true;
+  dedupError.value = '';
+  try {
+    interface DedupeResolution { keep_id: number; remove_ids: number[] }
+    const resolutions: DedupeResolution[] = [];
+    dedupGroups.value.forEach((g, i) => {
+      const keepId = dedupKeepId.value.get(i) ?? g.tracks[0]?.id;
+      if (!keepId) return;
+      const removeIds = g.tracks.filter(t => t.id !== keepId).map(t => t.id);
+      if (removeIds.length > 0) {
+        resolutions.push({ keep_id: keepId, remove_ids: removeIds });
+      }
+    });
+    await invoke('apply_dedup', { resolutions });
+    dedupConfirmOpen.value = false;
+    await openDedup();
+    await loadLibrary();
+    await loadRecent();
+  } catch (e) {
+    dedupError.value = String(e ?? 'Failed to mark duplicates');
+  } finally {
+    dedupApplying.value = false;
+  }
+}
 
 /* ── Index progress state ── */
 const indexRunning = ref(false);
@@ -362,7 +445,7 @@ async function loadHomePinnedRegularTracks() {
   const entries = await Promise.all(
     pinnedPlaylists.map(async (pl) => [
       pl.id,
-      await invoke<Track[]>('get_playlist_tracks', { playlistId: pl.id }),
+      filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: pl.id })),
     ] as const),
   );
 
@@ -370,7 +453,7 @@ async function loadHomePinnedRegularTracks() {
 }
 
 async function openPlaylist(pl: Playlist) {
-  const tracks = await invoke<Track[]>('get_playlist_tracks', { playlistId: pl.id });
+  const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: pl.id }));
   playlistView.value = { id: pl.id, name: pl.name, tracks };
 }
 
@@ -378,7 +461,7 @@ async function addTrackToPlaylist(playlistId: number, trackId: number) {
   await invoke('add_track_to_playlist', { playlistId, trackId });
   await loadPlaylists();
   if (playlistView.value?.id === playlistId) {
-    const tracks = await invoke<Track[]>('get_playlist_tracks', { playlistId });
+    const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId }));
     playlistView.value = { ...playlistView.value, tracks };
   }
   addToPlaylistMenu.value = null;
@@ -907,9 +990,10 @@ function smartPlaylistTracks(sp: SmartPlaylist): Track[] {
   if (sp.rules.length === 0) return [];
   const filterRules = sp.rules.filter((rule) => rule.field !== 'sort');
   const sortRules = smartPlaylistSortRules(sp);
+  const baseTracks = filterDuplicateTracks(libraryTracks.value);
   const filteredTracks = filterRules.length === 0
-    ? libraryTracks.value.slice()
-    : libraryTracks.value.filter((track) =>
+    ? baseTracks.slice()
+    : baseTracks.filter((track) =>
       sp.match === 'all'
         ? filterRules.every((rule) => matchesRule(track, rule))
         : filterRules.some((rule) => matchesRule(track, rule))
@@ -1020,7 +1104,7 @@ async function playHomePinnedItem(item: HomePinnedPlaylistItem) {
 
   if (item.kind === 'regular') {
     const playlist = item.playlist as Playlist;
-    const tracks = await invoke<Track[]>('get_playlist_tracks', { playlistId: playlist.id });
+    const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: playlist.id }));
     if (tracks.length) playFromPlaylist(tracks, 0);
     return;
   }
@@ -1094,6 +1178,24 @@ watch(
   },
   { immediate: true },
 );
+
+watch(showDuplicateTracks, async (show) => {
+  if (!show) {
+    queue.value = queue.value.filter((track) => !track.is_duplicate);
+    queuePlaylistTracks.value = queuePlaylistTracks.value.filter((track) => !track.is_duplicate);
+  }
+
+  refillQueue();
+
+  await loadHomePinnedRegularTracks().catch(() => {
+    homePinnedRegularTracks.value = {};
+  });
+
+  if (playlistView.value) {
+    const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: playlistView.value.id }));
+    playlistView.value = { ...playlistView.value, tracks };
+  }
+});
 // ────────────────────────────────────────────────────────────────────────────
 
 
@@ -1455,6 +1557,7 @@ function makeSoulseekTrack(result: SoulseekSearchResult, relativePath: string): 
     genre: null,
     tags: null,
     date_added: null,
+    is_duplicate: false,
     local_preview_path: null,
     preview_growing: false,
   };
@@ -2246,11 +2349,14 @@ const displayProgressPercent = computed(() => {
 
 /** Return the full ordered list for a given source */
 function sourceList(src: QueueSource): Track[] {
-  if (src === 'recent') return recentTracks.value.length ? recentTracks.value : libraryTracks.value.slice(0, 12);
+  if (src === 'recent') {
+    const recent = filterDuplicateTracks(recentTracks.value);
+    return recent.length ? recent : filterDuplicateTracks(libraryTracks.value).slice(0, 12);
+  }
   if (src === 'playlist') return queuePlaylistTracks.value;
   if (src === 'soulseek') return queueSoulseekTracks.value;
   // 'library' – flattened in grouped order (same as libraryFlatList)
-  return libraryFlatList.value;
+  return filterDuplicateTracks(libraryFlatList.value);
 }
 
 /** Fill the queue up to 5 upcoming tracks from the source */
@@ -2262,7 +2368,10 @@ function refillQueue() {
   }
   const list = sourceList(queueSource.value);
   if (!list.length) return;
-  while (queue.value.length < 5) {
+  let attempts = 0;
+  const maxAttempts = Math.max(list.length * 2, 8);
+  while (queue.value.length < 5 && attempts < maxAttempts) {
+    attempts += 1;
     const nextIdx = queueSourceIndex.value + 1;
     if (nextIdx >= list.length) {
       if ((queueSource.value === 'playlist' || queueSource.value === 'soulseek') && repeatMode.value !== 1) break; // stop at end of finite queue sources
@@ -2270,7 +2379,12 @@ function refillQueue() {
     } else {
       queueSourceIndex.value = nextIdx;
     }
-    if (queueSourceIndex.value >= 0) queue.value.push(list[queueSourceIndex.value]);
+    if (queueSourceIndex.value >= 0) {
+      const candidate = list[queueSourceIndex.value];
+      if (showDuplicateTracks.value || !candidate.is_duplicate) {
+        queue.value.push(candidate);
+      }
+    }
   }
 }
 
@@ -2863,20 +2977,24 @@ function countUniqueAlbums(tracks: Track[]) {
 }
 
 const filteredTracks = computed(() => {
+  const visibleTracks = filterDuplicateTracks(libraryTracks.value);
   const q = libraryQuery.value.trim();
-  if (!q) return libraryTracks.value;
-  return libraryTracks.value.filter((track) => trackMatchesQuery(track, q));
+  if (!q) return visibleTracks;
+  return visibleTracks.filter((track) => trackMatchesQuery(track, q));
 });
 
 const searchResults = computed(() => {
+  const visibleTracks = filterDuplicateTracks(libraryTracks.value);
   const q = searchQuery.value.trim();
   if (!q) return [];
-  return libraryTracks.value.filter((track) => trackMatchesQuery(track, q));
+  return visibleTracks.filter((track) => trackMatchesQuery(track, q));
 });
 
+const visibleRecentTracks = computed(() => filterDuplicateTracks(recentTracks.value));
+
 const searchRecentTracks = computed(() => {
-  if (recentTracks.value.length) return recentTracks.value.slice(0, 10);
-  return libraryTracks.value.slice(0, 10);
+  if (visibleRecentTracks.value.length) return visibleRecentTracks.value.slice(0, 10);
+  return filterDuplicateTracks(libraryTracks.value).slice(0, 10);
 });
 
 const searchArtistCount = computed(() => countUniqueArtists(searchResults.value));
@@ -3059,7 +3177,7 @@ async function saveTrack() {
   await loadLibrary();
   await loadRecent();
   if (activePlaylistId !== null && playlistView.value?.id === activePlaylistId) {
-    const tracks = await invoke<Track[]>('get_playlist_tracks', { playlistId: activePlaylistId });
+    const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: activePlaylistId }));
     playlistView.value = { ...playlistView.value, tracks };
   }
   if (nowPlaying.value?.id === activeTrack.id) {
@@ -3478,6 +3596,10 @@ onUnmounted(() => {
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
           Identify
         </a>
+        <a class="nav-item" :class="{ active: activeNav === 'dedup' }" href="#" @click.prevent="activeNav = 'dedup'; showMobileNav = false; openDedup()">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 4H5v16h14V8zm-1 13H7v-2h7zm0-4H7v-2h7zm-3-4H7V7h4zM3 2v18H1V2zm18 0h2v18h-2z"/></svg>
+          Duplicates
+        </a>
       </nav>
     </aside>
 
@@ -3491,6 +3613,13 @@ onUnmounted(() => {
           <button class="arrow-btn">&lsaquo;</button>
           <button class="arrow-btn">&rsaquo;</button>
         </div>
+        <button
+          class="duplicates-toggle"
+          :class="{ active: showDuplicateTracks }"
+          @click="showDuplicateTracks = !showDuplicateTracks"
+        >
+          {{ showDuplicateTracks ? 'Hide duplicates' : 'Show duplicates' }}
+        </button>
         <!-- <div class="user-menu-wrapper">
           <button class="user-btn" @click.stop="showUserMenu = !showUserMenu">
             <span class="avatar">e</span>
@@ -3528,9 +3657,9 @@ onUnmounted(() => {
               <h2>Recently played</h2>
               <a class="show-all" href="#" @click.prevent="activeNav = 'history'; loadHistory()">Show all</a>
             </div>
-            <div v-if="recentTracks.length === 0 && libraryTracks.length === 0" class="library-empty">No tracks yet.</div>
+            <div v-if="visibleRecentTracks.length === 0 && filterDuplicateTracks(libraryTracks).length === 0" class="library-empty">No tracks yet.</div>
             <div v-else class="card-list">
-              <div v-for="(track, idx) in (recentTracks.length ? recentTracks : libraryTracks.slice(0, 12))" :key="track.id + '-' + idx"
+              <div v-for="(track, idx) in (visibleRecentTracks.length ? visibleRecentTracks : filterDuplicateTracks(libraryTracks).slice(0, 12))" :key="track.id + '-' + idx"
                 class="card" :class="rarityClass(track.rarity)" :style="rarityVars(track.rarity)"
                 @click="playRecentCard(idx)"
                 @contextmenu.prevent="openTrackContextMenu($event, track)"
@@ -4340,6 +4469,113 @@ onUnmounted(() => {
           </section>
         </template>
 
+        <!-- Duplicates view -->
+        <template v-else-if="activeNav === 'dedup'">
+          <section>
+            <div class="library-header">
+              <h2>Duplicates</h2>
+              <div class="dedup-toolbar">
+                <button
+                  class="dedup-filter-btn"
+                  :class="{ active: dedupFilter === 'all' }"
+                  @click="dedupFilter = 'all'"
+                >All groups</button>
+                <button
+                  class="dedup-filter-btn"
+                  :class="{ active: dedupFilter === 'unresolved' }"
+                  @click="dedupFilter = 'unresolved'"
+                >Unresolved</button>
+                <button class="btn-secondary dedup-rescan-btn" @click="openDedup()" :disabled="dedupLoading">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                  Rescan
+                </button>
+              </div>
+            </div>
+
+            <div v-if="dedupLoading" class="library-empty">Scanning library…</div>
+
+            <div v-else-if="dedupError" class="settings-error dedup-error">{{ dedupError }}</div>
+
+            <template v-else-if="dedupGroups.length === 0">
+              <p class="search-empty-copy dedup-clean-copy">
+                <svg viewBox="0 0 24 24" fill="#1db954" width="20" height="20"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                No duplicates found. Your library looks clean!
+              </p>
+            </template>
+
+            <template v-else>
+              <div class="dedup-summary">
+                Found <strong>{{ dedupGroups.length }}</strong> potential duplicate group{{ dedupGroups.length === 1 ? '' : 's' }}.
+                Select which track to keep in each group, then click Apply.
+              </div>
+
+              <div v-for="{ g, i } in dedupFilteredGroups" :key="i" class="dedup-group">
+                <div class="dedup-group-header">
+                  <div class="dedup-group-title">
+                    Group {{ i + 1 }}
+                    <span class="dedup-track-count">{{ g.tracks.length }} tracks</span>
+                  </div>
+                  <div class="dedup-reasons">
+                    <span v-for="r in g.reasons" :key="r" class="dedup-reason-tag">{{ r }}</span>
+                  </div>
+                </div>
+
+                <div class="dedup-group-tracks">
+                  <div
+                    v-for="track in g.tracks"
+                    :key="track.id"
+                    class="track-row dedup-track-row"
+                    :class="[
+                      rarityClass(track.rarity),
+                      { 'dedup-keep': dedupKeepId.get(i) === track.id, 'dedup-remove': dedupKeepId.get(i) !== undefined && dedupKeepId.get(i) !== track.id, 'dedup-already-marked': track.is_duplicate }
+                    ]"
+                    :style="rarityVars(track.rarity)"
+                    @click="dedupSetKeep(i, track.id)"
+                  >
+                    <div class="track-cover-sm" :style="covers[track.id]
+                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
+                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
+                    />
+                    <div class="track-info">
+                      <div class="track-title-row">
+                        <span class="track-title">{{ track.title || track.path }}</span>
+                        <span v-if="dedupKeepId.get(i) === track.id" class="dedup-keep-badge">Keep</span>
+                        <span v-else-if="dedupKeepId.get(i) !== undefined" class="dedup-remove-badge">Remove</span>
+                      </div>
+                      <span class="track-album">
+                        {{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}
+                      </span>
+                      <span class="dedup-track-meta">
+                        <span>{{ track.path }}</span>
+                        <span v-if="track.play_count > 0">▶ {{ track.play_count }}</span>
+                        <span v-if="track.manually_edited" class="dedup-edited-tag">edited</span>
+                        <span v-if="track.is_duplicate" class="dedup-flagged-tag">flagged</span>
+                      </span>
+                    </div>
+                    <div class="dedup-keep-radio">
+                      <div class="dedup-radio-dot" :class="{ active: dedupKeepId.get(i) === track.id }"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="dedup-actions">
+                <button
+                  v-if="dedupGroups.some((g, i) => g.tracks.some(t => t.is_duplicate && t.id !== (dedupKeepId.get(i) ?? g.tracks[0]?.id)))"
+                  class="btn-secondary"
+                  style="margin-right: auto;"
+                  @click="invoke('unmark_duplicates', { ids: dedupGroups.flatMap(g => g.tracks.filter(t => t.is_duplicate).map(t => t.id)) }).then(() => openDedup()).then(() => loadLibrary())"
+                >
+                  Unmark all
+                </button>
+                <button class="btn-primary" @click="dedupConfirmOpen = true" :disabled="dedupApplying">
+                  Mark as duplicates ({{ dedupGroups.reduce((acc, g, i) => acc + g.tracks.filter(t => t.id !== (dedupKeepId.get(i) ?? g.tracks[0]?.id)).length, 0) }})
+                </button>
+              </div>
+            </template>
+          </section>
+        </template>
+
         <!-- Discovery view -->
         <template v-else-if="activeNav === 'discovery'">
           <section>
@@ -4494,6 +4730,33 @@ onUnmounted(() => {
         </div>
       </div>
     </Teleport>
+
+    <!-- Dedup confirm modal -->
+    <Transition name="modal">
+      <div v-if="dedupConfirmOpen" class="modal-overlay" @click.self="dedupConfirmOpen = false">
+        <div class="modal identify-modal">
+          <div class="modal-header">
+            <h3>Confirm marking</h3>
+            <button class="icon-btn" @click="dedupConfirmOpen = false">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <p style="color:#b3b3b3; line-height:1.5;">
+              <strong style="color:#fff;">{{ dedupGroups.reduce((acc, g, i) => acc + g.tracks.filter(t => t.id !== (dedupKeepId.get(i) ?? g.tracks[0]?.id)).length, 0) }}</strong>
+              track(s) will be flagged as duplicates in the database. Files stay on disk. You can unmark them at any time.
+            </p>
+            <div v-if="dedupError" class="settings-error">{{ dedupError }}</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" @click="dedupConfirmOpen = false" :disabled="dedupApplying">Cancel</button>
+            <button class="btn-primary" @click="applyDedup()" :disabled="dedupApplying">
+              {{ dedupApplying ? 'Marking…' : 'Mark as duplicates' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- Edit modal -->
     <Transition name="modal">
@@ -5292,6 +5555,98 @@ a, button, [role="button"] {
 .emoji-cell.active { border-color: #1db954; box-shadow: 0 0 0 1px #1db954 inset; }
 .settings-error { color: #e9283e; font-size: var(--fs-body-sm); }
 
+/* ── Duplicates view ── */
+.dedup-toolbar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+.dedup-filter-btn {
+  padding: 5px 12px; border-radius: 20px; border: 1px solid #333;
+  background: transparent; color: #a7a7a7; cursor: pointer;
+  font-size: var(--fs-body-sm); transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.dedup-filter-btn:hover { border-color: #555; color: #fff; }
+.dedup-filter-btn.active { background: #1db954; color: #000; border-color: #1db954; }
+.dedup-rescan-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 14px; font-size: var(--fs-body-sm);
+}
+.dedup-summary {
+  margin: 10px 0 18px; color: #b3b3b3; font-size: var(--fs-body-sm);
+}
+.dedup-clean-copy {
+  display: flex; align-items: center; gap: 8px; color: #a7a7a7;
+}
+.dedup-error { margin-top: 16px; }
+.dedup-group {
+  margin-bottom: 20px; border: 1px solid #282828; border-radius: 8px; overflow: hidden;
+}
+.dedup-group-header {
+  padding: 10px 16px 8px; background: #1a1a1a;
+  display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap;
+}
+.dedup-group-title {
+  font-size: var(--fs-body-sm); color: #fff; font-weight: 600;
+  display: flex; align-items: center; gap: 8px;
+}
+.dedup-track-count {
+  font-size: 11px; color: #a7a7a7; font-weight: 400;
+}
+.dedup-reasons {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto;
+}
+.dedup-reason-tag {
+  padding: 2px 8px; border-radius: 10px; background: #282828;
+  font-size: 10px; color: #888; font-family: monospace;
+}
+.dedup-group-tracks { padding: 4px 0; }
+.dedup-track-row {
+  cursor: pointer;
+}
+.dedup-track-row.dedup-keep {
+  background: rgba(29, 185, 84, 0.08);
+}
+.dedup-track-row.dedup-remove {
+  opacity: 0.55;
+}
+.dedup-track-meta {
+  display: flex; gap: 10px; font-size: 11px; color: #666; margin-top: 2px;
+  flex-wrap: wrap;
+}
+.dedup-edited-tag {
+  background: #2c3a2e; color: #1db954; padding: 1px 6px; border-radius: 4px;
+  font-size: 10px;
+}
+.dedup-already-marked {
+  outline: 1px solid #7b4a1a44;
+  background: rgba(245, 160, 30, 0.05);
+}
+.dedup-flagged-tag {
+  background: #3a2e1a; color: #f5a01e; padding: 1px 6px; border-radius: 4px;
+  font-size: 10px;
+}
+.dedup-keep-badge {
+  background: #1db954; color: #000; font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 4px; margin-left: 8px;
+}
+.dedup-remove-badge {
+  background: #c0392b22; color: #e05a4a; font-size: 10px;
+  padding: 1px 6px; border-radius: 4px; margin-left: 8px;
+}
+.dedup-keep-radio {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  width: 24px; margin-left: 4px;
+}
+.dedup-radio-dot {
+  width: 14px; height: 14px; border-radius: 50%; border: 2px solid #555;
+  transition: border-color 0.12s, background 0.12s;
+}
+.dedup-radio-dot.active {
+  border-color: #1db954; background: #1db954;
+}
+.dedup-actions {
+  margin-top: 24px; margin-bottom: 12px; display: flex; justify-content: flex-end;
+}
+
 .sync-now-btn {
   flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
   background: #282828; border: none; color: #a7a7a7;
@@ -5351,6 +5706,29 @@ a, button, [role="button"] {
   display: flex; align-items: center; justify-content: center;
 }
 .arrow-btn:hover { background: rgba(0,0,0,.7); }
+
+.duplicates-toggle {
+  border: 1px solid #4a4a4a;
+  background: rgba(20, 20, 20, 0.75);
+  color: #d9dee8;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 7px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+
+.duplicates-toggle:hover {
+  background: rgba(36, 36, 36, 0.92);
+}
+
+.duplicates-toggle.active {
+  background: rgba(29, 185, 84, 0.16);
+  border-color: rgba(29, 185, 84, 0.7);
+  color: #8cf7b0;
+}
 
 .user-menu-wrapper { position: relative; }
 .user-btn {
@@ -6493,6 +6871,14 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .topbar {
     padding: 10px 14px;
     padding-top: calc(10px + env(safe-area-inset-top));
+    gap: 8px;
+  }
+
+  .duplicates-toggle {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 6px 10px;
+    white-space: nowrap;
   }
 
   .card-list {

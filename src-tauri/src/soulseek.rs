@@ -1,5 +1,7 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use crate::library::{DeviceSettings, LibraryState};
+use lofty::prelude::Accessor;
+use lofty::probe::Probe;
 use serde::{Deserialize, Serialize};
 use soulseek_rs::types::Download;
 use soulseek_rs::{Client, DownloadHandle, DownloadStatus, File};
@@ -262,8 +264,10 @@ pub async fn soulseek_download(
         e.to_string()
     })?;
 
-    let download_root = library.data_dir().join("Soulseek");
-    let download_dir = build_download_directory(&download_root, &request.username, &request.filename);
+    // Use temporary download directory for organizing files after download
+    let data_dir = library.data_dir();
+    let temp_download_root = data_dir.join(".soulseek-temp");
+    let download_dir = build_download_directory(&temp_download_root, &request.username, &request.filename);
     eprintln!(
         "[soulseek] resolved local download dir: user={} remote={} local_dir={}",
         request.username,
@@ -345,6 +349,7 @@ pub async fn soulseek_download(
             .as_millis()
     );
 
+    let data_dir_pathbuf = library.data_dir().to_path_buf();
     tauri::async_runtime::spawn(monitor_download(
         app,
         "soulseek-download",
@@ -352,6 +357,7 @@ pub async fn soulseek_download(
         download,
         handle,
         false,
+        data_dir_pathbuf,
     ));
 
     eprintln!(
@@ -415,6 +421,7 @@ pub async fn soulseek_preview(
             .as_millis()
     );
 
+    let data_dir_pathbuf = library.data_dir().to_path_buf();
     tauri::async_runtime::spawn(monitor_download(
         app,
         "soulseek-preview",
@@ -422,6 +429,7 @@ pub async fn soulseek_preview(
         download,
         handle,
         true,
+        data_dir_pathbuf,
     ));
 
     Ok(transfer_id)
@@ -657,6 +665,26 @@ fn sanitize_path_segment(segment: &str) -> String {
     }
 }
 
+/// Builds a download path based on metadata (Artist/Album structure).
+/// - If both artist and album exist: root/[Artist]/[Album]
+/// - If only artist exists: root/[Artist]
+/// - Otherwise: root
+fn build_metadata_based_path(root: &Path, artist: Option<&str>, album: Option<&str>) -> PathBuf {
+    let mut path = root.to_path_buf();
+    
+    if let Some(artist_name) = artist {
+        let sanitized_artist = sanitize_path_segment(artist_name);
+        path.push(&sanitized_artist);
+        
+        if let Some(album_name) = album {
+            let sanitized_album = sanitize_path_segment(album_name);
+            path.push(&sanitized_album);
+        }
+    }
+    
+    path
+}
+
 fn build_download_directory(root: &Path, username: &str, remote_filename: &str) -> PathBuf {
     let mut directory = root.join(sanitize_path_segment(username));
     let mut segments: Vec<&str> = remote_filename
@@ -673,6 +701,85 @@ fn build_download_directory(root: &Path, username: &str, remote_filename: &str) 
     }
 
     directory
+}
+
+/// Extracts artist and album metadata from an audio file.
+fn extract_audio_metadata(file_path: &Path) -> (Option<String>, Option<String>) {
+    match Probe::open(file_path) {
+        Ok(probe) => {
+            match probe.read() {
+                Ok(tagged) => {
+                    if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
+                        let artist = tag.artist().as_deref().map(|s| s.to_owned());
+                        let album = tag.album().as_deref().map(|s| s.to_owned());
+                        return (artist, album);
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        Err(_) => {}
+    }
+    (None, None)
+}
+
+/// Reorganizes a downloaded file to its final location based on metadata.
+/// Moves file from its temporary download location to a metadata-based path.
+/// 
+/// Path structure:
+/// - If both artist and album exist: data_dir/[Artist]/[Album]/filename
+/// - If only artist exists: data_dir/[Artist]/filename
+/// - Otherwise: data_dir/filename
+fn reorganize_downloaded_file(
+    file_path: &Path,
+    data_dir: &Path,
+) -> Result<PathBuf, String> {
+    if !file_path.exists() {
+        return Err(format!("Downloaded file not found: {}", file_path.display()));
+    }
+
+    // Extract metadata
+    let (artist, album) = extract_audio_metadata(file_path);
+
+    // Build target directory
+    let target_dir = build_metadata_based_path(data_dir, artist.as_deref(), album.as_deref());
+
+    // Ensure target directory exists
+    fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Failed to create target directory: {}", e))?;
+
+    // Get filename
+    let filename = file_path
+        .file_name()
+        .ok_or_else(|| "Failed to get filename".to_string())?;
+
+    // Build final path
+    let final_path = target_dir.join(&filename);
+
+    // If file already exists at target, skip
+    if final_path.exists() {
+        eprintln!(
+            "[soulseek] file already exists at target location, removing download duplicate: {} -> {}",
+            file_path.display(),
+            final_path.display()
+        );
+        let _ = fs::remove_file(file_path);
+        return Ok(final_path);
+    }
+
+    // Move file to final location
+    fs::rename(file_path, &final_path)
+        .map_err(|e| format!("Failed to move file to final location: {}", e))?;
+
+    eprintln!(
+        "[soulseek] reorganized downloaded file: {} -> {} (artist={}, album={})",
+        file_path.display(),
+        final_path.display(),
+        artist.as_deref().unwrap_or(""),
+        album.as_deref().unwrap_or("")
+    );
+
+    Ok(final_path)
 }
 
 fn preview_cache_root(library: &LibraryState) -> PathBuf {
@@ -860,6 +967,7 @@ async fn monitor_download(
     download: Download,
     mut handle: DownloadHandle,
     is_preview: bool,
+    data_dir: PathBuf,
 ) {
     use tauri::Emitter;
 
@@ -953,6 +1061,28 @@ async fn monitor_download(
                 );
                 event.state = "completed".to_string();
                 event.bytes_downloaded = Some(download.size);
+
+                // Reorganize file based on metadata (not for previews)
+                if !is_preview {
+                    let file_path = Path::new(&local_path);
+                    match reorganize_downloaded_file(file_path, &data_dir) {
+                        Ok(final_path) => {
+                            let final_path_str = final_path.to_string_lossy().to_string();
+                            event.local_path = Some(final_path_str);
+                            eprintln!(
+                                "[soulseek] file reorganized successfully: {} -> {}",
+                                local_path, final_path.display()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[soulseek] failed to reorganize file: {} - {}",
+                                local_path, e
+                            );
+                        }
+                    }
+                }
+
                 if is_preview {
                     set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Completed);
                 }
