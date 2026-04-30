@@ -244,6 +244,11 @@ impl ServerActor {
                             ..
                         } = &self.tcp_keepalive
                         {
+                            #[cfg(target_os = "windows")]
+                            let ka = socket2::TcpKeepalive::new()
+                                .with_time(*idle)
+                                .with_interval(*interval);
+                            #[cfg(not(target_os = "windows"))]
                             let ka = socket2::TcpKeepalive::new()
                                 .with_time(*idle)
                                 .with_interval(*interval)
