@@ -1,0 +1,3 @@
+[submodule "soulseek-rs-repo"]
+	path = soulseek-rs-repo
+	url = https://github.com/michel/soulseek-rs.git

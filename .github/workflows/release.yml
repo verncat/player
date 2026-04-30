@@ -31,6 +31,7 @@ jobs:
           persist-credentials: false
           submodules: false
           sparse-checkout: |
+            .gitmodules
             .cargo
             package.json
             pnpm-lock.yaml
@@ -107,6 +108,7 @@ jobs:
           persist-credentials: false
           submodules: false
           sparse-checkout: |
+            .gitmodules
             .cargo
             package.json
             pnpm-lock.yaml
