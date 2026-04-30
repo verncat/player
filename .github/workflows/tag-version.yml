@@ -12,38 +12,64 @@ jobs:
   tag-version:
     name: Create Version Tag
     runs-on: ubuntu-latest
+    env:
+      API_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Read version from Cargo.toml
+      - name: Read version from Cargo.toml via GitHub API
         id: version
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          API_TOKEN: ${{ env.API_TOKEN }}
         shell: bash
         run: |
           python - <<'PY'
+          import base64
+          import json
           import os
-          import subprocess
           import tomllib
-          from pathlib import Path
+          import urllib.error
+          import urllib.parse
+          import urllib.request
 
-          cargo_toml = Path('src-tauri/Cargo.toml')
-          current = tomllib.loads(cargo_toml.read_text(encoding='utf-8'))['package']['version']
+          api_url = os.environ['GITHUB_API_URL']
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['API_TOKEN']
+
+          def load_cargo_toml(ref):
+              url = f"{api_url}/repos/{repository}/contents/src-tauri/Cargo.toml?ref={urllib.parse.quote(ref, safe='')}"
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request) as response:
+                      payload = json.load(response)
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      return None
+                  raise
+              return base64.b64decode(payload['content']).decode('utf-8')
+
+          current_text = load_cargo_toml(os.environ['GITHUB_SHA'])
+          if current_text is None:
+              raise SystemExit('Failed to read current src-tauri/Cargo.toml from GitHub API')
+          current = tomllib.loads(current_text)['package']['version']
 
           previous = ''
           before = os.environ.get('GITHUB_EVENT_BEFORE', '')
           if before and before != '0000000000000000000000000000000000000000':
               try:
-                  previous_text = subprocess.check_output(
-                      ['git', 'show', f'{before}:src-tauri/Cargo.toml'],
-                      text=True,
-                      stderr=subprocess.DEVNULL,
-                  )
-                  previous = tomllib.loads(previous_text)['package']['version']
+                  previous_text = load_cargo_toml(before)
+                  if previous_text is not None:
+                      previous = tomllib.loads(previous_text)['package']['version']
               except Exception:
                   previous = ''
 
@@ -57,19 +83,79 @@ jobs:
       - name: Check whether tag already exists
         if: steps.version.outputs.changed == 'true'
         id: tag_exists
+        env:
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          API_TOKEN: ${{ env.API_TOKEN }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" > /dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          python - <<'PY'
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
 
-      - name: Create and push version tag
+          tag = os.environ['TAG_NAME']
+          api_url = os.environ['GITHUB_API_URL']
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['API_TOKEN']
+          url = f"{api_url}/repos/{repository}/git/ref/tags/{urllib.parse.quote(tag, safe='')}"
+          request = urllib.request.Request(
+              url,
+              headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              },
+          )
+          exists = 'false'
+          try:
+              with urllib.request.urlopen(request):
+                  exists = 'true'
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'exists={exists}\n')
+          PY
+
+      - name: Create tag via GitHub API
         if: steps.version.outputs.changed == 'true' && steps.tag_exists.outputs.exists != 'true'
+        env:
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          API_TOKEN: ${{ env.API_TOKEN }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          api_url = os.environ['GITHUB_API_URL']
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['API_TOKEN']
+          payload = json.dumps(
+              {
+                  'ref': f"refs/tags/{os.environ['TAG_NAME']}",
+                  'sha': os.environ['GITHUB_SHA'],
+              }
+          ).encode('utf-8')
+          request = urllib.request.Request(
+              f"{api_url}/repos/{repository}/git/refs",
+              data=payload,
+              method='POST',
+              headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'Content-Type': 'application/json',
+              },
+          )
+          with urllib.request.urlopen(request):
+              pass
+          PY
