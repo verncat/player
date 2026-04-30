@@ -837,56 +837,58 @@ function smartPlaylistSortRules(sp: SmartPlaylist): Array<{ field: SPSortField; 
   });
 }
 
-function compareOptionalText(left: string | null | undefined, right: string | null | undefined) {
+function compareOptionalText(left: string | null | undefined, right: string | null | undefined, descending = false) {
   const leftText = left?.trim() ?? '';
   const rightText = right?.trim() ?? '';
   if (!leftText && !rightText) return 0;
   if (!leftText) return 1;
   if (!rightText) return -1;
-  return smartPlaylistSortCollator.compare(leftText, rightText);
+  const comparison = smartPlaylistSortCollator.compare(leftText, rightText);
+  return descending ? -comparison : comparison;
 }
 
-function compareOptionalNumber(left: number | null | undefined, right: number | null | undefined) {
+function compareOptionalNumber(left: number | null | undefined, right: number | null | undefined, descending = false) {
   if (left == null && right == null) return 0;
   if (left == null) return 1;
   if (right == null) return -1;
-  return left - right;
+  const comparison = left - right;
+  return descending ? -comparison : comparison;
 }
 
 function trackSortExtension(track: Track) {
   return track.path.split('.').pop()?.toLowerCase() || '';
 }
 
-function compareTracksForSortField(left: Track, right: Track, field: SPSortField) {
+function compareTracksForSortField(left: Track, right: Track, field: SPSortField, descending = false) {
   switch (field) {
     case 'title':
-      return compareOptionalText(left.title || left.path, right.title || right.path);
+      return compareOptionalText(left.title || left.path, right.title || right.path, descending);
     case 'artist':
-      return compareOptionalText(left.artist, right.artist);
+      return compareOptionalText(left.artist, right.artist, descending);
     case 'album':
-      return compareOptionalText(left.album, right.album);
+      return compareOptionalText(left.album, right.album, descending);
     case 'genre':
-      return compareOptionalText(left.genre, right.genre);
+      return compareOptionalText(left.genre, right.genre, descending);
     case 'tags':
-      return compareOptionalText(trackTagsText(left), trackTagsText(right));
+      return compareOptionalText(trackTagsText(left), trackTagsText(right), descending);
     case 'rarity':
-      return compareOptionalText(left.rarity, right.rarity);
+      return compareOptionalText(left.rarity, right.rarity, descending);
     case 'path':
-      return compareOptionalText(left.path, right.path);
+      return compareOptionalText(left.path, right.path, descending);
     case 'extension':
-      return compareOptionalText(trackSortExtension(left), trackSortExtension(right));
+      return compareOptionalText(trackSortExtension(left), trackSortExtension(right), descending);
     case 'track_number':
-      return compareOptionalNumber(left.track_number, right.track_number);
+      return compareOptionalNumber(left.track_number, right.track_number, descending);
     case 'duration_secs':
-      return compareOptionalNumber(left.duration_secs, right.duration_secs);
+      return compareOptionalNumber(left.duration_secs, right.duration_secs, descending);
     case 'year':
-      return compareOptionalNumber(left.year, right.year);
+      return compareOptionalNumber(left.year, right.year, descending);
     case 'play_count':
-      return compareOptionalNumber(left.play_count, right.play_count);
+      return compareOptionalNumber(left.play_count, right.play_count, descending);
     case 'is_liked':
-      return compareOptionalNumber(left.is_liked ? 1 : 0, right.is_liked ? 1 : 0);
+      return compareOptionalNumber(left.is_liked ? 1 : 0, right.is_liked ? 1 : 0, descending);
     case 'date_added':
-      return compareOptionalNumber(left.date_added, right.date_added);
+      return compareOptionalNumber(left.date_added, right.date_added, descending);
   }
 }
 
@@ -1005,9 +1007,9 @@ function smartPlaylistTracks(sp: SmartPlaylist): Track[] {
 
   return filteredTracks.sort((left, right) => {
     for (const rule of sortRules) {
-      const comparison = compareTracksForSortField(left, right, rule.field);
+      const comparison = compareTracksForSortField(left, right, rule.field, rule.op === 'sort_desc');
       if (comparison !== 0) {
-        return rule.op === 'sort_desc' ? -comparison : comparison;
+        return comparison;
       }
     }
 

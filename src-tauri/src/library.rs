@@ -646,15 +646,20 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
     let sidecar_cover = find_sidecar_cover_candidate(data_dir, abs);
 
     let modified_secs = path_modified_secs(abs);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
 
     // Skip unchanged files that already have a hash.
-    let cached: Option<(i64, Option<String>, bool, Option<String>, i64)> = conn
+    let cached: Option<(i64, Option<String>, bool, Option<String>, i64, Option<i64>)> = conn
         .query_row(
             "SELECT modified_secs,
                     file_hash,
                     manually_edited,
                     cover_source_path,
-                    COALESCE(cover_source_mtime, 0)
+                    COALESCE(cover_source_mtime, 0),
+                    date_added
                FROM tracks
               WHERE path = ?1",
             params![rel],
@@ -665,12 +670,23 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
                     row.get::<_, i64>(2).unwrap_or(0) != 0,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         )
         .ok();
+
+    let date_added_secs = match cached
+        .as_ref()
+        .and_then(|(_, _, _, _, _, date_added)| *date_added)
+    {
+        Some(existing) => Some(existing),
+        None if cached.is_some() && modified_secs > 0 => Some(modified_secs),
+        None => Some(now_secs),
+    };
+
     if modified_secs > 0 {
-        if let Some((ms, Some(_), _, cached_cover_source_path, cached_cover_source_mtime)) = &cached {
+        if let Some((ms, Some(_), _, cached_cover_source_path, cached_cover_source_mtime, Some(_))) = &cached {
             if *ms == modified_secs
                 && sidecar_cover_state_matches(
                     cached_cover_source_path.as_deref(),
@@ -684,15 +700,16 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
     }
 
     // If manually edited, only update file hash, rarity, duration, cover — preserve metadata.
-    if let Some((_, _, true, _, _)) = &cached {
+    if let Some((_, _, true, _, _, _)) = &cached {
         let meta = read_audio_meta(abs, sidecar_cover.as_ref());
         let file_hash = hash_file(abs);
         let rarity = file_hash.as_deref().map(rarity_from_hash);
         conn.execute(
             "UPDATE tracks SET modified_secs = ?1, file_hash = ?2, rarity = ?3,
              duration_secs = COALESCE(?4, duration_secs), cover_data = ?5, cover_mime = ?6,
-             cover_source_path = ?7, cover_source_mtime = ?8
-             WHERE path = ?9",
+             cover_source_path = ?7, cover_source_mtime = ?8,
+             date_added = COALESCE(date_added, ?9)
+             WHERE path = ?10",
             params![
                 modified_secs,
                 file_hash,
@@ -702,6 +719,7 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
                 meta.cover_mime,
                 meta.cover_source_path,
                 meta.cover_source_mtime,
+                date_added_secs,
                 rel,
             ],
         )?;
@@ -729,11 +747,6 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
     let file_hash = hash_file(abs);
     let rarity = file_hash.as_deref().map(rarity_from_hash);
 
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
     conn.execute(
         "INSERT INTO tracks
              (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, cover_source_path, cover_source_mtime, file_hash, rarity, year, genre, date_added)
@@ -752,7 +765,8 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
              file_hash     = excluded.file_hash,
              rarity        = excluded.rarity,
              year          = excluded.year,
-             genre         = excluded.genre",
+             genre         = excluded.genre,
+             date_added    = COALESCE(tracks.date_added, excluded.date_added)",
         params![
             rel,
             meta.title,
@@ -769,7 +783,7 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
             rarity,
             meta.year,
             meta.genre,
-            now_secs,
+            date_added_secs,
         ],
     )?;
 
