@@ -12,6 +12,22 @@ use crate::types::DownloadStatus;
 
 const DEFAULT_RECV_TIMEOUT: Duration = Duration::from_secs(120);
 
+#[derive(Clone)]
+pub struct DownloadCanceller {
+    cancel: Arc<AtomicBool>,
+    op_tx: Option<UnboundedSender<ClientOperation>>,
+    token: DownloadToken,
+}
+
+impl DownloadCanceller {
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        if let Some(ref tx) = self.op_tx {
+            let _ = tx.send(ClientOperation::CancelDownload(self.token));
+        }
+    }
+}
+
 /// Handle returned by [`Client::download`] for receiving progress and cancelling a download.
 ///
 /// Dropping this handle automatically cancels the download.
@@ -53,6 +69,14 @@ impl DownloadHandle {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
+    pub fn cancel_handle(&self) -> DownloadCanceller {
+        DownloadCanceller {
+            cancel: Arc::clone(&self.cancel),
+            op_tx: self.op_tx.clone(),
+            token: self.token,
+        }
+    }
+
     /// Receive the next status update, or `None` if the channel is closed.
     ///
     /// Times out after `recv_timeout` (default 10 minutes) and returns
@@ -78,9 +102,6 @@ impl DownloadHandle {
 
 impl Drop for DownloadHandle {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-        if let Some(ref tx) = self.op_tx {
-            let _ = tx.send(ClientOperation::CancelDownload(self.token));
-        }
+        self.cancel_handle().cancel();
     }
 }

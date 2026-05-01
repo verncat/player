@@ -486,6 +486,169 @@ fn get_track_by_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<T
     }
 }
 
+struct TrackReplacementRow {
+    track: Track,
+    cover_data: Option<Vec<u8>>,
+    cover_mime: Option<String>,
+}
+
+fn get_track_replacement_row_by_id(
+    conn: &Connection,
+    id: i64,
+) -> rusqlite::Result<Option<TrackReplacementRow>> {
+    match conn.query_row(
+        "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate, cover_data, cover_mime
+           FROM tracks
+          WHERE id = ?1
+          LIMIT 1",
+        params![id],
+        |row| {
+            Ok(TrackReplacementRow {
+                track: Track {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    title: row.get(2)?,
+                    artist: row.get(3)?,
+                    album: row.get(4)?,
+                    track_number: row.get(5)?,
+                    duration_secs: row.get(6)?,
+                    file_hash: row.get(7)?,
+                    rarity: row.get(8)?,
+                    manually_edited: row.get::<_, i64>(9).unwrap_or(0) != 0,
+                    is_liked: row.get::<_, i64>(10).unwrap_or(0) != 0,
+                    play_count: row.get::<_, i64>(11).unwrap_or(0),
+                    year: row.get(12).unwrap_or(None),
+                    genre: row.get(13).unwrap_or(None),
+                    date_added: row.get(14).unwrap_or(None),
+                    tags: row.get(15).unwrap_or(None),
+                    is_duplicate: row.get::<_, i64>(16).unwrap_or(0) != 0,
+                },
+                cover_data: row.get(17).unwrap_or(None),
+                cover_mime: row.get(18).unwrap_or(None),
+            })
+        },
+    ) {
+        Ok(track) => Ok(Some(track)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn option_text_present(value: &Option<String>) -> bool {
+    value.as_deref().map(|text| !text.trim().is_empty()).unwrap_or(false)
+}
+
+fn merge_optional_text(existing: Option<String>, replacement: Option<String>) -> Option<String> {
+    if option_text_present(&existing) {
+        existing
+    } else if option_text_present(&replacement) {
+        replacement
+    } else {
+        None
+    }
+}
+
+fn merge_optional_i64(existing: Option<i64>, replacement: Option<i64>) -> Option<i64> {
+    existing.or(replacement)
+}
+
+fn merge_cover(
+    existing_data: Option<Vec<u8>>,
+    existing_mime: Option<String>,
+    replacement_data: Option<Vec<u8>>,
+    replacement_mime: Option<String>,
+) -> (Option<Vec<u8>>, Option<String>) {
+    if existing_data.as_ref().map(|data| !data.is_empty()).unwrap_or(false) {
+        (existing_data, existing_mime)
+    } else {
+        (replacement_data, replacement_mime)
+    }
+}
+
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    let left_path = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right_path = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    left_path == right_path
+}
+
+fn move_file_with_fallback(source_path: &Path, target_path: &Path) -> Result<(), String> {
+    if same_canonical_path(source_path, target_path) {
+        return Ok(());
+    }
+
+    match std::fs::rename(source_path, target_path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            std::fs::copy(source_path, target_path).map_err(|error| {
+                format!(
+                    "Failed to copy replacement file {} -> {}: {}",
+                    source_path.display(),
+                    target_path.display(),
+                    error
+                )
+            })?;
+            std::fs::remove_file(source_path).map_err(|error| {
+                format!(
+                    "Failed to remove original replacement file {}: {}",
+                    source_path.display(),
+                    error
+                )
+            })?;
+            Ok(())
+        }
+    }
+}
+
+fn replacement_target_path(current_abs: &Path, source_abs: &Path) -> Result<PathBuf, String> {
+    let current_extension = current_abs
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    let source_extension = source_abs
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+
+    if source_extension.is_none() || source_extension == current_extension {
+        return Ok(current_abs.to_path_buf());
+    }
+
+    let parent = current_abs
+        .parent()
+        .ok_or_else(|| format!("Track path has no parent directory: {}", current_abs.display()))?;
+    let stem = current_abs
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Track path has no file stem: {}", current_abs.display()))?;
+
+    Ok(parent.join(format!("{}.{}", stem, source_extension.unwrap())))
+}
+
+fn read_replacement_meta(data_dir: &Path, source_abs: &Path) -> Meta {
+    let sidecar_cover = find_sidecar_cover_candidate(data_dir, source_abs);
+    let mut meta = read_audio_meta(source_abs, sidecar_cover.as_ref());
+
+    if meta.title.is_none() && meta.artist.is_none() {
+        if source_abs.starts_with(data_dir) {
+            let inferred = infer_from_path(&rel_path(data_dir, source_abs));
+            meta.title = inferred.title;
+            meta.artist = inferred.artist;
+            meta.album = inferred.album;
+            meta.track_number = inferred.track_number;
+            meta.year = inferred.year;
+            meta.genre = inferred.genre;
+        } else {
+            meta.title = source_abs
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string());
+        }
+    }
+
+    meta
+}
+
 // ── Indexing ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize)]
@@ -1364,6 +1527,180 @@ pub fn update_track(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn replace_track_with_file(
+    id: i64,
+    local_path: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Track, String> {
+    use tauri::Emitter;
+
+    let source_abs = PathBuf::from(local_path);
+    if !source_abs.exists() || !source_abs.is_file() {
+        return Err(format!(
+            "Replacement file not found: {}",
+            source_abs.display()
+        ));
+    }
+
+    let conn = state.conn.lock().unwrap();
+    let existing = get_track_replacement_row_by_id(&conn, id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Track not found: {}", id))?;
+
+    let current_abs = state.data_dir.join(&existing.track.path);
+    let target_abs = replacement_target_path(&current_abs, &source_abs)?;
+    let target_parent = target_abs.parent().ok_or_else(|| {
+        format!(
+            "Replacement target has no parent directory: {}",
+            target_abs.display()
+        )
+    })?;
+    std::fs::create_dir_all(target_parent).map_err(|e| {
+        format!(
+            "Failed to create replacement target directory {}: {}",
+            target_parent.display(),
+            e
+        )
+    })?;
+
+    let target_rel = rel_path(&state.data_dir, &target_abs);
+    let source_rel = if source_abs.starts_with(&state.data_dir) {
+        Some(rel_path(&state.data_dir, &source_abs))
+    } else {
+        None
+    };
+
+    if target_rel != existing.track.path {
+        if let Some(conflict) = get_track_by_path(&conn, &target_rel).map_err(|e| e.to_string())? {
+            let replacing_from_conflicting_path = source_rel.as_deref() == Some(target_rel.as_str());
+            if conflict.id != id && replacing_from_conflicting_path {
+                conn.execute(
+                    "DELETE FROM tracks WHERE path = ?1 AND id != ?2",
+                    params![target_rel, id],
+                )
+                .map_err(|e| e.to_string())?;
+            } else if conflict.id != id {
+                return Err(format!(
+                    "Replacement target path is already indexed by another track: {}",
+                    target_rel
+                ));
+            }
+        }
+    }
+
+    let replacement_meta = read_replacement_meta(&state.data_dir, &source_abs);
+    let source_is_target = same_canonical_path(&source_abs, &target_abs);
+
+    if !source_is_target && target_abs.exists() {
+        std::fs::remove_file(&target_abs).map_err(|error| {
+            format!(
+                "Failed to remove previous target file {}: {}",
+                target_abs.display(),
+                error
+            )
+        })?;
+    }
+
+    if !source_is_target {
+        move_file_with_fallback(&source_abs, &target_abs)?;
+    }
+
+    if current_abs != target_abs && current_abs.exists() {
+        std::fs::remove_file(&current_abs).map_err(|error| {
+            format!(
+                "Failed to remove replaced library file {}: {}",
+                current_abs.display(),
+                error
+            )
+        })?;
+    }
+
+    let file_hash = hash_file(&target_abs);
+    let rarity = file_hash.as_deref().map(rarity_from_hash);
+    let modified_secs = path_modified_secs(&target_abs);
+    let merged_title = merge_optional_text(existing.track.title, replacement_meta.title);
+    let merged_artist = merge_optional_text(existing.track.artist, replacement_meta.artist);
+    let merged_album = merge_optional_text(existing.track.album, replacement_meta.album);
+    let merged_track_number = merge_optional_i64(existing.track.track_number, replacement_meta.track_number);
+    let merged_year = merge_optional_i64(existing.track.year, replacement_meta.year);
+    let merged_genre = merge_optional_text(existing.track.genre, replacement_meta.genre);
+    let merged_tags = existing.track.tags;
+    let (merged_cover_data, merged_cover_mime) = merge_cover(
+        existing.cover_data,
+        existing.cover_mime,
+        replacement_meta.cover_data,
+        replacement_meta.cover_mime,
+    );
+
+    conn.execute(
+        "UPDATE tracks
+            SET path = ?1,
+                title = ?2,
+                artist = ?3,
+                album = ?4,
+                track_number = ?5,
+                duration_secs = ?6,
+                modified_secs = ?7,
+                cover_data = ?8,
+                cover_mime = ?9,
+                cover_source_path = NULL,
+                cover_source_mtime = 0,
+                file_hash = ?10,
+                rarity = ?11,
+                year = ?12,
+                genre = ?13,
+                date_added = ?14,
+                tags = ?15,
+                manually_edited = ?16,
+                is_liked = ?17,
+                play_count = ?18,
+                is_duplicate = ?19
+          WHERE id = ?20",
+        params![
+            target_rel,
+            merged_title,
+            merged_artist,
+            merged_album,
+            merged_track_number,
+            replacement_meta.duration_secs,
+            modified_secs,
+            merged_cover_data,
+            merged_cover_mime,
+            file_hash,
+            rarity,
+            merged_year,
+            merged_genre,
+            existing.track.date_added,
+            merged_tags,
+            if existing.track.manually_edited { 1 } else { 0 },
+            if existing.track.is_liked { 1 } else { 0 },
+            existing.track.play_count,
+            if existing.track.is_duplicate { 1 } else { 0 },
+            id,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    if let Some(source_rel) = source_rel {
+        if source_rel != target_rel {
+            conn.execute(
+                "DELETE FROM tracks WHERE path = ?1 AND id != ?2",
+                params![source_rel, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let updated_track = get_track_by_path(&conn, &target_rel)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Failed to load replaced track: {}", target_rel))?;
+
+    let _ = app.emit("library-changed", ());
+    Ok(updated_track)
 }
 
 #[tauri::command]

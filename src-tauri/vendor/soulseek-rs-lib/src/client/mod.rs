@@ -31,7 +31,7 @@ mod settings;
 use connected_worker::ConnectedWorker;
 use download_manager::DownloadManager;
 pub use context::ClientContext;
-pub use download_handle::DownloadHandle;
+pub use download_handle::{DownloadCanceller, DownloadHandle};
 pub use inner::{ActiveConnection, ClientInner, ClientState};
 pub use operation::ClientOperation;
 pub use settings::*;

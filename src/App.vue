@@ -650,6 +650,92 @@ function removeTrackFromPlaylistFromTrackContext() {
   removeTrackFromPlaylist(menu.playlistId, menu.track.id);
 }
 
+function buildTrackReplaceQuery(track: Track) {
+  const title = track.title?.trim();
+  const artist = track.artist?.trim();
+  if (artist && title) return `${artist} ${title}`;
+  if (title) return title;
+
+  const basename = track.path.replace(/\\/g, '/').split('/').pop() || track.path;
+  return basename.replace(/\.[^/.]+$/, '');
+}
+
+function clearPendingTrackReplacement(key: string) {
+  if (!soulseekPendingTrackReplacement.value[key]) {
+    if (trackReplaceApplyingKey.value === key) {
+      trackReplaceApplyingKey.value = '';
+    }
+    return;
+  }
+
+  const next = { ...soulseekPendingTrackReplacement.value };
+  delete next[key];
+  soulseekPendingTrackReplacement.value = next;
+  if (trackReplaceApplyingKey.value === key) {
+    trackReplaceApplyingKey.value = '';
+  }
+}
+
+function clearPendingTrackReplacementForTrack(trackId: number) {
+  let changed = false;
+  const next = { ...soulseekPendingTrackReplacement.value };
+
+  for (const [key, pendingTrackId] of Object.entries(next)) {
+    if (pendingTrackId !== trackId) continue;
+    delete next[key];
+    if (trackReplaceApplyingKey.value === key) {
+      trackReplaceApplyingKey.value = '';
+    }
+    changed = true;
+  }
+
+  if (changed) {
+    soulseekPendingTrackReplacement.value = next;
+  }
+}
+
+function closeTrackReplaceDialog() {
+  const shouldReturn = activeNav.value === 'track-replace';
+  const returnNav = trackReplaceReturnNav.value || 'home';
+  const trackId = trackReplaceDialog.value?.track.id;
+  if (trackId != null) {
+    clearPendingTrackReplacementForTrack(trackId);
+  }
+  trackReplaceDialog.value = null;
+  trackReplaceActionError.value = '';
+  resetTrackReplaceSearchState();
+  if (shouldReturn) {
+    activeNav.value = returnNav;
+  }
+}
+
+async function openTrackReplaceDialog(track: Track) {
+  trackReplaceReturnNav.value = activeNav.value === 'track-replace'
+    ? (trackReplaceReturnNav.value || 'home')
+    : activeNav.value;
+  trackReplaceDialog.value = { track, query: buildTrackReplaceQuery(track) };
+  trackReplaceActionError.value = '';
+  resetTrackReplaceSearchState();
+  activeNav.value = 'track-replace';
+  showMobileNav.value = false;
+  void nextTick(() => {
+    if (contentRef.value) {
+      contentRef.value.scrollTop = 0;
+    }
+  });
+
+  if (trackReplaceDialog.value.query.trim() && soulseekReady.value) {
+    await runTrackReplaceSearch();
+  }
+}
+
+function openTrackReplaceDialogFromTrackContext() {
+  const track = trackContextMenu.value?.track;
+  trackContextMenu.value = null;
+  if (!track) return;
+  void openTrackReplaceDialog(track);
+}
+
 // ── Smart Playlists ──────────────────────────────────────────────────────────
 type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'tags' | 'rarity' | 'path' | 'extension' | 'track_number' | 'duration_secs' | 'year' | 'play_count' | 'is_liked' | 'date_added' | 'sort';
 type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false' | 'sort_asc' | 'sort_desc';
@@ -1280,6 +1366,18 @@ const soulseekCoverLoading = new Set<string>();
 const soulseekPendingPlayback = new Set<string>();
 const soulseekPendingPreviewPlayback = new Set<string>();
 const soulseekPendingPreviewPromotion = new Set<string>();
+const trackReplaceDialog = ref<{ track: Track; query: string } | null>(null);
+const trackReplaceReturnNav = ref('home');
+const trackReplaceResults = ref<SoulseekSearchResult[]>([]);
+const trackReplaceSubmittedQuery = ref('');
+const trackReplaceVisibleCount = ref(0);
+const trackReplaceLoading = ref(false);
+const trackReplaceSearching = ref(false);
+const trackReplaceError = ref('');
+const trackReplaceActionError = ref('');
+const trackReplaceApplyingKey = ref('');
+const soulseekPendingTrackReplacement = ref<Record<string, number>>({});
+let trackReplaceSearchSeq = 0;
 
 const tracksByHash = computed<Record<string, Track>>(() => {
   const index: Record<string, Track> = {};
@@ -1462,6 +1560,94 @@ function soulseekPreviewActionLabel(result: SoulseekSearchResult) {
     default:
       return 'Preview';
   }
+}
+
+function soulseekPreviewBuffering(result: SoulseekSearchResult) {
+  const key = soulseekResultKey(result.username, result.filename);
+  const state = soulseekEffectivePreviewState(result);
+  if (!soulseekPendingPreviewPlayback.has(key) || !state) {
+    return false;
+  }
+
+  return state.state !== 'completed' && !soulseekTransferFailed(state.state);
+}
+
+function soulseekTransferError(state: SoulseekDownloadEvent | null | undefined) {
+  if (!state?.error || state.state === 'cancelled') {
+    return null;
+  }
+
+  return state.error;
+}
+
+async function cancelSoulseekPreviewBuffering(result: SoulseekSearchResult) {
+  const key = soulseekResultKey(result.username, result.filename);
+  soulseekPendingPreviewPlayback.delete(key);
+
+  const previewState = soulseekPreviewState(result);
+  if (!previewState || previewState.state === 'completed' || soulseekTransferFailed(previewState.state)) {
+    return;
+  }
+
+  try {
+    const cancelled = await invoke<boolean>('soulseek_cancel_preview', {
+      request: {
+        username: result.username,
+        filename: result.filename,
+      },
+    });
+
+    if (!cancelled) {
+      return;
+    }
+
+    soulseekPreviews.value = {
+      ...soulseekPreviews.value,
+      [key]: {
+        ...previewState,
+        state: 'cancelled',
+        speedBytesPerSec: null,
+        queuePosition: null,
+        error: null,
+      },
+    };
+  } catch (error) {
+    console.error('Failed to cancel Soulseek preview buffering:', error);
+  }
+}
+
+async function stopActiveSoulseekPreview(result: SoulseekSearchResult) {
+  const previewTrackId = soulseekTrackId(result);
+  const currentTrack = nowPlaying.value;
+  if (!currentTrack || currentTrack.id !== previewTrackId || !currentTrack.local_preview_path) {
+    return false;
+  }
+
+  const previewState = soulseekPreviewState(result);
+  if (previewState && previewState.state !== 'completed' && !soulseekTransferFailed(previewState.state)) {
+    await cancelSoulseekPreviewBuffering(result);
+  } else {
+    soulseekPendingPreviewPlayback.delete(soulseekResultKey(result.username, result.filename));
+  }
+
+  try {
+    await stopCurrentOutput();
+  } catch (error) {
+    console.error('Failed to stop Soulseek preview playback:', error);
+  }
+
+  nowPlaying.value = null;
+  queueSoulseekTracks.value = [];
+  queue.value = [];
+  queueSource.value = 'library';
+  queueSourceIndex.value = 0;
+  duration.value = 0;
+  currentTime.value = 0;
+  isPlaying.value = false;
+  isLiked.value = false;
+  stopTicker();
+  syncAndroid();
+  return true;
 }
 
 function updateSoulseekPreviewTrackState(username: string, filename: string, previewGrowing: boolean) {
@@ -1754,8 +1940,9 @@ async function promoteSoulseekPreviewToLibrary(
     },
   };
 
+  let promotedPath: string | null = null;
   try {
-    const promotedPath = await invoke<string>('soulseek_promote_preview', {
+    promotedPath = await invoke<string>('soulseek_promote_preview', {
       request: {
         localPath,
         coverFilename: result.coverFilename,
@@ -1815,25 +2002,60 @@ async function promoteSoulseekPreviewToLibrary(
   } finally {
     soulseekPendingPreviewPromotion.delete(key);
   }
+
+  const pendingTrackId = soulseekPendingTrackReplacement.value[key];
+  if (pendingTrackId != null && promotedPath) {
+    await performTrackReplacement(pendingTrackId, result, promotedPath);
+  }
 }
 
-async function runSoulseekSearch(query: string, requestId: number) {
+type SoulseekSearchTarget = 'page' | 'replace';
+
+function isCurrentSoulseekSearchRequest(target: SoulseekSearchTarget, requestId: number) {
+  return target === 'page'
+    ? requestId === soulseekSearchSeq
+    : requestId === trackReplaceSearchSeq;
+}
+
+async function runSoulseekSearch(query: string, requestId: number, target: SoulseekSearchTarget) {
   try {
     const results = await invoke<SoulseekSearchResult[]>('soulseek_search', { query });
-    if (requestId !== soulseekSearchSeq) return;
-    soulseekResults.value = results;
-    soulseekVisibleCount.value = Math.min(SOULSEEK_RESULTS_PAGE_SIZE, results.length);
-    soulseekError.value = '';
-    void fetchSoulseekCovers(results.slice(0, soulseekVisibleCount.value), requestId);
+    if (!isCurrentSoulseekSearchRequest(target, requestId)) return;
+
+    if (target === 'page') {
+      soulseekResults.value = results;
+      soulseekVisibleCount.value = Math.min(SOULSEEK_RESULTS_PAGE_SIZE, results.length);
+      soulseekError.value = '';
+      void fetchSoulseekCovers(results.slice(0, soulseekVisibleCount.value), requestId, target);
+    } else {
+      trackReplaceResults.value = results;
+      trackReplaceVisibleCount.value = Math.min(SOULSEEK_RESULTS_PAGE_SIZE, results.length);
+      trackReplaceError.value = '';
+      void fetchSoulseekCovers(results.slice(0, trackReplaceVisibleCount.value), requestId, target);
+    }
   } catch (e: any) {
-    if (requestId !== soulseekSearchSeq) return;
-    soulseekResults.value = [];
-    soulseekVisibleCount.value = 0;
-    soulseekError.value = String(e ?? 'Soulseek search failed');
+    if (!isCurrentSoulseekSearchRequest(target, requestId)) return;
+
+    if (target === 'page') {
+      soulseekResults.value = [];
+      soulseekVisibleCount.value = 0;
+      soulseekError.value = String(e ?? 'Soulseek search failed');
+    } else {
+      trackReplaceResults.value = [];
+      trackReplaceVisibleCount.value = 0;
+      trackReplaceError.value = String(e ?? 'Soulseek search failed');
+    }
   } finally {
-    if (requestId === soulseekSearchSeq) {
+    if (!isCurrentSoulseekSearchRequest(target, requestId)) {
+      return;
+    }
+
+    if (target === 'page') {
       soulseekLoading.value = false;
       soulseekSearching.value = false;
+    } else {
+      trackReplaceLoading.value = false;
+      trackReplaceSearching.value = false;
     }
   }
 }
@@ -1850,7 +2072,23 @@ function resetSoulseekSearchState(clearSubmittedQuery = true) {
   }
 }
 
-async function fetchSoulseekCovers(results: SoulseekSearchResult[], requestId: number) {
+function resetTrackReplaceSearchState(clearSubmittedQuery = true) {
+  trackReplaceSearchSeq += 1;
+  trackReplaceLoading.value = false;
+  trackReplaceSearching.value = false;
+  trackReplaceError.value = '';
+  trackReplaceResults.value = [];
+  trackReplaceVisibleCount.value = 0;
+  if (clearSubmittedQuery) {
+    trackReplaceSubmittedQuery.value = '';
+  }
+}
+
+async function fetchSoulseekCovers(
+  results: SoulseekSearchResult[],
+  requestId: number,
+  target: SoulseekSearchTarget = 'page',
+) {
   const uniqueResults = new Map<string, SoulseekSearchResult>();
 
   for (const result of results) {
@@ -1861,7 +2099,7 @@ async function fetchSoulseekCovers(results: SoulseekSearchResult[], requestId: n
   }
 
   for (const [key, result] of uniqueResults) {
-    if (requestId !== soulseekSearchSeq) return;
+    if (!isCurrentSoulseekSearchRequest(target, requestId)) return;
 
     soulseekCoverLoading.add(key);
     try {
@@ -1896,31 +2134,60 @@ function loadMoreSoulseekResults() {
   soulseekVisibleCount.value = nextCount;
 
   if (nextCount > previousCount) {
-    void fetchSoulseekCovers(soulseekResults.value.slice(previousCount, nextCount), soulseekSearchSeq);
+    void fetchSoulseekCovers(soulseekResults.value.slice(previousCount, nextCount), soulseekSearchSeq, 'page');
     void nextTick(() => {
       maybeLoadMoreSoulseekResults();
     });
   }
 }
 
+function loadMoreTrackReplaceResults() {
+  if (trackReplaceVisibleCount.value >= trackReplaceResults.value.length) return;
+
+  const previousCount = trackReplaceVisibleCount.value;
+  const nextCount = Math.min(trackReplaceResults.value.length, previousCount + SOULSEEK_RESULTS_PAGE_SIZE);
+  trackReplaceVisibleCount.value = nextCount;
+
+  if (nextCount > previousCount) {
+    void fetchSoulseekCovers(trackReplaceResults.value.slice(previousCount, nextCount), trackReplaceSearchSeq, 'replace');
+  }
+}
+
 function maybeLoadMoreSoulseekResults() {
-  if (
-    activeNav.value !== 'search'
-    || soulseekLoading.value
-    || soulseekSearching.value
-    || soulseekQueryDirty.value
-    || soulseekVisibleCount.value >= soulseekResults.value.length
-  ) {
+  if (activeNav.value !== 'search' && activeNav.value !== 'track-replace') {
     return;
   }
 
   const content = contentRef.value;
   if (!content) return;
 
+  if (activeNav.value === 'search') {
+    if (
+      soulseekLoading.value
+      || soulseekSearching.value
+      || soulseekQueryDirty.value
+      || soulseekVisibleCount.value >= soulseekResults.value.length
+    ) {
+      return;
+    }
+  } else if (
+    !trackReplaceDialog.value
+    || trackReplaceLoading.value
+    || trackReplaceSearching.value
+    || trackReplaceQueryDirty.value
+    || trackReplaceVisibleCount.value >= trackReplaceResults.value.length
+  ) {
+    return;
+  }
+
   const distanceToBottom = content.scrollHeight - (content.scrollTop + content.clientHeight);
   if (distanceToBottom > SOULSEEK_SCROLL_LOAD_THRESHOLD) return;
 
-  loadMoreSoulseekResults();
+  if (activeNav.value === 'search') {
+    loadMoreSoulseekResults();
+  } else {
+    loadMoreTrackReplaceResults();
+  }
 }
 
 async function runExplicitSoulseekSearch() {
@@ -1940,7 +2207,26 @@ async function runExplicitSoulseekSearch() {
   soulseekError.value = '';
   soulseekResults.value = [];
   soulseekVisibleCount.value = 0;
-  await runSoulseekSearch(trimmed, requestId);
+  await runSoulseekSearch(trimmed, requestId, 'page');
+}
+
+async function runTrackReplaceSearch() {
+  const query = trackReplaceDialog.value?.query ?? '';
+  const trimmed = query.trim();
+
+  if (!trackReplaceDialog.value || !trimmed || !soulseekReady.value || trackReplaceLoading.value) {
+    return;
+  }
+
+  trackReplaceSearchSeq += 1;
+  const requestId = trackReplaceSearchSeq;
+  trackReplaceSubmittedQuery.value = trimmed;
+  trackReplaceSearching.value = true;
+  trackReplaceLoading.value = true;
+  trackReplaceError.value = '';
+  trackReplaceResults.value = [];
+  trackReplaceVisibleCount.value = 0;
+  await runSoulseekSearch(trimmed, requestId, 'replace');
 }
 
 function handleSearchInput() {
@@ -1955,6 +2241,20 @@ function handleSearchInput() {
   }
 
   resetSoulseekSearchState();
+}
+
+function handleTrackReplaceInput() {
+  const trimmed = trackReplaceDialog.value?.query.trim() ?? '';
+  if (!trimmed) {
+    resetTrackReplaceSearchState();
+    return;
+  }
+
+  if (trimmed === trackReplaceSubmittedQuery.value) {
+    return;
+  }
+
+  resetTrackReplaceSearchState();
 }
 
 watch(
@@ -2131,6 +2431,15 @@ async function startSoulseekPreview(result: SoulseekSearchResult) {
 async function activateSoulseekResult(result: SoulseekSearchResult) {
   if (shouldSuppressTrackRowClick()) return;
 
+  if (await stopActiveSoulseekPreview(result)) {
+    return;
+  }
+
+  if (soulseekPreviewBuffering(result)) {
+    await cancelSoulseekPreviewBuffering(result);
+    return;
+  }
+
   const currentState = soulseekDownloadState(result);
 
   if (currentState?.state === 'completed' && currentState.localPath) {
@@ -2139,6 +2448,158 @@ async function activateSoulseekResult(result: SoulseekSearchResult) {
   }
 
   await startSoulseekPreview(result);
+}
+
+function findSoulseekResultByKey(key: string) {
+  return soulseekResults.value.find((result) => soulseekResultKey(result.username, result.filename) === key)
+    || trackReplaceResults.value.find((result) => soulseekResultKey(result.username, result.filename) === key)
+    || null;
+}
+
+function replaceSourceLocalPath(result: SoulseekSearchResult) {
+  const downloadState = soulseekDownloadState(result);
+  if (downloadState?.state === 'completed' && downloadState.localPath) {
+    return downloadState.localPath;
+  }
+
+  const previewState = soulseekPreviewState(result);
+  if (previewState?.state === 'completed' && previewState.localPath) {
+    return previewState.localPath;
+  }
+
+  return null;
+}
+
+async function refreshTrackCover(trackId: number) {
+  try {
+    const coverUrl = await invoke<string | null>('get_track_cover', { id: trackId });
+    covers.value = {
+      ...covers.value,
+      [trackId]: coverUrl,
+    };
+  } catch (_) {}
+}
+
+async function performTrackReplacement(
+  trackId: number,
+  result: Pick<SoulseekSearchResult, 'username' | 'filename'>,
+  localPath: string,
+) {
+  const key = soulseekResultKey(result.username, result.filename);
+  trackReplaceApplyingKey.value = key;
+  trackReplaceActionError.value = '';
+
+  try {
+    const replacedTrack = await invoke<Track>('replace_track_with_file', { id: trackId, localPath });
+    const dataDir = normalizePath(await ensureLibraryDataDir()).replace(/\/$/, '');
+    const replacementLocalPath = `${dataDir}/${normalizePath(replacedTrack.path)}`;
+    const knownResult = findSoulseekResultByKey(key);
+    const totalBytes = soulseekDownloads.value[key]?.totalBytes ?? soulseekPreviews.value[key]?.totalBytes ?? null;
+
+    soulseekDownloads.value = {
+      ...soulseekDownloads.value,
+      [key]: {
+        transferId: soulseekDownloads.value[key]?.transferId || soulseekPreviews.value[key]?.transferId || '',
+        username: result.username,
+        filename: result.filename,
+        basename: knownResult?.basename || soulseekDownloads.value[key]?.basename || soulseekPreviews.value[key]?.basename || result.filename,
+        state: 'completed',
+        bytesDownloaded: totalBytes,
+        totalBytes,
+        speedBytesPerSec: null,
+        queuePosition: null,
+        localPath: replacementLocalPath,
+        error: null,
+      },
+    };
+
+    if (soulseekPreviews.value[key]) {
+      soulseekPreviews.value = {
+        ...soulseekPreviews.value,
+        [key]: {
+          ...soulseekPreviews.value[key],
+          state: 'completed',
+          localPath: replacementLocalPath,
+          bytesDownloaded: totalBytes,
+          totalBytes,
+          speedBytesPerSec: null,
+          queuePosition: null,
+          error: null,
+        },
+      };
+    }
+
+    await refreshTrackCover(replacedTrack.id);
+
+    const previewTrackId = soulseekTrackId(result);
+    if (nowPlaying.value?.id === previewTrackId && !!nowPlaying.value.local_preview_path) {
+      replaceSoulseekTrackInPlaybackState(previewTrackId, replacedTrack);
+      isLiked.value = replacedTrack.is_liked;
+      duration.value = replacedTrack.duration_secs || duration.value;
+      syncAndroid();
+    } else if (nowPlaying.value?.id === replacedTrack.id) {
+      nowPlaying.value = { ...replacedTrack };
+      isLiked.value = replacedTrack.is_liked;
+      duration.value = replacedTrack.duration_secs || duration.value;
+      syncAndroid();
+    }
+
+    clearPendingTrackReplacement(key);
+    if (trackReplaceDialog.value?.track.id === trackId) {
+      closeTrackReplaceDialog();
+    }
+  } catch (e: any) {
+    clearPendingTrackReplacement(key);
+    trackReplaceActionError.value = String(e ?? 'Failed to replace track');
+    throw e;
+  } finally {
+    if (trackReplaceApplyingKey.value === key) {
+      trackReplaceApplyingKey.value = '';
+    }
+  }
+}
+
+function trackReplaceActionLabel(result: SoulseekSearchResult) {
+  const key = soulseekResultKey(result.username, result.filename);
+  if (trackReplaceApplyingKey.value !== key) {
+    return 'Replace';
+  }
+
+  if (replaceSourceLocalPath(result)) {
+    return 'Replacing…';
+  }
+
+  if (soulseekDownloadState(result)?.state === 'promoting') {
+    return 'Saving…';
+  }
+
+  return 'Preparing…';
+}
+
+async function replaceTrackWithSoulseekResult(track: Track, result: SoulseekSearchResult) {
+  if (trackReplaceApplyingKey.value) return;
+
+  const key = soulseekResultKey(result.username, result.filename);
+  trackReplaceActionError.value = '';
+
+  const localPath = replaceSourceLocalPath(result);
+  if (localPath) {
+    await performTrackReplacement(track.id, result, localPath);
+    return;
+  }
+
+  soulseekPendingTrackReplacement.value = {
+    ...soulseekPendingTrackReplacement.value,
+    [key]: track.id,
+  };
+  trackReplaceApplyingKey.value = key;
+  await downloadSoulseekResult(result);
+
+  const downloadState = soulseekDownloadState(result);
+  if (downloadState?.state === 'failed') {
+    trackReplaceActionError.value = downloadState.error || 'Failed to download replacement track';
+    clearPendingTrackReplacement(key);
+  }
 }
 
 async function toggleSync() {
@@ -2553,7 +3014,7 @@ watch(isPlaying, (playing) => {
 
 const displayProgressPercent = computed(() => {
   const pos = seekPreviewPos.value ?? currentTime.value;
-  return duration.value > 0 ? (pos / duration.value) * 100 : 0;
+  return duration.value > 0 ? Math.max(0, Math.min(100, (pos / duration.value) * 100)) : 0;
 });
 
 /** Return the full ordered list for a given source */
@@ -2915,9 +3376,16 @@ async function refreshPlaybackState() {
     return applyRemotePlaybackStatus(st);
   }
   const st = await invoke<PlaybackStatus>('playback_status');
+  const currentTrack = nowPlaying.value;
+  const metadataDuration = Math.floor(currentTrack?.duration_secs ?? 0);
+  const reportedDuration = st.duration > 0 ? Math.floor(st.duration) : 0;
   isPlaying.value = st.playing;
   currentTime.value = Math.floor(st.position);
-  if (st.duration > 0) duration.value = Math.floor(st.duration);
+  if (currentTrack?.local_preview_path && currentTrack.preview_growing) {
+    duration.value = Math.max(duration.value, metadataDuration, reportedDuration, currentTime.value);
+  } else if (reportedDuration > 0) {
+    duration.value = reportedDuration;
+  }
   return st;
 }
 
@@ -3136,7 +3604,10 @@ function onKeyDown(e: KeyboardEvent) {
     return; // Don't trigger if typing
   }
 
-  if (e.code === 'Space') {
+  if (e.code === 'Escape' && trackReplaceDialog.value) {
+    e.preventDefault();
+    closeTrackReplaceDialog();
+  } else if (e.code === 'Space') {
     e.preventDefault();
     togglePlay();
   } else if (e.code === 'ArrowLeft') {
@@ -3215,6 +3686,12 @@ const soulseekQueryDirty = computed(() => {
 });
 const canRunSoulseekSearch = computed(() => !!soulseekReady.value && !!searchQuery.value.trim() && !soulseekLoading.value);
 const searchSoulseekCountLabel = computed(() => (soulseekSearching.value ? '?' : String(soulseekResults.value.length)));
+const visibleTrackReplaceResults = computed(() => trackReplaceResults.value.slice(0, trackReplaceVisibleCount.value));
+const trackReplaceQueryDirty = computed(() => {
+  const trimmed = trackReplaceDialog.value?.query.trim() ?? '';
+  return !!trimmed && trimmed !== trackReplaceSubmittedQuery.value;
+});
+const canRunTrackReplaceSearch = computed(() => !!soulseekReady.value && !!trackReplaceDialog.value?.query.trim() && !trackReplaceLoading.value);
 
 const groupedByArtist = computed(() => {
   const map = new Map<string, Track[]>();
@@ -3497,6 +3974,7 @@ onMounted(() => {
   listen<SoulseekDownloadEvent>('soulseek-download', (e) => {
     const payload = e.payload;
     const key = soulseekResultKey(payload.username, payload.filename);
+    const matchingResult = findSoulseekResultByKey(key);
     soulseekDownloads.value = {
       ...soulseekDownloads.value,
       [key]: payload,
@@ -3504,7 +3982,6 @@ onMounted(() => {
 
     if (payload.state === 'completed' && payload.localPath && soulseekPendingPlayback.has(key)) {
       soulseekPendingPlayback.delete(key);
-      const matchingResult = soulseekResults.value.find((result) => soulseekResultKey(result.username, result.filename) === key);
       if (matchingResult) {
         void playDownloadedSoulseekResult(matchingResult, payload.localPath).catch((error) => {
           console.error('Failed to start Soulseek playback:', error);
@@ -3520,7 +3997,22 @@ onMounted(() => {
       soulseekPendingPlayback.delete(key);
     }
 
-    const matchingResult = soulseekResults.value.find((result) => soulseekResultKey(result.username, result.filename) === key);
+    const pendingTrackId = soulseekPendingTrackReplacement.value[key];
+    if (pendingTrackId != null) {
+      if (payload.state === 'completed' && payload.localPath) {
+        const resultForReplacement = matchingResult ?? {
+          username: payload.username,
+          filename: payload.filename,
+        };
+        void performTrackReplacement(pendingTrackId, resultForReplacement, payload.localPath).catch((error) => {
+          console.error('Failed to replace track from Soulseek download:', error);
+        });
+      } else if (['failed', 'timed_out', 'cancelled'].includes(payload.state)) {
+        trackReplaceActionError.value = payload.error || 'Failed to download replacement track';
+        clearPendingTrackReplacement(key);
+      }
+    }
+
     if (matchingResult && soulseekPendingPreviewPlayback.has(key)) {
       void maybeStartSoulseekPreviewPlayback(matchingResult).catch((error) => {
         console.error('Failed to start Soulseek preview from download:', error);
@@ -3535,6 +4027,7 @@ onMounted(() => {
   listen<SoulseekDownloadEvent>('soulseek-preview', (e) => {
     const payload = e.payload;
     const key = soulseekResultKey(payload.username, payload.filename);
+    const matchingResult = findSoulseekResultByKey(key);
     soulseekPreviews.value = {
       ...soulseekPreviews.value,
       [key]: payload,
@@ -3544,7 +4037,6 @@ onMounted(() => {
       updateSoulseekPreviewTrackState(payload.username, payload.filename, false);
     }
 
-    const matchingResult = soulseekResults.value.find((result) => soulseekResultKey(result.username, result.filename) === key);
     if (soulseekPendingPreviewPromotion.has(key)) {
       if (payload.state === 'completed' && payload.localPath) {
         const resultForPromotion = matchingResult ?? {
@@ -3555,6 +4047,10 @@ onMounted(() => {
           coverFilename: null,
         };
         void promoteSoulseekPreviewToLibrary(resultForPromotion, payload.localPath).catch((error) => {
+          if (soulseekPendingTrackReplacement.value[key] != null) {
+            trackReplaceActionError.value = String(error ?? 'Failed to save replacement track');
+            clearPendingTrackReplacement(key);
+          }
           console.error('Failed to promote Soulseek preview to library:', error);
         });
       } else if (['failed', 'timed_out', 'cancelled'].includes(payload.state)) {
@@ -3563,6 +4059,10 @@ onMounted(() => {
           ...soulseekDownloads.value,
           [key]: payload,
         };
+        if (soulseekPendingTrackReplacement.value[key] != null) {
+          trackReplaceActionError.value = payload.error || 'Failed to save replacement track';
+          clearPendingTrackReplacement(key);
+        }
       } else {
         soulseekDownloads.value = {
           ...soulseekDownloads.value,
@@ -4315,8 +4815,8 @@ onUnmounted(() => {
                     <span v-else-if="soulseekPreviewState(result)?.state === 'completed'" class="soulseek-progress-copy">
                       Preview ready
                     </span>
-                    <span v-else-if="soulseekPreviewState(result)?.error" class="soulseek-progress-copy soulseek-inline-error">
-                      {{ soulseekPreviewState(result)?.error }}
+                    <span v-else-if="soulseekTransferError(soulseekPreviewState(result))" class="soulseek-progress-copy soulseek-inline-error">
+                      {{ soulseekTransferError(soulseekPreviewState(result)) }}
                     </span>
                     <span v-else-if="soulseekDownloadState(result)?.state === 'progress'" class="soulseek-progress-copy">
                       {{ formatBytes(soulseekDownloadState(result)?.bytesDownloaded) }} / {{ formatBytes(soulseekDownloadState(result)?.totalBytes) }}
@@ -4328,8 +4828,8 @@ onUnmounted(() => {
                     <span v-else-if="soulseekDownloadState(result)?.state === 'completed'" class="soulseek-progress-copy">
                       Saved to local library
                     </span>
-                    <span v-else-if="soulseekDownloadState(result)?.error" class="soulseek-progress-copy soulseek-inline-error">
-                      {{ soulseekDownloadState(result)?.error }}
+                    <span v-else-if="soulseekTransferError(soulseekDownloadState(result))" class="soulseek-progress-copy soulseek-inline-error">
+                      {{ soulseekTransferError(soulseekDownloadState(result)) }}
                     </span>
                   </div>
                   <div class="soulseek-side">
@@ -4344,6 +4844,155 @@ onUnmounted(() => {
                 </div>
               </div>
             </template>
+          </section>
+        </template>
+
+        <template v-else-if="activeNav === 'track-replace'">
+          <section v-if="trackReplaceDialog" class="soulseek-replace-page">
+            <div class="library-header soulseek-replace-page-header">
+              <div class="soulseek-replace-page-heading">
+                <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                </button>
+                <div>
+                  <h2 style="margin:0;">Search and replace</h2>
+                  <p class="soulseek-replace-track-copy">
+                    Replace <strong>{{ trackReplaceDialog.track.title || trackReplaceDialog.track.path }}</strong> with a Soulseek match.
+                    Filled metadata stays intact; empty fields are filled from the replacement file.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>Soulseek query</span>
+              <div class="soulseek-replace-search-row">
+                <input
+                  v-model="trackReplaceDialog.query"
+                  placeholder="Artist title"
+                  @input="handleTrackReplaceInput"
+                  @keydown.enter.prevent="runTrackReplaceSearch"
+                />
+                <button class="btn-primary soulseek-replace-compact-btn" :disabled="!canRunTrackReplaceSearch" @click="runTrackReplaceSearch">
+                  {{ trackReplaceLoading ? 'Searching…' : 'Search' }}
+                </button>
+              </div>
+            </label>
+
+            <div v-if="trackReplaceActionError" class="settings-error">{{ trackReplaceActionError }}</div>
+
+            <div v-if="!soulseekStatus?.enabled" class="library-empty search-inline-empty">
+              Soulseek search is off. Enable it in Soulseek settings.
+            </div>
+            <div v-else-if="!soulseekStatus?.configured" class="library-empty search-inline-empty">
+              Add Soulseek username and password in Soulseek settings to search the network.
+            </div>
+            <div v-else-if="!trackReplaceDialog.query.trim()" class="library-empty search-inline-empty">
+              Enter a query, then search Soulseek for a replacement.
+            </div>
+            <div v-else-if="trackReplaceQueryDirty" class="library-empty search-inline-empty">
+              Press Search to query Soulseek for "{{ trackReplaceDialog.query.trim() }}".
+            </div>
+            <div v-else-if="trackReplaceLoading" class="library-empty search-inline-empty">
+              Searching Soulseek…
+            </div>
+            <div v-else-if="trackReplaceError" class="library-empty search-inline-empty soulseek-inline-error">
+              {{ trackReplaceError }}
+            </div>
+            <div v-else-if="trackReplaceResults.length === 0" class="library-empty search-inline-empty">
+              No Soulseek matches for "{{ trackReplaceSubmittedQuery }}".
+            </div>
+            <div v-else class="track-list soulseek-list soulseek-replace-results">
+              <div
+                v-for="result in visibleTrackReplaceResults"
+                :key="`${result.username}\u0000${result.filename}`"
+                class="track-row soulseek-row"
+                @click="activateSoulseekResult(result)"
+              >
+                <div class="track-cover-sm soulseek-cover-sm" :style="soulseekCoverUrl(result)
+                  ? `background-image: url(${soulseekCoverUrl(result)}); background-size: cover; background-position: center`
+                  : ''">
+                  <span v-if="!soulseekCoverUrl(result)">{{ result.coverFilename ? 'ART' : 'SL' }}</span>
+                </div>
+                <div class="track-info">
+                  <div class="track-title-row">
+                    <span class="track-title">{{ result.basename }}</span>
+                    <span v-if="soulseekPreviewState(result)" class="soulseek-status-pill" :class="`state-${soulseekPreviewState(result)?.state}`">
+                      {{ soulseekPreviewActionLabel(result) }}
+                    </span>
+                    <span v-if="soulseekDownloadState(result)" class="soulseek-status-pill" :class="`state-${soulseekDownloadState(result)?.state}`">
+                      {{ soulseekDownloadActionLabel(result) }}
+                    </span>
+                  </div>
+                  <span class="track-album">
+                    {{ result.username }} · {{ formatBytes(result.size) }}
+                    <template v-if="result.duration"> · {{ formatDuration(result.duration) }}</template>
+                    <template v-if="result.bitrate"> · {{ result.bitrate }} kbps</template>
+                    <template v-if="result.sampleRate"> · {{ formatSampleRate(result.sampleRate) }}</template>
+                    <template v-if="result.bitDepth"> · {{ result.bitDepth }}-bit</template>
+                    <template v-if="result.coverFilename"> · cover art</template>
+                    <template v-if="result.freeUploadSlots > 0"> · {{ result.freeUploadSlots }} slots</template>
+                  </span>
+                  <span v-if="soulseekPreviewState(result)?.state === 'progress'" class="soulseek-progress-copy">
+                    Preview buffer {{ formatBytes(soulseekPreviewState(result)?.bytesDownloaded) }} / {{ formatBytes(soulseekPreviewThresholdBytes(result)) }}
+                    · {{ formatTransferRate(soulseekPreviewState(result)?.speedBytesPerSec) }}
+                  </span>
+                  <span v-else-if="soulseekPreviewState(result)?.state === 'queued_remote' && soulseekPreviewState(result)?.queuePosition != null" class="soulseek-progress-copy">
+                    Preview queue position {{ soulseekPreviewState(result)?.queuePosition }}
+                  </span>
+                  <span v-else-if="soulseekPreviewState(result)?.state === 'completed'" class="soulseek-progress-copy">
+                    Preview ready
+                  </span>
+                  <span v-else-if="soulseekTransferError(soulseekPreviewState(result))" class="soulseek-progress-copy soulseek-inline-error">
+                    {{ soulseekTransferError(soulseekPreviewState(result)) }}
+                  </span>
+                  <span v-else-if="soulseekDownloadState(result)?.state === 'progress'" class="soulseek-progress-copy">
+                    {{ formatBytes(soulseekDownloadState(result)?.bytesDownloaded) }} / {{ formatBytes(soulseekDownloadState(result)?.totalBytes) }}
+                    · {{ formatTransferRate(soulseekDownloadState(result)?.speedBytesPerSec) }}
+                  </span>
+                  <span v-else-if="soulseekDownloadState(result)?.state === 'queued_remote' && soulseekDownloadState(result)?.queuePosition != null" class="soulseek-progress-copy">
+                    Queue position {{ soulseekDownloadState(result)?.queuePosition }}
+                  </span>
+                  <span v-else-if="soulseekDownloadState(result)?.state === 'completed'" class="soulseek-progress-copy">
+                    Saved locally and ready to replace
+                  </span>
+                  <span v-else-if="soulseekTransferError(soulseekDownloadState(result))" class="soulseek-progress-copy soulseek-inline-error">
+                    {{ soulseekTransferError(soulseekDownloadState(result)) }}
+                  </span>
+                </div>
+                <div class="soulseek-side soulseek-replace-actions">
+                  <span class="soulseek-speed">{{ formatTransferRate(result.peerSpeed) }}</span>
+                  <button
+                    class="icon-btn soulseek-download-icon-btn"
+                    :class="{ green: soulseekDownloadState(result)?.state === 'completed' }"
+                    :disabled="soulseekDownloadBusy(result)"
+                    :title="soulseekDownloadActionLabel(result)"
+                    :aria-label="soulseekDownloadActionLabel(result)"
+                    @click.stop="downloadSoulseekResult(result)"
+                  >
+                    <svg v-if="soulseekDownloadState(result)?.state === 'completed'" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                    <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.42 1.42L11 5.84V16h2V5.84l3.08 3.08 1.42-1.42L12 2z"/></svg>
+                  </button>
+                  <button class="btn-primary soulseek-replace-btn" :disabled="!!trackReplaceApplyingKey" @click.stop="replaceTrackWithSoulseekResult(trackReplaceDialog.track, result)">
+                    {{ trackReplaceActionLabel(result) }}
+                  </button>
+                </div>
+              </div>
+              <div v-if="visibleTrackReplaceResults.length < trackReplaceResults.length" class="library-empty search-inline-empty soulseek-more-copy">
+                <button class="btn-secondary soulseek-replace-compact-btn" @click="loadMoreTrackReplaceResults">Load more results</button>
+              </div>
+            </div>
+          </section>
+          <section v-else>
+            <div class="library-header soulseek-replace-page-header">
+              <div class="soulseek-replace-page-heading">
+                <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                </button>
+                <h2 style="margin:0;">Search and replace</h2>
+              </div>
+            </div>
+            <div class="library-empty">No track selected.</div>
           </section>
         </template>
 
@@ -4931,6 +5580,7 @@ onUnmounted(() => {
         >
           <div class="playlist-menu-header">Track actions</div>
           <button class="playlist-menu-item" @click="toggleLikeFromTrackContext">{{ trackContextMenu.track.is_liked ? 'Unlike' : 'Like' }}</button>
+          <button class="playlist-menu-item" @click="openTrackReplaceDialogFromTrackContext">Search and replace</button>
           <button class="playlist-menu-item" @click="addTrackToPlaylistFromTrackContext">Add to playlist</button>
           <button class="playlist-menu-item" @click="editTrackFromTrackContext">Edit metadata</button>
           <button class="playlist-menu-item" @click="identifyTrackFromTrackContext">Identify</button>
@@ -6317,8 +6967,68 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   min-width: 96px;
   padding: 6px 14px;
 }
+.soulseek-replace-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.soulseek-replace-page-header {
+  align-items: flex-start;
+}
+.soulseek-replace-page-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.soulseek-replace-back-btn {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.soulseek-replace-track-copy {
+  color: #b3b3b3;
+  line-height: 1.5;
+  margin: 0;
+}
+.soulseek-replace-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.soulseek-replace-search-row input {
+  flex: 1;
+}
+.soulseek-replace-results {
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+.soulseek-replace-actions {
+  align-items: center;
+  gap: 8px;
+}
+.soulseek-download-icon-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #555;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.soulseek-download-icon-btn:hover:not(:disabled) {
+  border-color: #fff;
+}
+.soulseek-replace-compact-btn {
+  padding: 5px 12px;
+  min-width: 0;
+  font-size: var(--fs-body-sm);
+  border-radius: 16px;
+}
+.soulseek-replace-btn {
+  min-width: 124px;
+  padding: 6px 14px;
+}
 .soulseek-download-btn:disabled,
-.btn-primary:disabled {
+.btn-primary:disabled,
+.soulseek-download-icon-btn:disabled {
   opacity: 0.72;
   cursor: default;
   transform: none;

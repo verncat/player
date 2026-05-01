@@ -4,7 +4,7 @@ use lofty::prelude::{Accessor, TaggedFileExt};
 use lofty::probe::Probe;
 use serde::{Deserialize, Serialize};
 use soulseek_rs::types::Download;
-use soulseek_rs::{Client, DownloadHandle, DownloadStatus, File};
+use soulseek_rs::{Client, DownloadCanceller, DownloadHandle, DownloadStatus, File};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,13 +60,37 @@ struct SoulseekInner {
 
 pub struct SoulseekState {
     inner: Arc<Mutex<SoulseekInner>>,
+    preview_cancellers: Arc<Mutex<HashMap<String, DownloadCanceller>>>,
 }
 
 impl SoulseekState {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(SoulseekInner::default())),
+            preview_cancellers: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn preview_key(username: &str, filename: &str) -> String {
+        format!("{}\u{0}{}", username, filename)
+    }
+
+    fn register_preview_canceller(&self, username: &str, filename: &str, canceler: DownloadCanceller) {
+        self.preview_cancellers
+            .lock()
+            .unwrap()
+            .insert(Self::preview_key(username, filename), canceler);
+    }
+
+    fn take_preview_canceller(&self, username: &str, filename: &str) -> Option<DownloadCanceller> {
+        self.preview_cancellers
+            .lock()
+            .unwrap()
+            .remove(&Self::preview_key(username, filename))
+    }
+
+    fn preview_canceller_registry(&self) -> Arc<Mutex<HashMap<String, DownloadCanceller>>> {
+        Arc::clone(&self.preview_cancellers)
     }
 
     fn desired_config(settings: &DeviceSettings) -> Option<SoulseekConfig> {
@@ -165,6 +189,13 @@ pub struct SoulseekCoverRequest {
 pub struct SoulseekPromotePreviewRequest {
     pub local_path: String,
     pub cover_filename: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoulseekCancelPreviewRequest {
+    pub username: String,
+    pub filename: String,
 }
 
 struct PendingSearchFile {
@@ -370,6 +401,7 @@ pub async fn soulseek_download(
             .as_ref()
             .filter(|cover| *cover != &request.filename)
             .cloned(),
+        None,
     ));
 
     eprintln!(
@@ -453,6 +485,13 @@ pub async fn soulseek_preview(
     );
 
     let data_dir_pathbuf = library.data_dir().to_path_buf();
+    let preview_cancel_registry = state.preview_canceller_registry();
+    let preview_canceller = handle.cancel_handle();
+    state.register_preview_canceller(
+        &request.username,
+        &request.filename,
+        preview_canceller,
+    );
     tauri::async_runtime::spawn(monitor_download(
         app,
         "soulseek-preview",
@@ -466,9 +505,23 @@ pub async fn soulseek_preview(
             .as_ref()
             .filter(|cover| *cover != &request.filename)
             .cloned(),
+        Some(preview_cancel_registry),
     ));
 
     Ok(transfer_id)
+}
+
+#[tauri::command]
+pub fn soulseek_cancel_preview(
+    request: SoulseekCancelPreviewRequest,
+    state: tauri::State<'_, SoulseekState>,
+) -> Result<bool, String> {
+    let Some(canceller) = state.take_preview_canceller(&request.username, &request.filename) else {
+        return Ok(false);
+    };
+
+    canceller.cancel();
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1089,6 +1142,7 @@ async fn monitor_download(
     is_preview: bool,
     data_dir: PathBuf,
     sidecar_cover_filename: Option<String>,
+    preview_cancel_registry: Option<Arc<Mutex<HashMap<String, DownloadCanceller>>>>,
 ) {
     use tauri::Emitter;
 
@@ -1291,4 +1345,13 @@ async fn monitor_download(
         download.filename,
         download.download_directory
     );
+
+    if is_preview {
+        if let Some(registry) = preview_cancel_registry {
+            registry
+                .lock()
+                .unwrap()
+                .remove(&SoulseekState::preview_key(&download.username, &download.filename.to_string()));
+        }
+    }
 }
