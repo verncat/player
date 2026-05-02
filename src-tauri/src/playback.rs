@@ -276,6 +276,12 @@ pub struct PlaybackState {
     inner: Arc<Shared>,
 }
 
+#[derive(Clone, Copy)]
+struct OutputStreamFormat {
+    sample_rate: u32,
+    channels: u16,
+}
+
 struct Shared {
     ring: Mutex<RingBuf>,
     ring_cvar: Condvar,
@@ -296,6 +302,12 @@ struct Shared {
     selected_device: Mutex<Option<String>>,
     /// Active cpal output stream — dropped when replaced, which stops it.
     active_stream: Mutex<Option<cpal::Stream>>,
+    /// Monotonic counter used to assign unique ids to output streams.
+    next_stream_id: AtomicU64,
+    /// Monotonic id for the most recently started output stream.
+    active_stream_id: AtomicU64,
+    /// Stream format required to recreate the current output stream.
+    output_stream_format: Mutex<Option<OutputStreamFormat>>,
     /// App handle used to emit beat events to the frontend.
     app_handle: tauri::AppHandle,
     /// Latest real-time spectrum snapshot for the UI.
@@ -318,6 +330,9 @@ impl PlaybackState {
                 current_file: Mutex::new(None),
                 selected_device: Mutex::new(None),
                 active_stream: Mutex::new(None),
+                next_stream_id: AtomicU64::new(1),
+                active_stream_id: AtomicU64::new(0),
+                output_stream_format: Mutex::new(None),
                 app_handle,
                 spectrum: Mutex::new([0.0; SPECTRUM_BANDS]),
             }),
@@ -369,12 +384,34 @@ impl PlaybackState {
     }
 
     pub fn resume(&self) {
+        if self.inner.stop.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let needs_stream_restart = self.inner.active_stream_id.load(Ordering::SeqCst) == 0;
+        if needs_stream_restart {
+            let Some(format) = *self.inner.output_stream_format.lock().unwrap() else {
+                return;
+            };
+
+            if let Err(err) = start_output_stream(
+                Arc::clone(&self.inner),
+                format.sample_rate,
+                format.channels,
+            ) {
+                eprintln!("[playback] resume failed to restart stream: {err}");
+                clear_spectrum(&self.inner);
+                return;
+            }
+        }
+
         self.inner.playing.store(true, Ordering::SeqCst);
     }
 
     pub fn stop(&self) {
         self.inner.stop.store(true, Ordering::SeqCst);
         self.inner.playing.store(false, Ordering::SeqCst);
+        self.inner.active_stream_id.store(0, Ordering::SeqCst);
         self.inner.ring_cvar.notify_all();
         clear_spectrum(&self.inner);
         // Drop the active stream to stop audio output immediately
@@ -757,6 +794,7 @@ fn start_output_stream(
     sample_rate: u32,
     channels: u16,
 ) -> Result<(), String> {
+    let stream_id = shared.next_stream_id.fetch_add(1, Ordering::SeqCst);
     let host = cpal::default_host();
 
     let selected = shared.selected_device.lock().unwrap().clone();
@@ -777,6 +815,7 @@ fn start_output_stream(
     };
 
     let shared2 = Arc::clone(&shared);
+    let shared_err = Arc::clone(&shared);
     let channels_usize = channels as usize;
     let mut spectrum_analyzer = SpectrumAnalyzer::new(sample_rate);
     let mut spectrum_cleared = true;
@@ -836,7 +875,16 @@ fn start_output_stream(
                     spectrum_analyzer.feed_frame(mono, &shared2);
                 }
             },
-            |err| eprintln!("[playback] stream error: {err}"),
+            move |err| {
+                eprintln!("[playback] stream error: {err}");
+                if shared_err.active_stream_id.load(Ordering::SeqCst) != stream_id {
+                    return;
+                }
+
+                shared_err.playing.store(false, Ordering::SeqCst);
+                shared_err.active_stream_id.store(0, Ordering::SeqCst);
+                clear_spectrum(&shared_err);
+            },
             None,
         )
         .map_err(|e| format!("build stream: {e}"))?;
@@ -844,6 +892,11 @@ fn start_output_stream(
     stream.play().map_err(|e| format!("play stream: {e}"))?;
 
     // Store the stream — dropping the previous one stops it.
+    *shared.output_stream_format.lock().unwrap() = Some(OutputStreamFormat {
+        sample_rate,
+        channels,
+    });
+    shared.active_stream_id.store(stream_id, Ordering::SeqCst);
     *shared.active_stream.lock().unwrap() = Some(stream);
 
     Ok(())
