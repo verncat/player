@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 
 interface AudioDevice { name: string }
@@ -373,8 +373,36 @@ interface PlayHistoryEntry {
   played_at: number; // unix timestamp (seconds)
   track: Track;
 }
+interface AboutChangelogEntry {
+  subject: string;
+  short_hash: string;
+  committed_at: string;
+}
+
+interface AboutInfo {
+  current_version: string;
+  build_commit: string | null;
+  release_repo: string | null;
+  changelog: AboutChangelogEntry[];
+}
+
+interface AboutUpdateStatus {
+  current_version: string;
+  latest_version: string | null;
+  has_update: boolean;
+  release_url: string | null;
+  checked_repo: string | null;
+  message: string;
+}
+
 const historyEntries = ref<PlayHistoryEntry[]>([]);
 const historyLoading = ref(false);
+const aboutInfo = ref<AboutInfo | null>(null);
+const aboutLoading = ref(false);
+const aboutError = ref('');
+const aboutUpdateStatus = ref<AboutUpdateStatus | null>(null);
+const aboutCheckingUpdates = ref(false);
+const aboutUpdateError = ref('');
 
 // ── Playlists ──────────────────────────────────────────────────────────────
 interface Playlist {
@@ -3803,6 +3831,46 @@ async function loadHistory() {
   }
 }
 
+async function loadAbout(force = false) {
+  if (aboutLoading.value || (aboutInfo.value && !force)) return;
+
+  aboutLoading.value = true;
+  aboutError.value = '';
+  try {
+    aboutInfo.value = await invoke<AboutInfo>('about_info');
+  } catch (error) {
+    aboutError.value = String(error ?? 'Failed to load About data');
+  } finally {
+    aboutLoading.value = false;
+  }
+}
+
+async function checkAboutUpdates() {
+  await loadAbout();
+  aboutCheckingUpdates.value = true;
+  aboutUpdateError.value = '';
+
+  try {
+    aboutUpdateStatus.value = await invoke<AboutUpdateStatus>('about_check_updates');
+  } catch (error) {
+    aboutUpdateStatus.value = null;
+    aboutUpdateError.value = String(error ?? 'Failed to check updates');
+  } finally {
+    aboutCheckingUpdates.value = false;
+  }
+}
+
+async function openAboutDownloadLink() {
+  const url = aboutUpdateStatus.value?.release_url;
+  if (!url) return;
+
+  try {
+    await openUrl(url);
+  } catch (error) {
+    console.error('Failed to open update link:', error);
+  }
+}
+
 function formatHistoryDate(ts: number): string {
   const d = new Date(ts * 1000);
   const now = new Date();
@@ -3956,6 +4024,12 @@ function identifyStatusIcon(status: string) {
   if (status === 'done') return '\u2605';
   return '\u00B7';
 }
+
+watch(activeNav, (nav) => {
+  if (nav === 'about') {
+    void loadAbout();
+  }
+});
 
 onMounted(() => {
   document.addEventListener('click', onDocClick);
@@ -4351,6 +4425,10 @@ onUnmounted(() => {
         <a class="nav-item" :class="{ active: activeNav === 'dedup' }" href="#" @click.prevent="activeNav = 'dedup'; showMobileNav = false; openDedup()">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 4H5v16h14V8zm-1 13H7v-2h7zm0-4H7v-2h7zm-3-4H7V7h4zM3 2v18H1V2zm18 0h2v18h-2z"/></svg>
           Duplicates
+        </a>
+        <a class="nav-item" :class="{ active: activeNav === 'about' }" href="#" @click.prevent="activeNav = 'about'; showMobileNav = false">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M11 7h2V5h-2v2zm0 12h2v-8h-2v8zm1-17C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
+          About
         </a>
       </nav>
     </aside>
@@ -5565,6 +5643,54 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
+          </section>
+        </template>
+
+        <template v-else-if="activeNav === 'about'">
+          <section>
+            <div v-if="aboutLoading && !aboutInfo" class="library-empty">Loading About data…</div>
+            <div v-else-if="aboutError && !aboutInfo" class="settings-error about-error">{{ aboutError }}</div>
+
+            <template v-else>
+              <div class="search-summary about-summary">
+                <span class="about-version-line"><strong>Version</strong> v{{ aboutInfo?.current_version || 'n/a' }}</span>
+                <button
+                  class="sync-toggle"
+                  :class="{ active: !!aboutUpdateStatus?.has_update }"
+                  :title="aboutUpdateStatus?.has_update && aboutUpdateStatus.latest_version ? `Update available: v${aboutUpdateStatus.latest_version}` : 'Check GitHub Releases'"
+                  :disabled="aboutCheckingUpdates"
+                  @click="checkAboutUpdates()"
+                >
+                  {{ aboutCheckingUpdates ? 'Checking…' : 'Check updates' }}
+                </button>
+                <span v-if="aboutCheckingUpdates" class="about-update-inline">Checking updates…</span>
+                <span v-else-if="aboutUpdateError" class="about-update-inline about-update-inline-error">{{ aboutUpdateError }}</span>
+                <span v-else-if="aboutUpdateStatus" class="about-update-inline" :class="{ 'about-update-inline-live': aboutUpdateStatus.has_update }">
+                  {{ aboutUpdateStatus.has_update && aboutUpdateStatus.latest_version
+                    ? `Update available: v${aboutUpdateStatus.latest_version}`
+                    : aboutUpdateStatus.latest_version
+                      ? `No updates. Latest: v${aboutUpdateStatus.latest_version}`
+                      : 'No updates' }}
+                </span>
+                <a
+                  v-if="aboutUpdateStatus?.has_update && aboutUpdateStatus.release_url"
+                  class="about-download-link"
+                  href="#"
+                  @click.prevent="openAboutDownloadLink()"
+                >
+                  Download v{{ aboutUpdateStatus.latest_version }}
+                </a>
+              </div>
+
+              <h2>Changelog</h2>
+
+              <div v-if="aboutInfo?.changelog.length">
+                <div v-for="entry in aboutInfo!.changelog" :key="`${entry.short_hash}:${entry.committed_at}`">
+                  {{ entry.subject }}
+                </div>
+              </div>
+              <div v-else class="library-empty">No changelog entries were embedded into this build.</div>
+            </template>
           </section>
         </template>
       </div>
@@ -6850,6 +6976,41 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .library-search:focus { outline: 1px solid #555; }
 .library-empty {
   color: #a7a7a7; font-size: var(--fs-empty); padding: 32px 0;
+}
+.about-summary {
+  align-items: center;
+  gap: 12px 18px;
+  margin-bottom: 16px;
+}
+.about-error {
+  margin: 0 0 16px;
+}
+.about-version-line {
+  color: #fff;
+  font-size: 28px;
+  line-height: 1.15;
+}
+.about-version-line strong {
+  color: #d9dee8;
+  font-weight: 800;
+}
+.about-update-inline {
+  color: #a7a7a7;
+  font-size: var(--fs-body-md);
+}
+.about-update-inline-live {
+  color: #8cf7b0;
+}
+.about-update-inline-error {
+  color: #ff9d9d;
+}
+.about-download-link {
+  color: #8cf7b0;
+  font-size: var(--fs-body-md);
+  text-decoration: none;
+}
+.about-download-link:hover {
+  text-decoration: underline;
 }
 .search-empty-copy {
   color: #a7a7a7;

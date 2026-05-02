@@ -1,3 +1,4 @@
+pub mod about;
 pub mod audio;
 pub mod discovery;
 pub mod identify;
@@ -144,6 +145,8 @@ pub fn run() {
             audio::set_output_device,
             audio::get_volume,
             audio::set_volume,
+            about::about_info,
+            about::about_check_updates,
             playback::playback_play,
             playback::playback_play_absolute,
             playback::playback_pause,
