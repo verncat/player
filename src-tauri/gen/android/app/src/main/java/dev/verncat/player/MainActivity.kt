@@ -1,5 +1,6 @@
 package dev.verncat.player
 
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.net.wifi.WifiManager
@@ -8,8 +9,11 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.webkit.JavascriptInterface
+import android.webkit.MimeTypeMap
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.FileProvider
+import java.io.File
 import java.lang.ref.WeakReference
 
 class MainActivity : TauriActivity() {
@@ -46,6 +50,37 @@ class MainActivity : TauriActivity() {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 try { startActivity(intent) } catch (_: Exception) {}
+            }
+
+            @JavascriptInterface
+            fun shareFile(relativePath: String) {
+                try {
+                    val baseDir = Environment.getExternalStorageDirectory().resolve("Player").canonicalFile
+                    val target = baseDir.resolve(relativePath).canonicalFile
+                    if (!target.exists()) return
+                    if (target.path != baseDir.path && !target.path.startsWith(baseDir.path + File.separator)) {
+                        return
+                    }
+
+                    val uri = FileProvider.getUriForFile(
+                        this@MainActivity,
+                        "$packageName.fileprovider",
+                        target
+                    )
+                    val mimeType = contentResolver.getType(uri)
+                        ?: MimeTypeMap.getSingleton()
+                            .getMimeTypeFromExtension(target.extension.lowercase())
+                        ?: "audio/*"
+
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = mimeType
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        clipData = ClipData.newUri(contentResolver, target.name, uri)
+                    }
+
+                    startActivity(Intent.createChooser(intent, "Share track"))
+                } catch (_: Exception) {}
             }
 
             /** Called from JS when track/play state changes — starts/updates foreground service. */

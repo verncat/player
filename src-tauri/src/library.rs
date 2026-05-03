@@ -26,6 +26,8 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::process::{Command as ProcessCommand, ExitStatus};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -1706,6 +1708,126 @@ pub fn replace_track_with_file(
 #[tauri::command]
 pub fn get_data_dir(state: tauri::State<'_, LibraryState>) -> String {
     state.data_dir.to_string_lossy().into_owned()
+}
+
+#[tauri::command]
+pub fn reveal_track_in_folder(
+    path: String,
+    absolute: Option<bool>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    let base_dir = state
+        .data_dir
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve library directory: {e}"))?;
+    let requested = PathBuf::from(path);
+    let target = if absolute.unwrap_or(false) {
+        requested
+    } else {
+        base_dir.join(requested)
+    };
+
+    let existing_target = nearest_existing_share_target(&target)
+        .ok_or_else(|| "Failed to resolve track path: No such file or directory (os error 2)".to_string())?;
+    let resolved_target = existing_target
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve track path: {e}"))?;
+
+    if !resolved_target.starts_with(&base_dir) {
+        return Err("Track path escapes the library directory".into());
+    }
+
+    reveal_share_target(&resolved_target)
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_share_target(path: &Path) -> Result<(), String> {
+    let status = if path.is_file() {
+        ProcessCommand::new("open")
+            .arg("-R")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to reveal track in Finder: {e}"))?
+    } else {
+        ProcessCommand::new("open")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open track directory in Finder: {e}"))?
+    };
+    reveal_status_result(status)
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_share_target(path: &Path) -> Result<(), String> {
+    let status = if path.is_file() {
+        ProcessCommand::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .status()
+            .map_err(|e| format!("Failed to reveal track in Explorer: {e}"))?
+    } else {
+        ProcessCommand::new("explorer")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open track directory in Explorer: {e}"))?
+    };
+    reveal_status_result(status)
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android", target_os = "ios"))))]
+fn reveal_share_target(path: &Path) -> Result<(), String> {
+    let status = ProcessCommand::new("xdg-open")
+        .arg(if path.is_dir() {
+            path
+        } else {
+            path.parent()
+                .ok_or_else(|| "Track has no parent directory".to_string())?
+        })
+        .status()
+        .map_err(|e| format!("Failed to open track directory: {e}"))?;
+    reveal_status_result(status)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn reveal_share_target(_path: &Path) -> Result<(), String> {
+    Err("Reveal in folder is not supported on mobile".into())
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "macos",
+    target_os = "windows",
+    all(unix, not(any(target_os = "macos", target_os = "android", target_os = "ios")))
+)))]
+fn reveal_share_target(_path: &Path) -> Result<(), String> {
+    Err("Reveal in folder is not supported on this platform".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn reveal_status_result(status: ExitStatus) -> Result<(), String> {
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Reveal command exited with status {}",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        ))
+    }
+}
+
+fn nearest_existing_share_target(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
 }
 
 #[tauri::command]

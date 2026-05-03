@@ -112,6 +112,7 @@ pub fn run() {
             library::replace_track_with_file,
             library::toggle_like,
             library::get_data_dir,
+            library::reveal_track_in_folder,
             library::record_play,
             library::get_recent_tracks,
             library::get_play_history,

@@ -665,6 +665,37 @@ function identifyTrackFromTrackContext() {
   identifySingle(track);
 }
 
+async function shareTrackFromTrackContext() {
+  const track = trackContextMenu.value?.track;
+  trackContextMenu.value = null;
+  if (!track) return;
+
+  const bridge = (window as any).AndroidBridge;
+  const dataDir = normalizePath(await ensureLibraryDataDir()).replace(/\/$/, '');
+  const absolutePath = track.local_preview_path
+    ? normalizePath(track.local_preview_path)
+    : `${dataDir}/${normalizePath(track.path).replace(/^\/+/, '')}`;
+  const dataDirPrefix = `${dataDir}/`;
+  const relativePath = absolutePath.startsWith(dataDirPrefix)
+    ? absolutePath.slice(dataDirPrefix.length)
+    : normalizePath(track.path).replace(/^\/+/, '');
+
+  if (bridge?.shareFile) {
+    bridge.shareFile(relativePath);
+    return;
+  }
+
+  try {
+    await invoke('reveal_track_in_folder', {
+      path: absolutePath,
+      absolute: true,
+    });
+  } catch (error) {
+    console.error('Failed to reveal shared track:', error);
+    alert(`Failed to reveal track in folder.\n${String(error)}`);
+  }
+}
+
 function addTrackToPlaylistFromTrackContext() {
   const menu = trackContextMenu.value;
   if (!menu) return;
@@ -5707,6 +5738,7 @@ onUnmounted(() => {
           <div class="playlist-menu-header">Track actions</div>
           <button class="playlist-menu-item" @click="toggleLikeFromTrackContext">{{ trackContextMenu.track.is_liked ? 'Unlike' : 'Like' }}</button>
           <button class="playlist-menu-item" @click="openTrackReplaceDialogFromTrackContext">Search and replace</button>
+          <button class="playlist-menu-item" @click="shareTrackFromTrackContext">Share</button>
           <button class="playlist-menu-item" @click="addTrackToPlaylistFromTrackContext">Add to playlist</button>
           <button class="playlist-menu-item" @click="editTrackFromTrackContext">Edit metadata</button>
           <button class="playlist-menu-item" @click="identifyTrackFromTrackContext">Identify</button>
