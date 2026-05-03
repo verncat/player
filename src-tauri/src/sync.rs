@@ -190,24 +190,35 @@ pub fn ensure_http_server_started(
 // ── HTTP server (serves our tracks to peers) ──────────────────────────────────
 
 fn start_http_server(conn: Arc<Mutex<Connection>>, data_dir: PathBuf, app: AppHandle) {
-    thread::spawn(move || {
-        let server = match tiny_http::Server::http(format!("[::]:{SYNC_PORT}"))
-            .or_else(|_| tiny_http::Server::http(format!("0.0.0.0:{SYNC_PORT}")))
-        {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[sync] cannot bind port {SYNC_PORT}: {e}");
-                return;
+    let bind_addresses = [format!("0.0.0.0:{SYNC_PORT}"), format!("[::]:{SYNC_PORT}")];
+    let mut listeners_started = 0usize;
+
+    for bind_addr in bind_addresses {
+        match tiny_http::Server::http(&bind_addr) {
+            Ok(server) => {
+                listeners_started += 1;
+                let conn = Arc::clone(&conn);
+                let data_dir = data_dir.clone();
+                let app = app.clone();
+                thread::spawn(move || {
+                    eprintln!("[sync] HTTP server listening on {bind_addr}");
+                    for request in server.incoming_requests() {
+                        let conn = Arc::clone(&conn);
+                        let dir = data_dir.clone();
+                        let app = app.clone();
+                        thread::spawn(move || handle_request(request, conn, dir, app));
+                    }
+                });
             }
-        };
-        eprintln!("[sync] HTTP server ready on :{SYNC_PORT}");
-        for request in server.incoming_requests() {
-            let conn = Arc::clone(&conn);
-            let dir = data_dir.clone();
-            let app = app.clone();
-            thread::spawn(move || handle_request(request, conn, dir, app));
+            Err(e) => {
+                eprintln!("[sync] failed to bind {bind_addr}: {e}");
+            }
         }
-    });
+    }
+
+    if listeners_started == 0 {
+        eprintln!("[sync] cannot bind port {SYNC_PORT} on IPv4 or IPv6");
+    }
 }
 
 fn handle_request(
