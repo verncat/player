@@ -1726,7 +1726,16 @@ function updateSoulseekPreviewTrackState(username: string, filename: string, pre
 }
 
 function soulseekDownloadActionLabel(result: SoulseekSearchResult) {
+  const previewState = soulseekPreviewState(result);
   const state = soulseekDownloadState(result)?.state;
+  if (
+    previewState?.state === 'completed'
+    && !!previewState.localPath
+    && state !== 'completed'
+    && state !== 'promoting'
+  ) {
+    return 'Save';
+  }
   switch (state) {
     case 'starting':
       return 'Starting…';

@@ -806,7 +806,7 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
 }
 
 /// Returns `Ok(true)` if a new/updated row was written, `Ok(false)` if skipped.
-fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, BoxError> {
+pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, BoxError> {
     let rel = rel_path(data_dir, abs);
     let sidecar_cover = find_sidecar_cover_candidate(data_dir, abs);
 
@@ -888,6 +888,9 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
                 rel,
             ],
         )?;
+        if let Some(file_hash) = file_hash.as_deref() {
+            remove_stale_tracks_with_same_hash(conn, data_dir, &rel, file_hash)?;
+        }
         return Ok(true);
     }
 
@@ -952,7 +955,41 @@ fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, Bo
         ],
     )?;
 
+    if let Some(file_hash) = file_hash.as_deref() {
+        remove_stale_tracks_with_same_hash(conn, data_dir, &rel, file_hash)?;
+    }
+
     Ok(true)
+}
+
+fn remove_stale_tracks_with_same_hash(
+    conn: &Connection,
+    data_dir: &Path,
+    current_path: &str,
+    file_hash: &str,
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT path FROM tracks WHERE file_hash = ?1 AND path != ?2",
+    )?;
+    let stale_paths: Vec<String> = stmt
+        .query_map(params![file_hash, current_path], |row| row.get(0))?
+        .filter_map(|row| row.ok())
+        .filter(|path: &String| {
+            let candidate = PathBuf::from(path);
+            let absolute = if candidate.is_absolute() {
+                candidate
+            } else {
+                data_dir.join(candidate)
+            };
+            !absolute.exists()
+        })
+        .collect();
+
+    for path in stale_paths {
+        conn.execute("DELETE FROM tracks WHERE path = ?1", params![path])?;
+    }
+
+    Ok(())
 }
 
 /// Returns the path relative to `data_dir` with forward-slash separators.

@@ -556,6 +556,13 @@ pub fn soulseek_promote_preview(
         )?;
     }
 
+    {
+        let conn = library.conn();
+        let conn = conn.lock().unwrap();
+        crate::library::index_file(&conn, library.data_dir(), &final_path)
+            .map_err(|e| e.to_string())?;
+    }
+
     let _ = app.emit("library-changed", ());
     Ok(final_path.to_string_lossy().to_string())
 }
