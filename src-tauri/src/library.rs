@@ -2517,14 +2517,16 @@ pub fn find_duplicates(
     Ok(groups)
 }
 
-/// One resolution for a duplicate group: which track to keep, which to mark as duplicate.
+/// One resolution for a duplicate group: which tracks to keep and which to flag as duplicates.
 #[derive(Debug, Deserialize)]
 pub struct DedupeResolution {
-    pub keep_id: i64,
-    pub remove_ids: Vec<i64>,
+    #[serde(default)]
+    pub keep_ids: Vec<i64>,
+    #[serde(default)]
+    pub duplicate_ids: Vec<i64>,
 }
 
-/// Mark selected tracks as duplicates (is_duplicate = 1), clear the flag on the kept track.
+/// Apply duplicate flags for each group. Nothing is deleted from disk or the database.
 /// Nothing is deleted from disk or the database.
 #[tauri::command]
 pub fn apply_dedup(
@@ -2535,18 +2537,22 @@ pub fn apply_dedup(
     let mut marked = 0usize;
 
     for res in &resolutions {
-        // Ensure the kept track is not marked as a duplicate
-        let _ = conn.execute(
-            "UPDATE tracks SET is_duplicate = 0 WHERE id = ?1",
-            params![res.keep_id],
-        );
-        for &rid in &res.remove_ids {
-            if rid == res.keep_id {
+        let keep_ids: std::collections::HashSet<i64> = res.keep_ids.iter().copied().collect();
+
+        for &keep_id in &res.keep_ids {
+            let _ = conn.execute(
+                "UPDATE tracks SET is_duplicate = 0 WHERE id = ?1",
+                params![keep_id],
+            );
+        }
+
+        for &duplicate_id in &res.duplicate_ids {
+            if keep_ids.contains(&duplicate_id) {
                 continue;
             }
             conn.execute(
                 "UPDATE tracks SET is_duplicate = 1 WHERE id = ?1",
-                params![rid],
+                params![duplicate_id],
             )
             .map_err(|e| e.to_string())?;
             marked += 1;

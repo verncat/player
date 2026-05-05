@@ -261,28 +261,64 @@ interface DuplicateGroup {
 const dedupLoading = ref(false);
 const dedupGroups = ref<DuplicateGroup[]>([]);
 const dedupError = ref('');
-// Map of groupIndex → chosen keep track id (default: first = already sorted by backend)
-const dedupKeepId = ref<Map<number, number>>(new Map());
+// Map of groupIndex → selected track ids that should be flagged as duplicates.
+const dedupDuplicateIds = ref<Map<number, Set<number>>>(new Map());
 // Filter: 'all' | 'unresolved'
 const dedupFilter = ref<'all' | 'unresolved'>('all');
 // Tracks pending delete after preview confirmation
 const dedupConfirmOpen = ref(false);
 const dedupApplying = ref(false);
 
+function buildInitialDedupSelections(groups: DuplicateGroup[]) {
+  const initialSelections = new Map<number, Set<number>>();
+  groups.forEach((group, groupIdx) => {
+    const persistedDuplicates = group.tracks.filter((track) => track.is_duplicate).map((track) => track.id);
+    if (persistedDuplicates.length > 0) {
+      initialSelections.set(groupIdx, new Set(persistedDuplicates));
+      return;
+    }
+    initialSelections.set(groupIdx, new Set(group.tracks.slice(1).map((track) => track.id)));
+  });
+  return initialSelections;
+}
+
+function dedupIsMarkedDuplicate(groupIdx: number, trackId: number) {
+  return dedupDuplicateIds.value.get(groupIdx)?.has(trackId) ?? false;
+}
+
+function dedupMarkedCount(groupIdx: number, tracks: Track[]) {
+  return tracks.reduce((count, track) => count + (dedupIsMarkedDuplicate(groupIdx, track.id) ? 1 : 0), 0);
+}
+
+function dedupToggleTrack(groupIdx: number, trackId: number) {
+  const nextSelections = new Map(dedupDuplicateIds.value);
+  const groupSelections = new Set(nextSelections.get(groupIdx) ?? []);
+  if (groupSelections.has(trackId)) {
+    groupSelections.delete(trackId);
+  } else {
+    groupSelections.add(trackId);
+  }
+  nextSelections.set(groupIdx, groupSelections);
+  dedupDuplicateIds.value = nextSelections;
+}
+
+const dedupMarkedTotal = computed(() => dedupGroups.value.reduce(
+  (count, group, groupIdx) => count + dedupMarkedCount(groupIdx, group.tracks),
+  0,
+));
+
+const dedupHasPersistedFlags = computed(() => dedupGroups.value.some((group) => group.tracks.some((track) => track.is_duplicate)));
+
 async function openDedup() {
   if (dedupLoading.value) return;
   dedupLoading.value = true;
   dedupError.value = '';
   dedupGroups.value = [];
-  dedupKeepId.value = new Map();
+  dedupDuplicateIds.value = new Map();
   try {
     const groups = await invoke<DuplicateGroup[]>('find_duplicates');
     dedupGroups.value = groups;
-    const initialKeep = new Map<number, number>();
-    groups.forEach((g, i) => {
-      if (g.tracks.length > 0) initialKeep.set(i, g.tracks[0].id);
-    });
-    dedupKeepId.value = initialKeep;
+    dedupDuplicateIds.value = buildInitialDedupSelections(groups);
   } catch (e) {
     dedupError.value = String(e ?? 'Failed to scan for duplicates');
   } finally {
@@ -293,29 +329,24 @@ async function openDedup() {
 const dedupFilteredGroups = computed(() => {
   if (dedupFilter.value === 'unresolved') {
     return dedupGroups.value.map((g, i) => ({ g, i })).filter(({ g, i }) => {
-      const keepId = dedupKeepId.value.get(i);
-      return keepId === undefined || g.tracks.some(t => t.id !== keepId);
+      const markedCount = dedupMarkedCount(i, g.tracks);
+      return markedCount > 0 && markedCount < g.tracks.length;
     });
   }
   return dedupGroups.value.map((g, i) => ({ g, i }));
 });
 
-function dedupSetKeep(groupIdx: number, trackId: number) {
-  dedupKeepId.value = new Map(dedupKeepId.value).set(groupIdx, trackId);
-}
-
 async function applyDedup() {
   dedupApplying.value = true;
   dedupError.value = '';
   try {
-    interface DedupeResolution { keep_id: number; remove_ids: number[] }
+    interface DedupeResolution { keep_ids: number[]; duplicate_ids: number[] }
     const resolutions: DedupeResolution[] = [];
     dedupGroups.value.forEach((g, i) => {
-      const keepId = dedupKeepId.value.get(i) ?? g.tracks[0]?.id;
-      if (!keepId) return;
-      const removeIds = g.tracks.filter(t => t.id !== keepId).map(t => t.id);
-      if (removeIds.length > 0) {
-        resolutions.push({ keep_id: keepId, remove_ids: removeIds });
+      const keepIds = g.tracks.filter((track) => !dedupIsMarkedDuplicate(i, track.id)).map((track) => track.id);
+      const duplicateIds = g.tracks.filter((track) => dedupIsMarkedDuplicate(i, track.id)).map((track) => track.id);
+      if (keepIds.length > 0 || duplicateIds.length > 0) {
+        resolutions.push({ keep_ids: keepIds, duplicate_ids: duplicateIds });
       }
     });
     await invoke('apply_dedup', { resolutions });
@@ -5525,7 +5556,7 @@ onUnmounted(() => {
             <template v-else>
               <div class="dedup-summary">
                 Found <strong>{{ dedupGroups.length }}</strong> potential duplicate group{{ dedupGroups.length === 1 ? '' : 's' }}.
-                Select which track to keep in each group, then click Apply.
+                Click a track to toggle it between Keep and Duplicate, then click Apply.
               </div>
 
               <div v-for="{ g, i } in dedupFilteredGroups" :key="i" class="dedup-group">
@@ -5546,10 +5577,10 @@ onUnmounted(() => {
                     class="track-row dedup-track-row"
                     :class="[
                       rarityClass(track.rarity),
-                      { 'dedup-keep': dedupKeepId.get(i) === track.id, 'dedup-remove': dedupKeepId.get(i) !== undefined && dedupKeepId.get(i) !== track.id, 'dedup-already-marked': track.is_duplicate }
+                      { 'dedup-keep': !dedupIsMarkedDuplicate(i, track.id), 'dedup-remove': dedupIsMarkedDuplicate(i, track.id), 'dedup-already-marked': track.is_duplicate }
                     ]"
                     :style="rarityVars(track.rarity)"
-                    @click="dedupSetKeep(i, track.id)"
+                    @click="dedupToggleTrack(i, track.id)"
                   >
                     <div class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
@@ -5558,8 +5589,8 @@ onUnmounted(() => {
                     <div class="track-info">
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>
-                        <span v-if="dedupKeepId.get(i) === track.id" class="dedup-keep-badge">Keep</span>
-                        <span v-else-if="dedupKeepId.get(i) !== undefined" class="dedup-remove-badge">Remove</span>
+                        <span v-if="!dedupIsMarkedDuplicate(i, track.id)" class="dedup-keep-badge">Keep</span>
+                        <span v-else class="dedup-remove-badge">Duplicate</span>
                       </div>
                       <span class="track-album">
                         {{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}
@@ -5572,7 +5603,7 @@ onUnmounted(() => {
                       </span>
                     </div>
                     <div class="dedup-keep-radio">
-                      <div class="dedup-radio-dot" :class="{ active: dedupKeepId.get(i) === track.id }"></div>
+                      <div class="dedup-radio-dot" :class="{ active: !dedupIsMarkedDuplicate(i, track.id) }"></div>
                     </div>
                   </div>
                 </div>
@@ -5580,7 +5611,7 @@ onUnmounted(() => {
 
               <div class="dedup-actions">
                 <button
-                  v-if="dedupGroups.some((g, i) => g.tracks.some(t => t.is_duplicate && t.id !== (dedupKeepId.get(i) ?? g.tracks[0]?.id)))"
+                  v-if="dedupHasPersistedFlags"
                   class="btn-secondary"
                   style="margin-right: auto;"
                   @click="invoke('unmark_duplicates', { ids: dedupGroups.flatMap(g => g.tracks.filter(t => t.is_duplicate).map(t => t.id)) }).then(() => openDedup()).then(() => loadLibrary())"
@@ -5588,7 +5619,7 @@ onUnmounted(() => {
                   Unmark all
                 </button>
                 <button class="btn-primary" @click="dedupConfirmOpen = true" :disabled="dedupApplying">
-                  Mark as duplicates ({{ dedupGroups.reduce((acc, g, i) => acc + g.tracks.filter(t => t.id !== (dedupKeepId.get(i) ?? g.tracks[0]?.id)).length, 0) }})
+                  Mark as duplicates ({{ dedupMarkedTotal }})
                 </button>
               </div>
             </template>
@@ -5812,7 +5843,7 @@ onUnmounted(() => {
           </div>
           <div class="modal-body">
             <p style="color:#b3b3b3; line-height:1.5;">
-              <strong style="color:#fff;">{{ dedupGroups.reduce((acc, g, i) => acc + g.tracks.filter(t => t.id !== (dedupKeepId.get(i) ?? g.tracks[0]?.id)).length, 0) }}</strong>
+              <strong style="color:#fff;">{{ dedupMarkedTotal }}</strong>
               track(s) will be flagged as duplicates in the database. Files stay on disk. You can unmark them at any time.
             </p>
             <div v-if="dedupError" class="settings-error">{{ dedupError }}</div>
