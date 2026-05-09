@@ -95,7 +95,6 @@ jobs:
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.rpm
             src-tauri/target/release/bundle/**/*.sig
-            src-tauri/target/release/bundle/**/*.tar.gz
             src-tauri/target/release/bundle/**/*.zip
 
   build-android:
@@ -209,6 +208,7 @@ jobs:
             --out "$signed_apk" \
             "$RUNNER_TEMP/app-aligned.apk"
           "$ANDROID_SDK_ROOT/build-tools/$build_tools_dir/apksigner" verify --print-certs "$signed_apk"
+          rm -f "${signed_apk}.idsig"
 
           if [[ -d src-tauri/gen/android/app/build/outputs/bundle ]]; then
             find src-tauri/gen/android/app/build/outputs/bundle -type f -name '*.aab' -exec cp {} release-assets/ \;
