@@ -5,6 +5,8 @@
 //!       GET /status        → JSON { version, device_name, playback }
 //!       GET /tracks        → JSON { version, device_name, tracks:[...] }
 //!       GET /file/<hash>   → raw audio bytes
+//!       GET /sync-merkle/* → Merkle summaries and selective sync leaves
+//!       GET /sync-merkle/debug → compact hash/count diagnostics
 //!
 //! When pull sync is enabled:
 //!   • `sync_with_peer` downloads every hash the peer has that we don't,
@@ -13,8 +15,7 @@
 //! Tauri event emitted to frontend: `"sync-progress"`
 //!   { peer, phase: "index"|"download"|"reindex"|"done"|"error", total, done, message }
 
-use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,6 +30,8 @@ use tiny_http::Header;
 
 pub const SYNC_PORT: u16 = 57322;
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const SYNC_MERKLE_VERSION: &str = "1";
+const PLAY_HISTORY_CHUNK_SECONDS: i64 = 24 * 60 * 60;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -149,6 +152,110 @@ pub struct SyncHistoryEntry {
     pub played_at: i64,
 }
 
+/// Per-track mutable state synced independently from editable fields.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncTrackState {
+    pub is_liked: bool,
+    pub play_count: i64,
+    pub rarity: Option<String>,
+    pub manually_edited: bool,
+}
+
+/// Per-track Merkle child hashes.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncTrackMetaHashes {
+    pub hash: String,
+    pub state_hash: String,
+    pub fields_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncTrackStatePayload {
+    pub hash: String,
+    pub state: SyncTrackState,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncTrackFieldsPayload {
+    pub hash: String,
+    pub fields: SyncTrackFields,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncContentHashes {
+    pub hash: String,
+    pub blob_hash: String,
+    pub descriptor_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncPlaylistHashes {
+    pub name: String,
+    pub identity_hash: String,
+    pub tracks_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncSmartPlaylistHashes {
+    pub id: String,
+    pub node_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncHistoryChunkRange {
+    pub min_played_at: i64,
+    pub max_played_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncHistoryChunkSummary {
+    pub chunk_id: String,
+    pub range: SyncHistoryChunkRange,
+    pub event_count: usize,
+    pub rolling_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncHistoryChunk {
+    pub chunk_id: String,
+    pub range: SyncHistoryChunkRange,
+    pub event_count: usize,
+    pub rolling_hash: String,
+    pub events: Vec<SyncHistoryEntry>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncMerkleRoot {
+    pub version: String,
+    pub root_hash: String,
+    pub content_by_hash_hash: String,
+    pub library_state_hash: String,
+    pub track_meta_by_hash_hash: String,
+    pub playlists_by_name_hash: String,
+    pub smart_playlists_by_id_hash: String,
+    pub play_history_log_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncMerkleDebugCounts {
+    pub content_entries: usize,
+    pub track_meta_entries: usize,
+    pub playlists: usize,
+    pub smart_playlists: usize,
+    pub history_chunks: usize,
+    pub history_events_total: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncMerkleDebugResponse {
+    pub app_version: String,
+    pub merkle_version: String,
+    pub root: SyncMerkleRoot,
+    pub counts: SyncMerkleDebugCounts,
+    pub newest_history_chunk_id: Option<String>,
+    pub newest_history_max_played_at: Option<i64>,
+}
+
 /// Full sync-data response.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SyncData {
@@ -188,11 +295,129 @@ impl SyncData {
     }
 }
 
+impl SyncTrackMeta {
+    fn state(&self) -> SyncTrackState {
+        SyncTrackState {
+            is_liked: self.is_liked,
+            play_count: self.play_count,
+            rarity: self.rarity.clone(),
+            manually_edited: self.manually_edited,
+        }
+    }
+}
+
+fn sync_track_meta_from_parts(hash: String, state: SyncTrackState, fields: SyncTrackFields) -> SyncTrackMeta {
+    SyncTrackMeta {
+        hash,
+        is_liked: state.is_liked,
+        play_count: state.play_count,
+        rarity: state.rarity,
+        manually_edited: state.manually_edited,
+        fields,
+    }
+}
+
+fn hash_json<T: Serialize>(value: &T) -> String {
+    serde_json::to_vec(value)
+        .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+        .unwrap_or_default()
+}
+
+fn hash_history_events(events: &[SyncHistoryEntry]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for event in events {
+        hasher.update(event.hash.as_bytes());
+        hasher.update(&event.played_at.to_le_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn hash_sync_track_state(state: &SyncTrackState) -> String {
+    hash_json(state)
+}
+
+fn hash_sync_track_fields(fields: &SyncTrackFields) -> String {
+    hash_json(fields)
+}
+
+fn dedup_track_meta_by_hash(track_meta: Vec<SyncTrackMeta>) -> Vec<SyncTrackMeta> {
+    let mut by_hash: HashMap<String, SyncTrackMeta> = HashMap::new();
+    for meta in track_meta {
+        by_hash.entry(meta.hash.clone()).or_insert(meta);
+    }
+    let mut deduped: Vec<SyncTrackMeta> = by_hash.into_values().collect();
+    deduped.sort_by(|a, b| a.hash.cmp(&b.hash));
+    deduped
+}
+
+fn load_remote_tracks(conn: &Connection) -> Vec<RemoteTrack> {
+    let mut tracks: Vec<RemoteTrack> = conn
+        .prepare(
+            "SELECT file_hash, path, title, artist, album \
+             FROM tracks WHERE file_hash IS NOT NULL",
+        )
+        .map(|mut s| {
+            s.query_map([], |row| {
+                Ok(RemoteTrack {
+                    hash: row.get(0)?,
+                    path: row.get(1)?,
+                    title: row.get(2)?,
+                    artist: row.get(3)?,
+                    album: row.get(4)?,
+                })
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    tracks.sort_by(|a, b| a.hash.cmp(&b.hash).then_with(|| a.path.cmp(&b.path)));
+    tracks
+}
+
+fn load_sync_track_state_by_hash(conn: &Connection, hash: &str) -> Option<SyncTrackState> {
+    conn.query_row(
+        "SELECT is_liked, play_count, rarity, manually_edited
+         FROM tracks WHERE file_hash = ?1 LIMIT 1",
+        params![hash],
+        |row| {
+            Ok(SyncTrackState {
+                is_liked: row.get::<_, i64>(0).unwrap_or(0) != 0,
+                play_count: row.get::<_, i64>(1).unwrap_or(0),
+                rarity: row.get::<_, Option<String>>(2)?,
+                manually_edited: row.get::<_, i64>(3).unwrap_or(0) != 0,
+            })
+        },
+    )
+    .ok()
+}
+
+fn load_sync_track_fields_by_hash(conn: &Connection, hash: &str) -> Option<SyncTrackFields> {
+    conn.query_row(
+        "SELECT title, artist, album, track_number, year, genre, tags, date_added
+         FROM tracks WHERE file_hash = ?1 LIMIT 1",
+        params![hash],
+        |row| {
+            Ok(SyncTrackFields {
+                title: row.get(0)?,
+                artist: row.get(1)?,
+                album: row.get(2)?,
+                track_number: row.get(3)?,
+                year: row.get(4)?,
+                genre: row.get(5)?,
+                tags: row.get(6)?,
+                date_added: row.get(7)?,
+            })
+        },
+    )
+    .ok()
+}
+
 fn load_sync_track_meta(conn: &Connection) -> Vec<SyncTrackMeta> {
     conn.prepare(
         "SELECT file_hash, is_liked, play_count, rarity, manually_edited,
                 title, artist, album, track_number, year, genre, tags, date_added
-         FROM tracks WHERE file_hash IS NOT NULL",
+         FROM tracks WHERE file_hash IS NOT NULL
+         ORDER BY file_hash, id",
     )
     .map(|mut stmt| {
         stmt.query_map([], |row| {
@@ -288,6 +513,237 @@ fn load_sync_history(conn: &Connection) -> Vec<SyncHistoryEntry> {
         .unwrap_or_default()
     })
     .unwrap_or_default()
+}
+
+fn build_sync_content_hashes(remote_tracks: &[RemoteTrack]) -> Vec<SyncContentHashes> {
+    let mut by_hash: BTreeMap<String, SyncContentHashes> = BTreeMap::new();
+    for track in remote_tracks {
+        by_hash.entry(track.hash.clone()).or_insert_with(|| {
+            let descriptor_hash = hash_json(&(
+                track.path.clone(),
+                track.title.clone(),
+                track.artist.clone(),
+                track.album.clone(),
+            ));
+            SyncContentHashes {
+                hash: track.hash.clone(),
+                blob_hash: track.hash.clone(),
+                descriptor_hash,
+            }
+        });
+    }
+    by_hash.into_values().collect()
+}
+
+fn build_sync_track_meta_hashes(track_meta: &[SyncTrackMeta]) -> Vec<SyncTrackMetaHashes> {
+    let mut by_hash: BTreeMap<String, SyncTrackMetaHashes> = BTreeMap::new();
+    for meta in track_meta {
+        by_hash.entry(meta.hash.clone()).or_insert_with(|| {
+            let state = meta.state();
+            SyncTrackMetaHashes {
+                hash: meta.hash.clone(),
+                state_hash: hash_sync_track_state(&state),
+                fields_hash: hash_sync_track_fields(&meta.fields),
+            }
+        });
+    }
+    by_hash.into_values().collect()
+}
+
+fn load_sync_track_meta_hashes(conn: &Connection) -> Vec<SyncTrackMetaHashes> {
+    let track_meta = dedup_track_meta_by_hash(load_sync_track_meta(conn));
+    build_sync_track_meta_hashes(&track_meta)
+}
+
+fn build_sync_playlist_hashes(playlists: &[SyncPlaylist]) -> Vec<SyncPlaylistHashes> {
+    let mut hashes: Vec<SyncPlaylistHashes> = playlists
+        .iter()
+        .map(|playlist| SyncPlaylistHashes {
+            name: playlist.name.clone(),
+            identity_hash: hash_json(&playlist.name),
+            tracks_hash: hash_json(&playlist.track_hashes),
+        })
+        .collect();
+    hashes.sort_by(|a, b| a.name.cmp(&b.name));
+    hashes
+}
+
+fn load_sync_playlist_hashes(conn: &Connection) -> Vec<SyncPlaylistHashes> {
+    build_sync_playlist_hashes(&load_sync_playlists(conn))
+}
+
+fn build_sync_smart_playlist_hashes(playlists: &[SyncSmartPlaylist]) -> Vec<SyncSmartPlaylistHashes> {
+    let mut hashes: Vec<SyncSmartPlaylistHashes> = playlists
+        .iter()
+        .map(|playlist| {
+            let node_hash = hash_json(&(
+                playlist.name.clone(),
+                playlist.match_mode.clone(),
+                playlist.rules_json.clone(),
+                playlist.updated_at,
+            ));
+            SyncSmartPlaylistHashes {
+                id: playlist.id.clone(),
+                node_hash,
+            }
+        })
+        .collect();
+    hashes.sort_by(|a, b| a.id.cmp(&b.id));
+    hashes
+}
+
+fn load_sync_smart_playlist_hashes(conn: &Connection) -> Vec<SyncSmartPlaylistHashes> {
+    build_sync_smart_playlist_hashes(&load_sync_smart_playlists(conn))
+}
+
+fn history_chunk_bucket(played_at: i64) -> i64 {
+    played_at.div_euclid(PLAY_HISTORY_CHUNK_SECONDS)
+}
+
+fn history_chunk_id(bucket: i64) -> String {
+    format!("{bucket:012}")
+}
+
+fn build_sync_history_chunk(bucket: i64, mut events: Vec<SyncHistoryEntry>) -> Option<SyncHistoryChunk> {
+    if events.is_empty() {
+        return None;
+    }
+    events.sort_by(|a, b| a.played_at.cmp(&b.played_at).then_with(|| a.hash.cmp(&b.hash)));
+    let min_played_at = events.first().map(|entry| entry.played_at).unwrap_or_default();
+    let max_played_at = events.last().map(|entry| entry.played_at).unwrap_or_default();
+    let event_count = events.len();
+    let rolling_hash = hash_history_events(&events);
+    Some(SyncHistoryChunk {
+        chunk_id: history_chunk_id(bucket),
+        range: SyncHistoryChunkRange {
+            min_played_at,
+            max_played_at,
+        },
+        event_count,
+        rolling_hash,
+        events,
+    })
+}
+
+fn build_sync_history_chunks(history: &[SyncHistoryEntry]) -> Vec<SyncHistoryChunk> {
+    let mut grouped: BTreeMap<i64, Vec<SyncHistoryEntry>> = BTreeMap::new();
+    for entry in history {
+        grouped
+            .entry(history_chunk_bucket(entry.played_at))
+            .or_default()
+            .push(entry.clone());
+    }
+
+    grouped
+        .into_iter()
+        .filter_map(|(bucket, events)| build_sync_history_chunk(bucket, events))
+        .collect()
+}
+
+fn load_sync_history_chunks(conn: &Connection) -> Vec<SyncHistoryChunk> {
+    let history = load_sync_history(conn);
+    build_sync_history_chunks(&history)
+}
+
+fn build_sync_history_chunk_summaries(chunks: &[SyncHistoryChunk]) -> Vec<SyncHistoryChunkSummary> {
+    chunks
+        .iter()
+        .map(|chunk| SyncHistoryChunkSummary {
+            chunk_id: chunk.chunk_id.clone(),
+            range: chunk.range.clone(),
+            event_count: chunk.event_count,
+            rolling_hash: chunk.rolling_hash.clone(),
+        })
+        .collect()
+}
+
+fn load_sync_history_chunk_summaries(conn: &Connection) -> Vec<SyncHistoryChunkSummary> {
+    build_sync_history_chunk_summaries(&load_sync_history_chunks(conn))
+}
+
+fn load_sync_history_chunk_by_id(conn: &Connection, chunk_id: &str) -> Option<SyncHistoryChunk> {
+    let bucket = chunk_id.parse::<i64>().ok()?;
+    let min_played_at = bucket.saturating_mul(PLAY_HISTORY_CHUNK_SECONDS);
+    let max_played_at = min_played_at.saturating_add(PLAY_HISTORY_CHUNK_SECONDS - 1);
+    let events: Vec<SyncHistoryEntry> = conn
+        .prepare(
+            "SELECT t.file_hash, ph.played_at
+             FROM play_history ph
+             JOIN tracks t ON t.id = ph.track_id
+             WHERE t.file_hash IS NOT NULL
+               AND ph.played_at >= ?1
+               AND ph.played_at <= ?2
+             ORDER BY ph.played_at, t.file_hash",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![min_played_at, max_played_at], |row| {
+                Ok(SyncHistoryEntry {
+                    hash: row.get(0)?,
+                    played_at: row.get(1)?,
+                })
+            })
+            .map(|rows| rows.filter_map(|row| row.ok()).collect())
+        })
+        .unwrap_or_default();
+
+    build_sync_history_chunk(bucket, events)
+}
+
+fn build_sync_merkle_root(conn: &Connection) -> SyncMerkleRoot {
+    let content_by_hash_hash = hash_json(&build_sync_content_hashes(&load_remote_tracks(conn)));
+    let track_meta_by_hash_hash = hash_json(&load_sync_track_meta_hashes(conn));
+    let playlists_by_name_hash = hash_json(&load_sync_playlist_hashes(conn));
+    let smart_playlists_by_id_hash = hash_json(&load_sync_smart_playlist_hashes(conn));
+    let play_history_log_hash = hash_json(&load_sync_history_chunk_summaries(conn));
+
+    let library_state_hash = hash_json(&(
+        track_meta_by_hash_hash.clone(),
+        playlists_by_name_hash.clone(),
+        smart_playlists_by_id_hash.clone(),
+        play_history_log_hash.clone(),
+    ));
+    let root_hash = hash_json(&(content_by_hash_hash.clone(), library_state_hash.clone()));
+
+    SyncMerkleRoot {
+        version: SYNC_MERKLE_VERSION.to_string(),
+        root_hash,
+        content_by_hash_hash,
+        library_state_hash,
+        track_meta_by_hash_hash,
+        playlists_by_name_hash,
+        smart_playlists_by_id_hash,
+        play_history_log_hash,
+    }
+}
+
+fn build_sync_merkle_debug(conn: &Connection) -> SyncMerkleDebugResponse {
+    let content_hashes = build_sync_content_hashes(&load_remote_tracks(conn));
+    let track_meta_hashes = load_sync_track_meta_hashes(conn);
+    let playlists = load_sync_playlists(conn);
+    let smart_playlists = load_sync_smart_playlists(conn);
+    let history_chunk_summaries = load_sync_history_chunk_summaries(conn);
+
+    let newest_history_chunk = history_chunk_summaries.last();
+    let history_events_total = history_chunk_summaries
+        .iter()
+        .map(|chunk| chunk.event_count)
+        .sum::<usize>();
+
+    SyncMerkleDebugResponse {
+        app_version: APP_VERSION.to_string(),
+        merkle_version: SYNC_MERKLE_VERSION.to_string(),
+        root: build_sync_merkle_root(conn),
+        counts: SyncMerkleDebugCounts {
+            content_entries: content_hashes.len(),
+            track_meta_entries: track_meta_hashes.len(),
+            playlists: playlists.len(),
+            smart_playlists: smart_playlists.len(),
+            history_chunks: history_chunk_summaries.len(),
+            history_events_total,
+        },
+        newest_history_chunk_id: newest_history_chunk.map(|chunk| chunk.chunk_id.clone()),
+        newest_history_max_played_at: newest_history_chunk.map(|chunk| chunk.range.max_played_at),
+    }
 }
 
 fn build_local_hash_to_id_map(conn: &Connection) -> HashMap<String, i64> {
@@ -586,6 +1042,24 @@ fn handle_request(
         serve_tracks(request, &conn);
     } else if url == "/sync-data" {
         serve_sync_data(request, &conn);
+    } else if url == "/sync-merkle/root" {
+        serve_sync_merkle_root(request, &conn);
+    } else if url == "/sync-merkle/debug" {
+        serve_sync_merkle_debug(request, &conn);
+    } else if url == "/sync-merkle/track-meta/index" {
+        serve_sync_merkle_track_meta_index(request, &conn);
+    } else if let Some(hash) = url.strip_prefix("/sync-merkle/track-meta/state/") {
+        serve_sync_merkle_track_meta_state(request, &conn, hash);
+    } else if let Some(hash) = url.strip_prefix("/sync-merkle/track-meta/fields/") {
+        serve_sync_merkle_track_meta_fields(request, &conn, hash);
+    } else if url == "/sync-merkle/playlists" {
+        serve_sync_merkle_playlists(request, &conn);
+    } else if url == "/sync-merkle/smart-playlists" {
+        serve_sync_merkle_smart_playlists(request, &conn);
+    } else if url == "/sync-merkle/history/chunks" {
+        serve_sync_merkle_history_chunks(request, &conn);
+    } else if let Some(chunk_id) = url.strip_prefix("/sync-merkle/history/chunk/") {
+        serve_sync_merkle_history_chunk(request, &conn, chunk_id);
     } else if let Some(hash) = url.strip_prefix("/file/") {
         let hash = hash.to_string();
         serve_file(request, &hash, &conn, &data_dir);
@@ -800,25 +1274,7 @@ fn serve_control_seek(mut request: tiny_http::Request, playback: &crate::playbac
 fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
     let body = {
         let c = conn.lock().unwrap();
-        let tracks: Vec<RemoteTrack> = c
-            .prepare(
-                "SELECT file_hash, path, title, artist, album \
-                 FROM tracks WHERE file_hash IS NOT NULL",
-            )
-            .map(|mut s| {
-                s.query_map([], |row| {
-                    Ok(RemoteTrack {
-                        hash: row.get(0)?,
-                        path: row.get(1)?,
-                        title: row.get(2)?,
-                        artist: row.get(3)?,
-                        album: row.get(4)?,
-                    })
-                })
-                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-                .unwrap_or_default()
-            })
-            .unwrap_or_default();
+        let tracks = load_remote_tracks(&c);
         let (device_name, device_emoji) = device_identity(&c);
         serde_json::to_vec(&TracksResponse {
             version: APP_VERSION.to_string(),
@@ -872,6 +1328,117 @@ fn serve_sync_data(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
     let _ = request.respond(tiny_http::Response::from_data(body).with_header(ct));
 }
 
+fn serve_sync_merkle_root(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
+    let payload = {
+        let conn = conn.lock().unwrap();
+        build_sync_merkle_root(&conn)
+    };
+    respond_json(request, &payload);
+}
+
+fn serve_sync_merkle_debug(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
+    let payload = {
+        let conn = conn.lock().unwrap();
+        build_sync_merkle_debug(&conn)
+    };
+    respond_json(request, &payload);
+}
+
+fn serve_sync_merkle_track_meta_index(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
+    let payload = {
+        let conn = conn.lock().unwrap();
+        load_sync_track_meta_hashes(&conn)
+    };
+    respond_json(request, &payload);
+}
+
+fn serve_sync_merkle_track_meta_state(
+    request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    hash: &str,
+) {
+    if hash.trim().is_empty() {
+        respond_status(request, 404);
+        return;
+    }
+    let payload = {
+        let conn = conn.lock().unwrap();
+        load_sync_track_state_by_hash(&conn, hash).map(|state| SyncTrackStatePayload {
+            hash: hash.to_string(),
+            state,
+        })
+    };
+    match payload {
+        Some(payload) => respond_json(request, &payload),
+        None => respond_status(request, 404),
+    }
+}
+
+fn serve_sync_merkle_track_meta_fields(
+    request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    hash: &str,
+) {
+    if hash.trim().is_empty() {
+        respond_status(request, 404);
+        return;
+    }
+    let payload = {
+        let conn = conn.lock().unwrap();
+        load_sync_track_fields_by_hash(&conn, hash).map(|fields| SyncTrackFieldsPayload {
+            hash: hash.to_string(),
+            fields,
+        })
+    };
+    match payload {
+        Some(payload) => respond_json(request, &payload),
+        None => respond_status(request, 404),
+    }
+}
+
+fn serve_sync_merkle_playlists(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
+    let payload = {
+        let conn = conn.lock().unwrap();
+        load_sync_playlists(&conn)
+    };
+    respond_json(request, &payload);
+}
+
+fn serve_sync_merkle_smart_playlists(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
+    let payload = {
+        let conn = conn.lock().unwrap();
+        load_sync_smart_playlists(&conn)
+    };
+    respond_json(request, &payload);
+}
+
+fn serve_sync_merkle_history_chunks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
+    let payload = {
+        let conn = conn.lock().unwrap();
+        load_sync_history_chunk_summaries(&conn)
+    };
+    respond_json(request, &payload);
+}
+
+fn serve_sync_merkle_history_chunk(
+    request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    chunk_id: &str,
+) {
+    if chunk_id.trim().is_empty() {
+        respond_status(request, 404);
+        return;
+    }
+    let payload = {
+        let conn = conn.lock().unwrap();
+        load_sync_history_chunk_by_id(&conn, chunk_id)
+    };
+    match payload {
+        Some(payload) => respond_json(request, &payload),
+        None => respond_status(request, 404),
+    }
+}
+
 // ── HTTP client helpers ───────────────────────────────────────────────────────
 
 /// Build the list of URLs to try for a peer, in priority order.
@@ -923,6 +1490,15 @@ fn peer_get(client: &reqwest::blocking::Client, base_urls: &[String], path: &str
         }
     }
     Err(last_err)
+}
+
+fn peer_get_json<T: DeserializeOwned>(
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+    path: &str,
+) -> Result<T, String> {
+    let bytes = peer_get(client, base_urls, path)?;
+    serde_json::from_slice::<T>(&bytes).map_err(|e| e.to_string())
 }
 
 fn peer_post_json<T: Serialize>(
@@ -1098,6 +1674,241 @@ fn register_downloaded_hash(
     Ok(())
 }
 
+fn file_hash_hex(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    Some(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn path_with_hash_suffix(path: &Path, short_hash: &str, attempt: usize) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let stem = path
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "track".to_string());
+    let ext = path
+        .extension()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.is_empty());
+
+    let suffix = if attempt == 0 {
+        format!(" [{short_hash}]")
+    } else {
+        format!(" [{short_hash}-{attempt}]")
+    };
+    let file_name = match ext {
+        Some(ext) => format!("{stem}{suffix}.{ext}"),
+        None => format!("{stem}{suffix}"),
+    };
+    parent.join(file_name)
+}
+
+fn choose_download_save_path(initial_path: &Path, remote_hash: &str) -> PathBuf {
+    if !initial_path.exists() {
+        return initial_path.to_path_buf();
+    }
+    if file_hash_hex(initial_path).as_deref() == Some(remote_hash) {
+        return initial_path.to_path_buf();
+    }
+
+    let short_hash = &remote_hash[..remote_hash.len().min(8)];
+    for attempt in 0..10_000usize {
+        let candidate = path_with_hash_suffix(initial_path, short_hash, attempt);
+        if !candidate.exists() {
+            return candidate;
+        }
+        if file_hash_hex(&candidate).as_deref() == Some(remote_hash) {
+            return candidate;
+        }
+    }
+
+    let fallback_attempt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as usize;
+    path_with_hash_suffix(initial_path, short_hash, fallback_attempt)
+}
+
+fn merge_remote_track_metadata_via_merkle(
+    conn: &Arc<Mutex<Connection>>,
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+) -> Result<(), String> {
+    let remote_hashes = peer_get_json::<Vec<SyncTrackMetaHashes>>(client, base_urls, "/sync-merkle/track-meta/index")?;
+
+    let (local_hashes_by_hash, local_track_meta_by_hash): (
+        HashMap<String, SyncTrackMetaHashes>,
+        HashMap<String, SyncTrackMeta>,
+    ) = {
+        let c = conn.lock().unwrap();
+        let local_track_meta = dedup_track_meta_by_hash(load_sync_track_meta(&c));
+        let local_hashes = build_sync_track_meta_hashes(&local_track_meta);
+        (
+            local_hashes
+                .into_iter()
+                .map(|entry| (entry.hash.clone(), entry))
+                .collect(),
+            local_track_meta
+                .into_iter()
+                .map(|entry| (entry.hash.clone(), entry))
+                .collect(),
+        )
+    };
+
+    let mut changed_remote_track_meta: Vec<SyncTrackMeta> = Vec::new();
+    for remote in remote_hashes {
+        let local_hashes = local_hashes_by_hash.get(&remote.hash);
+        let needs_state = local_hashes
+            .map(|local| local.state_hash != remote.state_hash)
+            .unwrap_or(true);
+        let needs_fields = local_hashes
+            .map(|local| local.fields_hash != remote.fields_hash)
+            .unwrap_or(true);
+        if !needs_state && !needs_fields {
+            continue;
+        }
+
+        let state = if needs_state {
+            let path = format!("/sync-merkle/track-meta/state/{}", remote.hash);
+            peer_get_json::<SyncTrackStatePayload>(client, base_urls, &path)?.state
+        } else if let Some(local_meta) = local_track_meta_by_hash.get(&remote.hash) {
+            local_meta.state()
+        } else {
+            let path = format!("/sync-merkle/track-meta/state/{}", remote.hash);
+            peer_get_json::<SyncTrackStatePayload>(client, base_urls, &path)?.state
+        };
+
+        let fields = if needs_fields {
+            let path = format!("/sync-merkle/track-meta/fields/{}", remote.hash);
+            peer_get_json::<SyncTrackFieldsPayload>(client, base_urls, &path)?.fields
+        } else if let Some(local_meta) = local_track_meta_by_hash.get(&remote.hash) {
+            local_meta.fields.clone()
+        } else {
+            let path = format!("/sync-merkle/track-meta/fields/{}", remote.hash);
+            peer_get_json::<SyncTrackFieldsPayload>(client, base_urls, &path)?.fields
+        };
+
+        changed_remote_track_meta.push(sync_track_meta_from_parts(remote.hash, state, fields));
+    }
+
+    if changed_remote_track_meta.is_empty() {
+        return Ok(());
+    }
+
+    let c = conn.lock().unwrap();
+    let hash_to_id = build_local_hash_to_id_map(&c);
+    merge_remote_track_metadata(&c, &hash_to_id, &changed_remote_track_meta);
+    Ok(())
+}
+
+fn merge_remote_playlists_via_merkle(
+    conn: &Arc<Mutex<Connection>>,
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+) -> Result<(), String> {
+    let remote_playlists = peer_get_json::<Vec<SyncPlaylist>>(client, base_urls, "/sync-merkle/playlists")?;
+    let c = conn.lock().unwrap();
+    let hash_to_id = build_local_hash_to_id_map(&c);
+    merge_remote_playlists(&c, &hash_to_id, &remote_playlists);
+    Ok(())
+}
+
+fn merge_remote_smart_playlists_via_merkle(
+    conn: &Arc<Mutex<Connection>>,
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+) -> Result<(), String> {
+    let remote_playlists =
+        peer_get_json::<Vec<SyncSmartPlaylist>>(client, base_urls, "/sync-merkle/smart-playlists")?;
+    let c = conn.lock().unwrap();
+    merge_remote_smart_playlists(&c, &remote_playlists);
+    Ok(())
+}
+
+fn merge_remote_history_via_merkle(
+    conn: &Arc<Mutex<Connection>>,
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+) -> Result<(), String> {
+    let local_chunk_hashes_by_id: HashMap<String, String> = {
+        let c = conn.lock().unwrap();
+        load_sync_history_chunk_summaries(&c)
+            .into_iter()
+            .map(|summary| (summary.chunk_id, summary.rolling_hash))
+            .collect()
+    };
+
+    let remote_chunk_summaries =
+        peer_get_json::<Vec<SyncHistoryChunkSummary>>(client, base_urls, "/sync-merkle/history/chunks")?;
+
+    let mut changed_events: Vec<SyncHistoryEntry> = Vec::new();
+    for summary in remote_chunk_summaries {
+        let is_same_chunk = local_chunk_hashes_by_id
+            .get(&summary.chunk_id)
+            .map(|local_hash| local_hash == &summary.rolling_hash)
+            .unwrap_or(false);
+        if is_same_chunk {
+            continue;
+        }
+
+        let path = format!("/sync-merkle/history/chunk/{}", summary.chunk_id);
+        let chunk = peer_get_json::<SyncHistoryChunk>(client, base_urls, &path)?;
+        changed_events.extend(chunk.events);
+    }
+
+    if changed_events.is_empty() {
+        return Ok(());
+    }
+
+    let c = conn.lock().unwrap();
+    let hash_to_id = build_local_hash_to_id_map(&c);
+    merge_remote_history(&c, &hash_to_id, &changed_events);
+    Ok(())
+}
+
+fn is_http_404_error(error: &str) -> bool {
+    error.contains("HTTP 404")
+}
+
+fn merge_sync_data_via_merkle(
+    conn: &Arc<Mutex<Connection>>,
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+) -> Result<bool, String> {
+    let remote_root = match peer_get_json::<SyncMerkleRoot>(client, base_urls, "/sync-merkle/root") {
+        Ok(root) => root,
+        Err(error) if is_http_404_error(&error) => {
+            // Peer is running older sync protocol and does not expose Merkle endpoints.
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+
+    let local_root = {
+        let c = conn.lock().unwrap();
+        build_sync_merkle_root(&c)
+    };
+
+    if local_root.library_state_hash == remote_root.library_state_hash {
+        return Ok(true);
+    }
+
+    if local_root.track_meta_by_hash_hash != remote_root.track_meta_by_hash_hash {
+        merge_remote_track_metadata_via_merkle(conn, client, base_urls)?;
+    }
+    if local_root.playlists_by_name_hash != remote_root.playlists_by_name_hash {
+        merge_remote_playlists_via_merkle(conn, client, base_urls)?;
+    }
+    if local_root.smart_playlists_by_id_hash != remote_root.smart_playlists_by_id_hash {
+        merge_remote_smart_playlists_via_merkle(conn, client, base_urls)?;
+    }
+    if local_root.play_history_log_hash != remote_root.play_history_log_hash {
+        merge_remote_history_via_merkle(conn, client, base_urls)?;
+    }
+
+    Ok(true)
+}
+
 fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, peer_port: u16, app: AppHandle) {
     emit(&app, &peer_name, None, None, "index", 0, 0, Some("Connecting...".to_string()));
 
@@ -1181,29 +1992,18 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         .collect();
 
     let total = missing.len();
-    if total == 0 {
+    if total > 0 {
         emit(
             &app,
             &peer_name,
             remote_device_name.as_deref(),
             remote_device_emoji.as_deref(),
-            "done",
+            "download",
+            total,
             0,
-            0,
-            Some("Already up to date".to_string()),
+            None,
         );
-        return;
     }
-    emit(
-        &app,
-        &peer_name,
-        remote_device_name.as_deref(),
-        remote_device_emoji.as_deref(),
-        "download",
-        total,
-        0,
-        None,
-    );
 
     // 3 ── Download missing files ──────────────────────────────────────────────
     // Organized by metadata: [Artist]/[Album]/filename (or [Artist]/filename, or just filename)
@@ -1249,8 +2049,22 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         }
 
         // Get the filename from the track path
-        let filename = track.path.rsplit('/').next().unwrap_or(track.path.as_str());
-        let save_path = save_dir.join(filename);
+        let filename = track
+            .path
+            .rsplit(|ch| ch == '/' || ch == '\\')
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(track.path.as_str());
+        let requested_save_path = save_dir.join(filename);
+        let save_path = choose_download_save_path(&requested_save_path, &track.hash);
+        if save_path != requested_save_path {
+            eprintln!(
+                "[sync] path collision for hash {}: requested {}, using {}",
+                track.hash,
+                requested_save_path.display(),
+                save_path.display()
+            );
+        }
 
         // Recheck the DB at download time and reserve this hash across
         // concurrent sync workers so two peers can't fetch the same track.
@@ -1272,7 +2086,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             continue;
         }
 
-        // Guard: if a file already exists at that path, skip (e.g. re-sync after crash)
+        // Fast path: if we already have the exact same-content file, only register hash mapping.
         if save_path.exists() {
             if let Err(e) = register_downloaded_hash(&conn, &data_dir, &save_path, &track.hash) {
                 eprintln!("[sync] failed to register existing file for hash {}: {e}", track.hash);
@@ -1330,17 +2144,19 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
     }
 
     // 4 ── Reindex to register downloaded files in the DB ─────────────────────
-    emit(
-        &app,
-        &peer_name,
-        remote_device_name.as_deref(),
-        remote_device_emoji.as_deref(),
-        "reindex",
-        total,
-        done,
-        None,
-    );
-    app.state::<crate::library::LibraryState>().reindex(&app);
+    if total > 0 {
+        emit(
+            &app,
+            &peer_name,
+            remote_device_name.as_deref(),
+            remote_device_emoji.as_deref(),
+            "reindex",
+            total,
+            done,
+            None,
+        );
+        app.state::<crate::library::LibraryState>().reindex(&app);
+    }
 
     // 5 ── Sync metadata, playlists, smart playlists, history ─────────────────
     emit(
@@ -1351,11 +2167,20 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         "merging",
         total,
         done,
-        Some("Merging library data…".to_string()),
+        Some("Merging library data...".to_string()),
     );
-    if let Ok(sd_bytes) = peer_get(&client, &base_urls, "/sync-data") {
-        if let Ok(remote) = serde_json::from_slice::<SyncData>(&sd_bytes) {
-            merge_sync_data(&app, remote);
+    let merkle_merged = match merge_sync_data_via_merkle(&conn, &client, &base_urls) {
+        Ok(used_merkle) => used_merkle,
+        Err(error) => {
+            eprintln!("[sync] merkle merge failed: {error}");
+            false
+        }
+    };
+    if !merkle_merged {
+        if let Ok(sd_bytes) = peer_get(&client, &base_urls, "/sync-data") {
+            if let Ok(remote) = serde_json::from_slice::<SyncData>(&sd_bytes) {
+                merge_sync_data(&app, remote);
+            }
         }
     }
 
@@ -1367,7 +2192,11 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         "done",
         total,
         done,
-        Some(format!("{added} new track(s) added")),
+        Some(if added == 0 {
+            "Library metadata synced".to_string()
+        } else {
+            format!("{added} new track(s) added")
+        }),
     );
 }
 
