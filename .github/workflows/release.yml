@@ -182,7 +182,7 @@ jobs:
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_ALIAS: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS || secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir -p release-assets
@@ -192,20 +192,23 @@ jobs:
             exit 1
           fi
 
-          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEYSTORE_ALIAS" && -n "$ANDROID_KEYSTORE_PASSWORD" ]]; then
-            build_tools_dir="$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -n1)"
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
-            "$ANDROID_SDK_ROOT/build-tools/$build_tools_dir/zipalign" -f -p 4 "$unsigned_apk" "$RUNNER_TEMP/app-aligned.apk"
-            "$ANDROID_SDK_ROOT/build-tools/$build_tools_dir/apksigner" sign \
-              --ks "$RUNNER_TEMP/release.keystore" \
-              --ks-key-alias "$ANDROID_KEYSTORE_ALIAS" \
-              --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
-              --key-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
-              --out "release-assets/player-${GITHUB_REF_NAME}-android-universal.apk" \
-              "$RUNNER_TEMP/app-aligned.apk"
-          else
-            cp "$unsigned_apk" "release-assets/player-${GITHUB_REF_NAME}-android-universal-unsigned.apk"
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_ALIAS" || -z "$KEYSTORE_PASS" ]]; then
+            echo "Android signing secrets are missing. Expected ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_ALIAS, and KEYSTORE_PASS." >&2
+            exit 1
           fi
+
+          build_tools_dir="$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -n1)"
+          signed_apk="release-assets/player-${GITHUB_REF_NAME}-android-universal.apk"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+          "$ANDROID_SDK_ROOT/build-tools/$build_tools_dir/zipalign" -f -p 4 "$unsigned_apk" "$RUNNER_TEMP/app-aligned.apk"
+          "$ANDROID_SDK_ROOT/build-tools/$build_tools_dir/apksigner" sign \
+            --ks "$RUNNER_TEMP/release.keystore" \
+            --ks-key-alias "$ANDROID_KEYSTORE_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASS" \
+            --key-pass "pass:$KEYSTORE_PASS" \
+            --out "$signed_apk" \
+            "$RUNNER_TEMP/app-aligned.apk"
+          "$ANDROID_SDK_ROOT/build-tools/$build_tools_dir/apksigner" verify --print-certs "$signed_apk"
 
           if [[ -d src-tauri/gen/android/app/build/outputs/bundle ]]; then
             find src-tauri/gen/android/app/build/outputs/bundle -type f -name '*.aab' -exec cp {} release-assets/ \;
