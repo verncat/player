@@ -17,6 +17,70 @@ Player currently focuses on six core jobs:
 - Discover peer devices over LAN and sync files and metadata.
 - Provide a richer now-playing experience with beat-reactive visuals and a WebGL album renderer.
 
+## Screenshots
+
+These screenshots were captured with the built-in demo mode. Click any image to open the full-size version.
+
+<table>
+	<tr>
+		<td width="50%" align="center">
+			<a href="./readme/first.png">
+				<img src="./readme/first.png" alt="Home view with recently played and pinned playlists" width="96%" />
+			</a>
+			<br />
+			<sub>Home with recently played and pinned playlists</sub>
+		</td>
+		<td width="50%" align="center">
+			<a href="./readme/library.png">
+				<img src="./readme/library.png" alt="Library view grouped by artist" width="96%" />
+			</a>
+			<br />
+			<sub>Library grouped by artist with rich track rows</sub>
+		</td>
+	</tr>
+	<tr>
+		<td width="50%" align="center">
+			<a href="./readme/playlists.png">
+				<img src="./readme/playlists.png" alt="Regular playlists view" width="96%" />
+			</a>
+			<br />
+			<sub>Regular playlists</sub>
+		</td>
+		<td width="50%" align="center">
+			<a href="./readme/flexible-playlist-edit.png">
+				<img src="./readme/flexible-playlist-edit.png" alt="Flexible playlist editor" width="96%" />
+			</a>
+			<br />
+			<sub>Flexible playlist editor with rule-based filters</sub>
+		</td>
+	</tr>
+	<tr>
+		<td width="50%" align="center">
+			<a href="./readme/search.png">
+				<img src="./readme/search.png" alt="Search start screen with recent tracks" width="96%" />
+			</a>
+			<br />
+			<sub>Search starting state with recent listening context</sub>
+		</td>
+		<td width="50%" align="center">
+			<a href="./readme/soulseek-search.png">
+				<img src="./readme/soulseek-search.png" alt="Soulseek search results" width="96%" />
+			</a>
+			<br />
+			<sub>Soulseek search results inside the app</sub>
+		</td>
+	</tr>
+	<tr>
+		<td colspan="2" align="center">
+			<a href="./readme/devices.png">
+				<img src="./readme/devices.png" alt="Devices and sync view" width="60%" />
+			</a>
+			<br />
+			<sub>Devices and sync view</sub>
+		</td>
+	</tr>
+</table>
+
 ## Current Features
 
 ### Library
@@ -121,6 +185,12 @@ pnpm install
 
 ```bash
 pnpm tauri dev
+```
+
+### Run in demo mode
+
+```bash
+pnpm tauri dev -- -- --demo
 ```
 
 ### Build desktop app

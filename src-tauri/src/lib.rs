@@ -1,5 +1,6 @@
 pub mod about;
 pub mod audio;
+pub mod demo;
 pub mod discovery;
 pub mod identify;
 pub mod library;
@@ -68,17 +69,39 @@ fn init_tracing() {
 pub fn run() {
     // let _stream = play_sine(440.0);
     init_tracing();
+    let demo_mode = demo::is_demo_mode_enabled();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::Manager;
             #[cfg(target_os = "android")]
-            let data_dir = std::path::PathBuf::from("/sdcard/Player");
+            let data_dir = if demo_mode {
+                std::path::PathBuf::from("/sdcard/Player Demo")
+            } else {
+                std::path::PathBuf::from("/sdcard/Player")
+            };
             #[cfg(not(target_os = "android"))]
-            let data_dir = app.path().app_data_dir()?.join("data");
-            let library = library::LibraryState::new(data_dir, app.handle().clone())
-                .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            let data_dir = if demo_mode {
+                app.path().app_data_dir()?.join("demo-data")
+            } else {
+                app.path().app_data_dir()?.join("data")
+            };
+            if demo_mode {
+                demo::prepare_demo_library(&data_dir)
+                    .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            }
+            let library = if demo_mode {
+                library::LibraryState::new_in_memory(data_dir, app.handle().clone())
+            } else {
+                library::LibraryState::new(data_dir, app.handle().clone())
+            }
+            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            if demo_mode {
+                library
+                    .seed_demo_content()
+                    .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            }
             let sync_enabled = library
                 .get_device_settings()
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?
@@ -89,16 +112,18 @@ pub fn run() {
             app.manage(discovery::DiscoveryState::new());
             app.manage(soulseek::SoulseekState::new());
             app.manage(sync::SyncState::new(sync_enabled));
-            // Auto-start discovery
-            let _ = discovery::discovery_start(
-                app.state::<discovery::DiscoveryState>(),
-                app.handle().clone(),
-            );
-            sync::ensure_http_server_started(
-                &app.state::<sync::SyncState>(),
-                &app.state::<library::LibraryState>(),
-                &app.handle().clone(),
-            );
+            if !demo_mode {
+                // Auto-start discovery
+                let _ = discovery::discovery_start(
+                    app.state::<discovery::DiscoveryState>(),
+                    app.handle().clone(),
+                );
+                sync::ensure_http_server_started(
+                    &app.state::<sync::SyncState>(),
+                    &app.state::<library::LibraryState>(),
+                    &app.handle().clone(),
+                );
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -142,12 +142,31 @@ impl LibraryState {
     ///   3. Full-scans `data_dir` on startup.
     ///   4. Spawns a background FS watcher for incremental updates.
     pub fn new(data_dir: PathBuf, app_handle: tauri::AppHandle) -> Result<Self, BoxError> {
+        Self::new_with_storage(data_dir, app_handle, false)
+    }
+
+    pub fn new_in_memory(data_dir: PathBuf, app_handle: tauri::AppHandle) -> Result<Self, BoxError> {
+        Self::new_with_storage(data_dir, app_handle, true)
+    }
+
+    fn new_with_storage(
+        data_dir: PathBuf,
+        app_handle: tauri::AppHandle,
+        in_memory: bool,
+    ) -> Result<Self, BoxError> {
         std::fs::create_dir_all(&data_dir)?;
 
-        let db_path = data_dir.join("app.db");
-        let is_new_db = !db_path.exists();
+        let db_path = if in_memory {
+            None
+        } else {
+            Some(data_dir.join("app.db"))
+        };
+        let is_new_db = in_memory || db_path.as_ref().map(|path| !path.exists()).unwrap_or(true);
 
-        let conn = Connection::open(&db_path)?;
+        let conn = match db_path.as_ref() {
+            Some(path) => Connection::open(path)?,
+            None => Connection::open_in_memory()?,
+        };
         init_schema(&conn)?;
 
         // Only run the full directory scan on first launch (new DB).
@@ -157,7 +176,7 @@ impl LibraryState {
             index_directory(&conn, &data_dir)?;
         }
 
-        log_library_snapshot("startup", &data_dir, &db_path, &conn);
+        log_library_snapshot("startup", &data_dir, db_path.as_deref(), &conn);
 
         let conn = Arc::new(Mutex::new(conn));
         start_watcher(data_dir.clone(), Arc::clone(&conn), app_handle)?;
@@ -214,6 +233,11 @@ impl LibraryState {
         thread::spawn(move || {
             index_directory_async(&conn, &data_dir, &app);
         });
+    }
+
+    pub fn seed_demo_content(&self) -> Result<(), BoxError> {
+        let conn = self.conn.lock().unwrap();
+        crate::demo::seed_demo_database(&conn, &self.data_dir)
     }
 
     pub fn get_device_settings(&self) -> Result<DeviceSettings, BoxError> {
@@ -321,8 +345,13 @@ fn table_count(conn: &Connection, table: &str) -> i64 {
     conn.query_row(&sql, [], |row| row.get(0)).unwrap_or(-1)
 }
 
-fn log_library_snapshot(label: &str, data_dir: &Path, db_path: &Path, conn: &Connection) {
-    let db_size = std::fs::metadata(db_path).map(|meta| meta.len()).unwrap_or(0);
+fn log_library_snapshot(label: &str, data_dir: &Path, db_path: Option<&Path>, conn: &Connection) {
+    let db_size = db_path
+        .and_then(|path| std::fs::metadata(path).ok().map(|meta| meta.len()))
+        .unwrap_or(0);
+    let db_path = db_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ":memory:".to_string());
     let tracks = table_count(conn, "tracks");
     let playlists = table_count(conn, "playlists");
     let smart_playlists = table_count(conn, "smart_playlists");
@@ -331,7 +360,7 @@ fn log_library_snapshot(label: &str, data_dir: &Path, db_path: &Path, conn: &Con
         target: "player_lib::library",
         label,
         data_dir = %data_dir.display(),
-        db_path = %db_path.display(),
+        db_path = %db_path,
         db_size,
         tracks,
         playlists,
