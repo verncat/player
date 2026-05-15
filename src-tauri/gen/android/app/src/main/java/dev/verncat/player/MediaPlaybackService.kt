@@ -30,6 +30,7 @@ class MediaPlaybackService : Service() {
         const val ACTION_UPDATE = "dev.verncat.player.UPDATE"
         const val ACTION_PREV   = "dev.verncat.player.PREV"
         const val ACTION_NEXT   = "dev.verncat.player.NEXT"
+        const val ACTION_TOGGLE = "dev.verncat.player.TOGGLE"
         const val ACTION_PLAY   = "dev.verncat.player.PLAY"
         const val ACTION_PAUSE  = "dev.verncat.player.PAUSE"
         const val EXTRA_TITLE      = "title"
@@ -76,6 +77,7 @@ class MediaPlaybackService : Service() {
             }
             ACTION_PREV  -> forward("prev")
             ACTION_NEXT  -> forward("next")
+            ACTION_TOGGLE -> forward("toggle")
             ACTION_PLAY  -> forward("play")
             ACTION_PAUSE -> { currentIsPlaying = false; forward("pause") }
         }
@@ -133,7 +135,7 @@ class MediaPlaybackService : Service() {
         val playPauseIcon  = if (currentIsPlaying) android.R.drawable.ic_media_pause
                              else android.R.drawable.ic_media_play
         val playPauseLabel = if (currentIsPlaying) "Pause" else "Play"
-        val playPauseAct   = if (currentIsPlaying) ACTION_PAUSE else ACTION_PLAY
+        val playPauseAct   = ACTION_TOGGLE
 
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)

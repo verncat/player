@@ -3578,6 +3578,35 @@ async function togglePlay() {
   syncAndroid();
 }
 
+async function syncPlaybackStateForMediaControl() {
+  try {
+    await refreshPlaybackState();
+  } catch (_) {}
+}
+
+async function toggleFromMediaControl() {
+  await syncPlaybackStateForMediaControl();
+  await togglePlay();
+}
+
+async function playFromMediaControl() {
+  await syncPlaybackStateForMediaControl();
+  if (!isPlaying.value) {
+    await togglePlay();
+  } else {
+    syncAndroid();
+  }
+}
+
+async function pauseFromMediaControl() {
+  await syncPlaybackStateForMediaControl();
+  if (isPlaying.value) {
+    await togglePlay();
+  } else {
+    syncAndroid();
+  }
+}
+
 async function toggleLike(track: Track, e?: Event) {
   if (e) e.stopPropagation();
   try {
@@ -3864,8 +3893,9 @@ function onDocumentVisibilityChange() {
 }
 
 async function loadAppData(reason: 'mount' | 'resume' | 'sync' | 'retry' = 'mount') {
+  const shouldLoadLibrary = reason !== 'resume' || libraryTracks.value.length === 0;
   await Promise.allSettled([
-    loadLibrary(),
+    shouldLoadLibrary ? loadLibrary() : Promise.resolve(),
     loadRecent(),
     loadPlaylists(),
     loadSmartPlaylists(),
@@ -4328,8 +4358,9 @@ onMounted(() => {
 
   // Android media controls: _mediaControl is called by the native notification buttons
   (window as any)._mediaControl = async (action: string) => {
-    if (action === 'play')       { if (!isPlaying.value) await togglePlay(); }
-    else if (action === 'pause') { if (isPlaying.value) await togglePlay(); }
+    if (action === 'toggle')     { await toggleFromMediaControl(); }
+    else if (action === 'play')       { await playFromMediaControl(); }
+    else if (action === 'pause') { await pauseFromMediaControl(); }
     else if (action === 'next')  { await playNext(); }
     else if (action === 'prev')  { await playPrev(); }
     else if (action.startsWith('seek:')) {
