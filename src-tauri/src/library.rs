@@ -39,6 +39,12 @@ const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "ogg", "opus", "aac", "m4a", "wav", "wv", "ape",
 ];
 
+const INTERNAL_LIBRARY_DIRECTORIES: &[&str] = &[
+    ".soulseek-temp",
+    ".soulseek-cover-cache",
+    ".soulseek-preview-cache",
+];
+
 const SIDECAR_COVER_FILENAMES: &[&str] = &[
     "cover.jpg",
     "cover.jpeg",
@@ -168,6 +174,7 @@ impl LibraryState {
             None => Connection::open_in_memory()?,
         };
         init_schema(&conn)?;
+        purge_internal_library_rows(&conn)?;
 
         // Only run the full directory scan on first launch (new DB).
         // On subsequent launches the FS watcher handles incremental changes;
@@ -368,6 +375,30 @@ fn log_library_snapshot(label: &str, data_dir: &Path, db_path: Option<&Path>, co
         play_history,
         "library snapshot"
     );
+}
+
+fn is_internal_library_path(data_dir: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(data_dir) else {
+        return false;
+    };
+
+    relative
+        .components()
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+        .is_some_and(|name| INTERNAL_LIBRARY_DIRECTORIES.contains(&name))
+}
+
+fn purge_internal_library_rows(conn: &Connection) -> rusqlite::Result<()> {
+    for directory in INTERNAL_LIBRARY_DIRECTORIES {
+        let like_pattern = format!("{directory}/%");
+        conn.execute(
+            "DELETE FROM tracks WHERE path = ?1 OR path LIKE ?2",
+            params![directory, like_pattern],
+        )?;
+    }
+
+    Ok(())
 }
 
 fn random_emoji() -> String {
@@ -720,6 +751,7 @@ fn index_directory_async(
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
+        .filter(|e| !is_internal_library_path(data_dir, e.path()))
         .filter(|e| {
             let ext = e.path().extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
             AUDIO_EXTENSIONS.contains(&ext.as_str())
@@ -794,6 +826,9 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
         .filter(|e| e.file_type().is_file())
     {
         let path = entry.path();
+        if is_internal_library_path(data_dir, path) {
+            continue;
+        }
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -836,6 +871,10 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
 
 /// Returns `Ok(true)` if a new/updated row was written, `Ok(false)` if skipped.
 pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, BoxError> {
+    if is_internal_library_path(data_dir, abs) {
+        return Ok(false);
+    }
+
     let rel = rel_path(data_dir, abs);
     let sidecar_cover = find_sidecar_cover_candidate(data_dir, abs);
 
@@ -1397,6 +1436,9 @@ fn handle_fs_events_batch(
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) => {
                 for path in event.paths {
+                    if is_internal_library_path(data_dir, &path) {
+                        continue;
+                    }
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
                     if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
                         to_index.push(path);
@@ -1409,6 +1451,9 @@ fn handle_fs_events_batch(
             }
             EventKind::Remove(_) => {
                 for path in event.paths {
+                    if is_internal_library_path(data_dir, &path) {
+                        continue;
+                    }
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
                     if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
                         to_remove.push(path);
