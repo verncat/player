@@ -3395,7 +3395,8 @@ async function playTrackOnCurrentOutput(track: Track, autoplay: boolean, positio
 }
 
 function recordPlayIfTracked(track: Track) {
-  if (track.id <= 0) return;
+  const isActualRecentQueue = queueSource.value === 'recent' && filterDuplicateTracks(recentTracks.value).length > 0;
+  if (track.id <= 0 || isActualRecentQueue) return;
   track.play_count++;
   invoke('record_play', { id: track.id }).then(() => loadRecent());
 }
