@@ -173,6 +173,7 @@ pub fn run() {
             audio::set_volume,
             about::about_info,
             about::about_check_updates,
+            about::about_do_update,
             playback::playback_play,
             playback::playback_play_absolute,
             playback::playback_pause,

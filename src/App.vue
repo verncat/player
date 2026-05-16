@@ -3,7 +3,11 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { marked } from "marked";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
+
+// marked: no external links, open in browser via tauri
+marked.use({ gfm: true, breaks: true });
 
 interface AudioDevice { name: string }
 interface DeviceList { devices: AudioDevice[]; current: string | null }
@@ -449,6 +453,8 @@ interface AboutUpdateStatus {
   latest_version: string | null;
   has_update: boolean;
   release_url: string | null;
+  release_notes: string | null;
+  asset_url: string | null;
   checked_repo: string | null;
   message: string;
 }
@@ -461,6 +467,9 @@ const aboutError = ref('');
 const aboutUpdateStatus = ref<AboutUpdateStatus | null>(null);
 const aboutCheckingUpdates = ref(false);
 const aboutUpdateError = ref('');
+const aboutUpdating = ref(false);
+const aboutUpdateDone = ref('');
+const aboutUpdateProgress = ref<number | null>(null);
 
 // ── Playlists ──────────────────────────────────────────────────────────────
 interface Playlist {
@@ -3901,6 +3910,8 @@ function scheduleInitialAppDataLoad() {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       void loadAppData('mount');
+      // silent update check — no blocking UI, populates aboutUpdateStatus in background
+      setTimeout(() => { void checkAboutUpdates(); }, 3000);
     });
   });
   initialAppDataTimer = setTimeout(() => {
@@ -3997,6 +4008,32 @@ async function openAboutDownloadLink() {
     await openUrl(url);
   } catch (error) {
     console.error('Failed to open update link:', error);
+  }
+}
+
+async function doAboutUpdate() {
+  const assetUrl = aboutUpdateStatus.value?.asset_url;
+  if (!assetUrl) {
+    await openAboutDownloadLink();
+    return;
+  }
+  aboutUpdating.value = true;
+  aboutUpdateDone.value = '';
+  aboutUpdateError.value = '';
+  aboutUpdateProgress.value = null;
+  const unlisten = await listen<{ downloaded: number; total: number | null; percent: number | null }>(
+    'about-update-progress',
+    (event) => { aboutUpdateProgress.value = event.payload.percent ?? null; }
+  );
+  try {
+    const path = await invoke<string>('about_do_update', { assetUrl });
+    aboutUpdateDone.value = path;
+  } catch (error) {
+    aboutUpdateError.value = String(error ?? 'Update failed');
+  } finally {
+    unlisten();
+    aboutUpdating.value = false;
+    aboutUpdateProgress.value = null;
   }
 }
 
@@ -5785,33 +5822,59 @@ onUnmounted(() => {
               <div class="search-summary about-summary">
                 <span class="about-version-line"><strong>Version</strong> v{{ aboutInfo?.current_version || 'n/a' }}</span>
                 <button
+                  v-if="!aboutUpdateStatus?.has_update"
                   class="sync-toggle"
-                  :class="{ active: !!aboutUpdateStatus?.has_update }"
-                  :title="aboutUpdateStatus?.has_update && aboutUpdateStatus.latest_version ? `Update available: v${aboutUpdateStatus.latest_version}` : 'Check GitHub Releases'"
+                  title="Check GitHub Releases"
                   :disabled="aboutCheckingUpdates"
                   @click="checkAboutUpdates()"
                 >
                   {{ aboutCheckingUpdates ? 'Checking…' : 'Check updates' }}
                 </button>
+                <template v-if="aboutUpdateStatus?.has_update">
+                  <button
+                    class="btn-primary about-update-dl-btn"
+                    :style="aboutUpdateProgress !== null ? { '--dl-pct': aboutUpdateProgress + '%' } : {}"
+                    :disabled="aboutUpdating"
+                    @click="doAboutUpdate()"
+                  >
+                    <span class="about-update-dl-fill" v-if="aboutUpdating && aboutUpdateProgress !== null" />
+                    <span class="about-update-dl-label">
+                      {{ aboutUpdating
+                          ? (aboutUpdateProgress !== null ? `${aboutUpdateProgress}%` : 'Downloading…')
+                          : (aboutUpdateStatus.asset_url ? 'Update now' : 'View release') }}
+                    </span>
+                  </button>
+                  <a
+                    v-if="aboutUpdateStatus.release_url"
+                    class="about-download-link about-download-link-icon"
+                    href="#"
+                    title="Release page"
+                    @click.prevent="openAboutDownloadLink()"
+                  ><svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg></a>
+                </template>
                 <span v-if="aboutCheckingUpdates" class="about-update-inline">Checking updates…</span>
-                <span v-else-if="aboutUpdateError" class="about-update-inline about-update-inline-error">{{ aboutUpdateError }}</span>
-                <span v-else-if="aboutUpdateStatus" class="about-update-inline" :class="{ 'about-update-inline-live': aboutUpdateStatus.has_update }">
-                  {{ aboutUpdateStatus.has_update && aboutUpdateStatus.latest_version
-                    ? `Update available: v${aboutUpdateStatus.latest_version}`
-                    : aboutUpdateStatus.latest_version
-                      ? `No updates. Latest: v${aboutUpdateStatus.latest_version}`
-                      : 'No updates' }}
+                <span v-else-if="aboutUpdateError && !aboutUpdateStatus" class="about-update-inline about-update-inline-error">{{ aboutUpdateError }}</span>
+                <span v-else-if="aboutUpdateStatus && !aboutUpdateStatus.has_update" class="about-update-inline">
+                  {{ aboutUpdateStatus.latest_version ? `No updates. Latest: v${aboutUpdateStatus.latest_version}` : 'No updates' }}
                 </span>
-                <a
-                  v-if="aboutUpdateStatus?.has_update && aboutUpdateStatus.release_url"
-                  class="about-download-link"
-                  href="#"
-                  @click.prevent="openAboutDownloadLink()"
-                >
-                  Download v{{ aboutUpdateStatus.latest_version }}
-                </a>
               </div>
 
+              <!-- Update available section -->
+              <template v-if="aboutUpdateStatus?.has_update">
+                <div class="about-update-banner">
+                  <span class="about-update-available-text">Update available to v{{ aboutUpdateStatus.latest_version }}</span>
+                  <div v-if="aboutUpdateDone" class="about-update-done">
+                    Downloaded to <code>{{ aboutUpdateDone }}</code>
+                  </div>
+                  <div v-if="aboutUpdateError" class="about-update-inline about-update-inline-error">{{ aboutUpdateError }}</div>
+                  <template v-if="aboutUpdateStatus.release_notes">
+                    <h3 class="about-whats-new-title">What's new</h3>
+                    <div class="about-release-notes" v-html="marked(aboutUpdateStatus.release_notes)" />
+                  </template>
+                </div>
+              </template>
+
+              <template v-if="!aboutUpdateStatus?.has_update">
               <h2>Changelog</h2>
 
               <div v-if="aboutInfo?.changelog.length">
@@ -5820,6 +5883,7 @@ onUnmounted(() => {
                 </div>
               </div>
               <div v-else class="library-empty">No changelog entries were embedded into this build.</div>
+              </template>
             </template>
           </section>
         </template>
@@ -7135,6 +7199,26 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .about-update-inline-error {
   color: #ff9d9d;
 }
+.about-update-dl-btn {
+  position: relative;
+  overflow: hidden;
+  min-width: 100px;
+}
+.about-update-dl-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: var(--dl-pct, 0%);
+  background: rgba(255, 255, 255, 0.22);
+  transition: width 0.25s ease;
+  pointer-events: none;
+  border-radius: inherit;
+}
+.about-update-dl-label {
+  position: relative;
+  z-index: 1;
+}
 .about-download-link {
   color: #8cf7b0;
   font-size: var(--fs-body-md);
@@ -7142,6 +7226,110 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 .about-download-link:hover {
   text-decoration: underline;
+}
+.about-download-link-icon {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.6;
+  transition: opacity .15s;
+}
+.about-download-link-icon:hover {
+  opacity: 1;
+  text-decoration: none;
+}
+.about-update-banner {
+  margin-bottom: 24px;
+}
+.about-update-available-text {
+  display: block;
+  font-size: var(--fs-body-md);
+  font-weight: 500;
+  color: #7a9e89;
+  margin-bottom: 2px;
+}
+.about-update-banner-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.about-update-btn {
+  background: #8cf7b0;
+  color: #111;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 18px;
+  font-size: var(--fs-body-md);
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.about-update-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.about-update-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+.about-whats-new-title {
+  font-size: var(--fs-body-md);
+  font-weight: 700;
+  color: #a7a7a7;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 16px 0 8px;
+}
+.about-release-notes {
+  font-size: var(--fs-body-md);
+  color: #d0d0d0;
+  line-height: 1.6;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.about-release-notes :deep(h1),
+.about-release-notes :deep(h2),
+.about-release-notes :deep(h3) {
+  font-size: var(--fs-body-md);
+  font-weight: 700;
+  color: #e8e8e8;
+  margin: 12px 0 4px;
+}
+.about-release-notes :deep(ul),
+.about-release-notes :deep(ol) {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.about-release-notes :deep(li) {
+  margin: 3px 0;
+}
+.about-release-notes :deep(p) {
+  margin: 4px 0;
+}
+.about-release-notes :deep(strong) {
+  color: #e8e8e8;
+  font-weight: 600;
+}
+.about-release-notes :deep(a) {
+  color: #8cf7b0;
+  text-decoration: none;
+}
+.about-release-notes :deep(a:hover) {
+  text-decoration: underline;
+}
+.about-release-notes :deep(code) {
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 0.9em;
+}
+.about-update-done {
+  margin: 6px 0 10px;
+  font-size: var(--fs-body-sm);
+  color: #8cf7b0;
+}
+.about-update-done code {
+  word-break: break-all;
+  opacity: 0.85;
 }
 .search-empty-copy {
   color: #a7a7a7;

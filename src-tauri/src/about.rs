@@ -33,14 +33,25 @@ pub struct AboutUpdateStatus {
     pub latest_version: Option<String>,
     pub has_update: bool,
     pub release_url: Option<String>,
+    pub release_notes: Option<String>,
+    pub asset_url: Option<String>,
     pub checked_repo: Option<String>,
     pub message: String,
+}
+
+#[derive(Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
 }
 
 #[derive(Deserialize)]
 struct GithubRelease {
     tag_name: String,
     html_url: Option<String>,
+    body: Option<String>,
+    #[serde(default)]
+    assets: Vec<GithubAsset>,
 }
 
 #[tauri::command]
@@ -70,6 +81,8 @@ pub fn about_check_updates() -> Result<AboutUpdateStatus, String> {
             latest_version: None,
             has_update: false,
             release_url: None,
+            release_notes: None,
+            asset_url: None,
             checked_repo,
             message: "GitHub repository was not detected at build time.".to_string(),
         });
@@ -97,6 +110,11 @@ pub fn about_check_updates() -> Result<AboutUpdateStatus, String> {
         .map_err(|err| format!("decode latest release: {err}"))?;
     let latest_version = normalize_version_tag(&release.tag_name);
     let has_update = compare_versions(&latest_version, &current_version) == Ordering::Greater;
+    let asset_url = if has_update {
+        find_platform_asset(&release.assets)
+    } else {
+        None
+    };
     let message = if has_update {
         format!("Update available: {latest_version}")
     } else {
@@ -108,6 +126,8 @@ pub fn about_check_updates() -> Result<AboutUpdateStatus, String> {
         latest_version: Some(latest_version),
         has_update,
         release_url: release.html_url,
+        release_notes: release.body,
+        asset_url,
         checked_repo,
         message,
     })
@@ -148,4 +168,126 @@ fn parse_version_parts(value: &str) -> Vec<u64> {
     }
 
     parts
+}
+
+fn find_platform_asset(assets: &[GithubAsset]) -> Option<String> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    let patterns: &[&str] = match (os, arch) {
+        ("macos", "aarch64") => &["aarch64.dmg"],
+        ("macos", _) => &["x64.dmg", "x86_64.dmg", "universal.dmg"],
+        ("windows", "aarch64") => &["arm64-setup.exe", "aarch64-setup.exe"],
+        ("windows", _) => &["x64-setup.exe", "x86_64-setup.exe", "x64.msi", "setup.exe"],
+        ("linux", "aarch64") => &["aarch64.AppImage", "arm64.AppImage"],
+        ("linux", _) => &["amd64.AppImage", "x86_64.AppImage", "x64.AppImage"],
+        _ => &[],
+    };
+
+    for asset in assets {
+        let lower = asset.name.to_lowercase();
+        for pattern in patterns {
+            if lower.ends_with(pattern) {
+                return Some(asset.browser_download_url.clone());
+            }
+        }
+    }
+
+    // fallback: first asset matching OS extension
+    let ext = match os {
+        "macos" => ".dmg",
+        "windows" => ".exe",
+        "linux" => ".AppImage",
+        _ => return None,
+    };
+    assets
+        .iter()
+        .find(|a| a.name.to_lowercase().ends_with(ext))
+        .map(|a| a.browser_download_url.clone())
+}
+
+#[tauri::command]
+pub async fn about_do_update(app: tauri::AppHandle, asset_url: String) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use std::io::Write;
+    use tauri::{Emitter, Manager};
+    use tauri_plugin_opener::OpenerExt;
+
+    let filename = asset_url
+        .split('/')
+        .last()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("player-update")
+        .to_string();
+
+    let downloads_dir = app
+        .path()
+        .download_dir()
+        .map_err(|e| format!("Cannot locate Downloads folder: {e}"))?;
+
+    let dest = downloads_dir.join(&filename);
+
+    let response = reqwest::Client::new()
+        .get(&asset_url)
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("player/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Server returned {}", response.status()));
+    }
+
+    let total = response.content_length();
+    let mut downloaded: u64 = 0;
+    let mut stream = response.bytes_stream();
+
+    let mut file =
+        std::fs::File::create(&dest).map_err(|e| format!("Create file failed: {e}"))?;
+
+    let mut last_percent: i32 = -1;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download error: {e}"))?;
+        downloaded += chunk.len() as u64;
+        file.write_all(&chunk).map_err(|e| format!("Write failed: {e}"))?;
+
+        let percent: Option<u8> = total
+            .filter(|&t| t > 0)
+            .map(|t| ((downloaded * 100) / t).min(100) as u8);
+        let pct_now = percent.map(|p| p as i32).unwrap_or(-1);
+        if pct_now != last_percent {
+            last_percent = pct_now;
+            let _ = app.emit(
+                "about-update-progress",
+                serde_json::json!({
+                    "downloaded": downloaded,
+                    "total": total,
+                    "percent": percent
+                }),
+            );
+        }
+    }
+
+    // On Linux, AppImage needs to be executable
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dest)
+            .map_err(|e| format!("Stat failed: {e}"))?
+            .permissions();
+        perms.set_mode(perms.mode() | 0o755);
+        std::fs::set_permissions(&dest, perms).map_err(|e| format!("chmod failed: {e}"))?;
+    }
+
+    let dest_str = dest.to_string_lossy().to_string();
+
+    #[cfg(not(target_os = "android"))]
+    app.opener()
+        .open_path(&dest_str, None::<&str>)
+        .map_err(|e| format!("Open failed: {e}"))?;
+
+    Ok(dest_str)
 }
