@@ -1,0 +1,40 @@
+name: Generate AI Release Notes
+description: Generate user-focused GitHub release notes with OpenRouter and a GitHub compare summary.
+
+inputs:
+  github-token:
+    description: GitHub token used to read tags, commits, and compare data.
+    required: true
+  openrouter-api-key:
+    description: OpenRouter API key used to generate AI release notes.
+    required: false
+  github-api-url:
+    description: GitHub API base URL.
+    required: false
+    default: https://api.github.com
+  repository:
+    description: owner/repo slug.
+    required: true
+  tag-name:
+    description: Release tag to summarize.
+    required: true
+  model:
+    description: OpenRouter model name.
+    required: false
+    default: openai/gpt-4.1-mini
+  max-commits:
+    description: Maximum number of commits to send to the model.
+    required: false
+    default: '80'
+
+outputs:
+  notes_path:
+    description: Absolute path to the generated markdown notes file.
+  previous_tag:
+    description: Previous semantic version tag used as the compare base.
+  generation_mode:
+    description: openrouter when AI generation succeeded, otherwise fallback.
+
+runs:
+  using: node20
+  main: index.js
