@@ -243,9 +243,12 @@ function normalizeAiNotes(notes, commitCount) {
 
   const otherImprovement = cleanSentence(rawOther || '');
 
-  if (!summary || highlights.length === 0) {
+  if (!summary) {
     console.error('Model raw values — summary:', JSON.stringify(rawSummary), 'highlights:', JSON.stringify(rawHighlights));
-    throw new Error('Model response did not include the required summary and highlights');
+    throw new Error('Model response did not include the required summary');
+  }
+  if (highlights.length === 0) {
+    highlights.push('General stability and quality improvements.');
   }
 
   return {
@@ -342,7 +345,7 @@ async function generateAiNotes(apiKey, model, repository, tagName, context) {
         'Internal tooling, CI, refactors, dependency bumps, and maintenance should be collapsed into one short catch-all sentence.',
         'Return strict JSON only with keys: summary, highlights, other_improvements.',
         'summary must be 1-2 short sentences.',
-        'highlights must be an array of 2-5 concise bullet strings.',
+        'highlights must be an array of 1-5 concise bullet strings — always include at least one, even if the release is mostly internal; in that case add a single generic improvement bullet.',,
         'other_improvements must be a single sentence that groups the remaining work.',
         'Do not mention commit hashes, pull requests, files, CI, workflows, version bumps, or implementation details unless directly user-visible.',
       ].join(' '),
