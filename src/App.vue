@@ -131,6 +131,33 @@ const outputDevices = ref<AudioDevice[]>([]);
 const currentDevice = ref<string | null>(null);
 const deviceMenuError = ref('');
 const activeNav = ref("home");
+const navHistory = ref<string[]>(['home']);
+const navCursor = ref(0);
+let _navSkipHistory = false;
+watch(activeNav, (nav) => {
+  if (_navSkipHistory) return;
+  const history = navHistory.value;
+  if (history[navCursor.value] === nav) return;
+  navHistory.value = history.slice(0, navCursor.value + 1);
+  navHistory.value.push(nav);
+  navCursor.value = navHistory.value.length - 1;
+});
+const canNavBack = computed(() => navCursor.value > 0);
+const canNavForward = computed(() => navCursor.value < navHistory.value.length - 1);
+function navBack() {
+  if (!canNavBack.value) return;
+  _navSkipHistory = true;
+  navCursor.value--;
+  activeNav.value = navHistory.value[navCursor.value];
+  nextTick(() => { _navSkipHistory = false; });
+}
+function navForward() {
+  if (!canNavForward.value) return;
+  _navSkipHistory = true;
+  navCursor.value++;
+  activeNav.value = navHistory.value[navCursor.value];
+  nextTick(() => { _navSkipHistory = false; });
+}
 const libraryTracks = ref<Track[]>([]);
 const showDuplicateTracks = ref(false);
 const libraryLoading = ref(false);
@@ -4543,8 +4570,8 @@ onUnmounted(() => {
           <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
         </button>
         <div class="nav-arrows">
-          <button class="arrow-btn">&lsaquo;</button>
-          <button class="arrow-btn">&rsaquo;</button>
+          <button class="arrow-btn" :disabled="!canNavBack" @click="navBack">&lsaquo;</button>
+          <button class="arrow-btn" :disabled="!canNavForward" @click="navForward">&rsaquo;</button>
         </div>
         <button
           class="duplicates-toggle"
