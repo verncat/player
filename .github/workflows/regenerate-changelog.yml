@@ -1,0 +1,47 @@
+name: Regenerate Changelog
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to regenerate changelog for (e.g. v0.2.2)
+        required: true
+        type: string
+      model:
+        description: OpenRouter model
+        required: false
+        default: openai/gpt-4.1-mini
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate:
+    name: Regenerate changelog for ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout action source
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Generate release notes
+        id: notes
+        uses: ./.github/actions/generate-release-notes
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          openrouter-api-key: ${{ secrets.OPEN_ROUTER_API_KEY || secrets.OPEN_ROUTER_KEY || secrets.OPEN_ROUTER }}
+          repository: ${{ github.repository }}
+          tag-name: ${{ inputs.tag }}
+          model: ${{ inputs.model }}
+
+      - name: Update release body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ inputs.tag }}" \
+            --notes-file "${{ steps.notes.outputs.notes_path }}"
