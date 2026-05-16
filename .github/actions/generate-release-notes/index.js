@@ -227,13 +227,24 @@ function normalizeAiNotes(notes, commitCount) {
   const rawOther = findKey(notes, 'other_improvements', 'otherimprovement', 'otherimprovements', 'misc', 'other');
 
   const summary = cleanSentence(rawSummary);
-  const highlights = Array.isArray(rawHighlights)
-    ? rawHighlights.map(cleanSentence).filter(Boolean).slice(0, 5)
-    : [];
+
+  let highlights;
+  if (Array.isArray(rawHighlights)) {
+    highlights = rawHighlights.map(cleanSentence).filter(Boolean).slice(0, 5);
+  } else if (typeof rawHighlights === 'string' && rawHighlights.trim()) {
+    highlights = rawHighlights
+      .split(/\n|(?<=\w)\s*[•\-\*]\s+/)
+      .map((s) => cleanSentence(s.replace(/^[•\-\*]\s*/, '')))
+      .filter(Boolean)
+      .slice(0, 5);
+  } else {
+    highlights = [];
+  }
+
   const otherImprovement = cleanSentence(rawOther || '');
 
   if (!summary || highlights.length === 0) {
-    console.error('Model JSON keys:', Object.keys(notes));
+    console.error('Model raw values — summary:', JSON.stringify(rawSummary), 'highlights:', JSON.stringify(rawHighlights));
     throw new Error('Model response did not include the required summary and highlights');
   }
 
