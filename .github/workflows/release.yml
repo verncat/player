@@ -37,6 +37,7 @@ jobs:
             pnpm-lock.yaml
             index.html
             public
+            scripts
             src
             src-tauri
             tsconfig.json
@@ -114,6 +115,7 @@ jobs:
             pnpm-lock.yaml
             index.html
             public
+            scripts
             src
             src-tauri
             tsconfig.json
