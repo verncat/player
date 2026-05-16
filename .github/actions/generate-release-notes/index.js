@@ -55,6 +55,7 @@ async function requestOpenRouter(model, apiKey, repository, payload) {
       model,
       temperature: 0.2,
       messages: payload,
+      response_format: { type: 'json_object' },
     }),
   });
   const text = await response.text();
@@ -210,14 +211,29 @@ function cleanSentence(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function findKey(obj, ...candidates) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const lower = Object.fromEntries(Object.entries(obj).map(([k, v]) => [k.toLowerCase().replace(/[^a-z]/g, ''), v]));
+  for (const candidate of candidates) {
+    const normalized = candidate.toLowerCase().replace(/[^a-z]/g, '');
+    if (lower[normalized] !== undefined) return lower[normalized];
+  }
+  return undefined;
+}
+
 function normalizeAiNotes(notes, commitCount) {
-  const summary = cleanSentence(notes.summary);
-  const highlights = Array.isArray(notes.highlights)
-    ? notes.highlights.map(cleanSentence).filter(Boolean).slice(0, 5)
+  const rawSummary = findKey(notes, 'summary', 'description', 'intro', 'overview');
+  const rawHighlights = findKey(notes, 'highlights', 'keypoints', 'key_points', 'features', 'changes', 'bullets', 'items', 'notes');
+  const rawOther = findKey(notes, 'other_improvements', 'otherimprovement', 'otherimprovements', 'misc', 'other');
+
+  const summary = cleanSentence(rawSummary);
+  const highlights = Array.isArray(rawHighlights)
+    ? rawHighlights.map(cleanSentence).filter(Boolean).slice(0, 5)
     : [];
-  const otherImprovement = cleanSentence(notes.other_improvements || notes.otherImprovements || '');
+  const otherImprovement = cleanSentence(rawOther || '');
 
   if (!summary || highlights.length === 0) {
+    console.error('Model JSON keys:', Object.keys(notes));
     throw new Error('Model response did not include the required summary and highlights');
   }
 
