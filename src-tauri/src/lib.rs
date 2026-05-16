@@ -156,6 +156,7 @@ pub fn run() {
             library::find_duplicates,
             library::apply_dedup,
             library::unmark_duplicates,
+            library::mark_track_as_duplicate,
             library::get_device_emoji,
             library::set_device_emoji,
             library::get_device_settings,

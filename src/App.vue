@@ -776,6 +776,19 @@ function removeTrackFromPlaylistFromTrackContext() {
   removeTrackFromPlaylist(menu.playlistId, menu.track.id);
 }
 
+async function hideTrackAsDuplicateFromTrackContext() {
+  const track = trackContextMenu.value?.track;
+  trackContextMenu.value = null;
+  if (!track) return;
+  try {
+    await invoke('mark_track_as_duplicate', { id: track.id });
+    await loadLibrary();
+    await loadRecent();
+  } catch (e) {
+    console.error('mark_track_as_duplicate failed', e);
+  }
+}
+
 function buildTrackReplaceQuery(track: Track) {
   const title = track.title?.trim();
   const artist = track.artist?.trim();
@@ -5912,6 +5925,7 @@ onUnmounted(() => {
           >
             Remove from playlist
           </button>
+          <button class="playlist-menu-item danger" @click="hideTrackAsDuplicateFromTrackContext">Hide (mark as duplicate)</button>
         </div>
       </div>
     </Teleport>

@@ -2636,6 +2636,21 @@ pub fn apply_dedup(
     Ok(marked)
 }
 
+/// Mark a single track as duplicate (hides it from all lists).
+#[tauri::command]
+pub fn mark_track_as_duplicate(
+    id: i64,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
+    let conn = state.conn.lock().unwrap();
+    conn.execute(
+        "UPDATE tracks SET is_duplicate = 1 WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Remove the is_duplicate flag from a list of track IDs (or all if empty).
 #[tauri::command]
 pub fn unmark_duplicates(
