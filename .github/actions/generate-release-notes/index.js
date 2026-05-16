@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 function getInput(name, options = {}) {
-  const key = `INPUT_${name.replace(/ /g, '_').replace(/-/g, '_').toUpperCase()}`;
+  const key = `INPUT_${name.replace(/ /g, '_').toUpperCase()}`;
   const value = (process.env[key] || options.defaultValue || '').trim();
   if (options.required && !value) {
     throw new Error(`Missing required input: ${name}`);
