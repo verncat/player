@@ -4668,7 +4668,7 @@ onUnmounted(() => {
               <a class="show-all" href="#" @click.prevent="activeNav = 'history'; loadHistory()">Show all</a>
             </div>
             <div v-if="visibleRecentTracks.length === 0 && filterDuplicateTracks(libraryTracks).length === 0" class="library-empty">No tracks yet.</div>
-            <div v-else class="card-list">
+            <div v-else class="card-list" v-horizontal-scroll>
               <div v-for="(track, idx) in (visibleRecentTracks.length ? visibleRecentTracks : filterDuplicateTracks(libraryTracks).slice(0, 12))" :key="track.id + '-' + idx"
                 class="card" :class="rarityClass(track.rarity)" :style="rarityVars(track.rarity)"
                 @click="playRecentCard(idx)"
@@ -4703,7 +4703,7 @@ onUnmounted(() => {
               >Show all</a>
             </div>
             <div v-if="homePinnedItems.length === 0" class="library-empty">Pin playlists from Playlists or Flexible Playlists to keep them here.</div>
-            <div v-else class="card-list">
+            <div v-else class="card-list" v-horizontal-scroll>
               <div
                 v-for="item in homePinnedItems"
                 :key="item.key"
@@ -4778,7 +4778,7 @@ onUnmounted(() => {
               <h2>Made For You</h2>
               <a class="show-all" href="#">Show all</a>
             </div>
-            <div class="card-list">
+            <div class="card-list" v-horizontal-scroll>
               <div v-for="item in madeForYou" :key="item.id" class="card">
                 <div class="cover" :style="`background: linear-gradient(135deg, ${item.colors[0]}, ${item.colors[1]})`">
                   <div class="hover-play">
@@ -7037,7 +7037,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .card-list {
   width: 100%;
   display: flex;
-  overflow-y: auto;
+  overflow-x: auto;
   scrollbar-width: none;
   gap: 16px;
 }
