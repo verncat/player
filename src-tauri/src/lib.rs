@@ -169,6 +169,7 @@ pub fn run() {
             soulseek::soulseek_download,
             soulseek::soulseek_preview,
             soulseek::soulseek_cancel_preview,
+            soulseek::soulseek_play_preview,
             soulseek::soulseek_promote_preview,
             audio::get_output_devices,
             audio::set_output_device,

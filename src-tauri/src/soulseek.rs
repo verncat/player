@@ -198,6 +198,14 @@ pub struct SoulseekCancelPreviewRequest {
     pub filename: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoulseekPlayPreviewRequest {
+    pub username: String,
+    pub filename: String,
+    pub size: u64,
+}
+
 struct PendingSearchFile {
     result: SoulseekSearchResult,
     parent: Option<String>,
@@ -522,6 +530,28 @@ pub fn soulseek_cancel_preview(
 
     canceller.cancel();
     Ok(true)
+}
+
+#[tauri::command]
+pub fn soulseek_play_preview(
+    request: SoulseekPlayPreviewRequest,
+    library: tauri::State<'_, LibraryState>,
+    playback: tauri::State<'_, crate::playback::PlaybackState>,
+) -> Result<(), String> {
+    let cache_path = preview_cache_path(&library, &request.username, &request.filename);
+    if !cache_path.exists() {
+        return Err(format!(
+            "Soulseek preview cache does not exist yet: {}",
+            cache_path.display()
+        ));
+    }
+
+    playback.play_track_source(crate::library::TrackSource::SoulseekPreview {
+        username: request.username,
+        filename: request.filename,
+        size: request.size,
+        cache_path,
+    })
 }
 
 #[tauri::command]
@@ -968,6 +998,12 @@ fn preview_cache_root(library: &LibraryState) -> PathBuf {
         .parent()
         .unwrap_or_else(|| library.data_dir())
         .join(".soulseek-preview-cache")
+}
+
+fn preview_cache_path(library: &LibraryState, username: &str, filename: &str) -> PathBuf {
+    let preview_root = preview_cache_root(library);
+    let preview_dir = build_download_directory(&preview_root, username, filename);
+    preview_dir.join(soulseek_basename(filename))
 }
 
 fn resolved_download_path(download: &Download) -> String {

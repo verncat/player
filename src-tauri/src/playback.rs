@@ -321,6 +321,24 @@ impl DecodeSource {
             duration_secs,
         }
     }
+
+    fn from_track_source(source: crate::library::TrackSource) -> Self {
+        match source {
+            crate::library::TrackSource::File { path } => Self::file(path),
+            crate::library::TrackSource::CueSegment {
+                audio_path,
+                start_secs,
+                end_secs,
+                duration_secs,
+            } => Self::segment(audio_path, start_secs, end_secs, duration_secs),
+            crate::library::TrackSource::SoulseekPreview {
+                cache_path,
+                size: _,
+                username: _,
+                filename: _,
+            } => Self::growing_file(cache_path),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -411,6 +429,10 @@ impl PlaybackState {
             end_secs,
             duration_secs,
         ))
+    }
+
+    pub fn play_track_source(&self, source: crate::library::TrackSource) -> Result<(), String> {
+        self.play_source(DecodeSource::from_track_source(source))
     }
 
     fn play_source(&self, source: DecodeSource) -> Result<(), String> {
@@ -1051,15 +1073,7 @@ pub fn playback_play_track(
     let conn = conn.lock().unwrap();
     let source = crate::library::track_source_for_track(&conn, lib.data_dir(), id)?
         .ok_or_else(|| "Track not found".to_string())?;
-    match source {
-        crate::library::TrackSource::File { path } => state.play(path),
-        crate::library::TrackSource::CueSegment {
-            audio_path,
-            start_secs,
-            end_secs,
-            duration_secs,
-        } => state.play_segment(audio_path, start_secs, end_secs, duration_secs),
-    }
+    state.play_track_source(source)
 }
 
 #[tauri::command]

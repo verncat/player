@@ -70,6 +70,10 @@ interface Track {
   is_duplicate: boolean;
   local_preview_path?: string | null;
   preview_growing?: boolean;
+  soulseek_preview?: boolean;
+  soulseek_username?: string | null;
+  soulseek_filename?: string | null;
+  soulseek_size?: number | null;
 }
 
 const rarityColors: Record<string, string> = {
@@ -1679,7 +1683,7 @@ function soulseekPreviewCanStart(result: SoulseekSearchResult, state: SoulseekDo
 
 function soulseekPreviewActionLabel(result: SoulseekSearchResult) {
   const state = soulseekEffectivePreviewState(result);
-  if (isCurrentTrack(soulseekTrackId(result)) && !!nowPlaying.value?.local_preview_path && isPlaying.value) {
+  if (isCurrentTrack(soulseekTrackId(result)) && !!nowPlaying.value?.soulseek_preview && isPlaying.value) {
     return 'Previewing…';
   }
 
@@ -1758,7 +1762,7 @@ async function cancelSoulseekPreviewBuffering(result: SoulseekSearchResult) {
 async function stopActiveSoulseekPreview(result: SoulseekSearchResult) {
   const previewTrackId = soulseekTrackId(result);
   const currentTrack = nowPlaying.value;
-  if (!currentTrack || currentTrack.id !== previewTrackId || !currentTrack.local_preview_path) {
+  if (!currentTrack || currentTrack.id !== previewTrackId || !currentTrack.soulseek_preview) {
     return false;
   }
 
@@ -1792,12 +1796,12 @@ async function stopActiveSoulseekPreview(result: SoulseekSearchResult) {
 function updateSoulseekPreviewTrackState(username: string, filename: string, previewGrowing: boolean) {
   const previewTrackId = soulseekTrackIdFromParts(username, filename);
   const updateTrack = (track: Track) => (
-    track.id === previewTrackId && track.local_preview_path
+    track.id === previewTrackId && track.soulseek_preview
       ? { ...track, preview_growing: previewGrowing }
       : track
   );
 
-  if (nowPlaying.value?.id === previewTrackId && nowPlaying.value.local_preview_path) {
+  if (nowPlaying.value?.id === previewTrackId && nowPlaying.value.soulseek_preview) {
     nowPlaying.value = { ...nowPlaying.value, preview_growing: previewGrowing };
   }
 
@@ -1917,6 +1921,10 @@ function makeSoulseekTrack(result: SoulseekSearchResult, relativePath: string): 
     is_duplicate: false,
     local_preview_path: null,
     preview_growing: false,
+    soulseek_preview: false,
+    soulseek_username: result.username,
+    soulseek_filename: result.filename,
+    soulseek_size: result.size,
   };
 }
 
@@ -1925,6 +1933,10 @@ function makeSoulseekPreviewTrack(result: SoulseekSearchResult, localPath: strin
     ...makeSoulseekTrack(result, `Soulseek Preview/${result.basename}`),
     local_preview_path: localPath,
     preview_growing: previewGrowing,
+    soulseek_preview: true,
+    soulseek_username: result.username,
+    soulseek_filename: result.filename,
+    soulseek_size: result.size,
   };
 }
 
@@ -2009,7 +2021,7 @@ async function maybeReplaceActiveSoulseekPreviewWithLibraryTrack(
 ) {
   const previewTrackId = soulseekTrackIdFromParts(username, filename);
   const currentTrack = nowPlaying.value;
-  if (!currentTrack || currentTrack.id !== previewTrackId || !currentTrack.local_preview_path) {
+  if (!currentTrack || currentTrack.id !== previewTrackId || !currentTrack.soulseek_preview) {
     return;
   }
 
@@ -2680,7 +2692,7 @@ async function performTrackReplacement(
     await refreshTrackCover(replacedTrack.id);
 
     const previewTrackId = soulseekTrackId(result);
-    if (nowPlaying.value?.id === previewTrackId && !!nowPlaying.value.local_preview_path) {
+    if (nowPlaying.value?.id === previewTrackId && !!nowPlaying.value.soulseek_preview) {
       replaceSoulseekTrackInPlaybackState(previewTrackId, replacedTrack);
       isLiked.value = replacedTrack.is_liked;
       duration.value = replacedTrack.duration_secs || duration.value;
@@ -3400,8 +3412,16 @@ function trackForHash(hash?: string | null) {
 }
 
 async function playTrackLocally(track: Track, autoplay: boolean, position = 0) {
-  if (track.local_preview_path) {
-    await invoke('playback_play_absolute', { path: track.local_preview_path, growing: !!track.preview_growing });
+  if (track.soulseek_preview) {
+    await invoke('soulseek_play_preview', {
+      request: {
+        username: track.soulseek_username || track.artist || '',
+        filename: track.soulseek_filename || track.path,
+        size: track.soulseek_size || 0,
+      },
+    });
+  } else if (track.id <= 0) {
+    await invoke('playback_play', { path: track.path });
   } else {
     await invoke('playback_play_track', { id: track.id });
   }
@@ -3425,7 +3445,7 @@ async function playTrackRemotely(track: Track, autoplay: boolean, position = 0, 
 }
 
 async function playTrackOnCurrentOutput(track: Track, autoplay: boolean, position = 0) {
-  if (track.local_preview_path) {
+  if (track.soulseek_preview) {
     if (remoteOutputPeer.value) {
       try {
         await invoke('remote_playback_pause', remotePeerArgs(remoteOutputPeer.value));
@@ -3530,7 +3550,7 @@ async function refreshPlaybackState() {
   const reportedDuration = st.duration > 0 ? Math.floor(st.duration) : 0;
   isPlaying.value = st.playing;
   currentTime.value = Math.floor(st.position);
-  if (currentTrack?.local_preview_path && currentTrack.preview_growing) {
+  if (currentTrack?.preview_growing) {
     duration.value = Math.max(duration.value, metadataDuration, reportedDuration, currentTime.value);
   } else if (reportedDuration > 0) {
     duration.value = reportedDuration;
@@ -4336,7 +4356,7 @@ onMounted(() => {
 
     if (['failed', 'timed_out', 'cancelled'].includes(payload.state)) {
       soulseekPendingPreviewPlayback.delete(key);
-      if (nowPlaying.value?.id === soulseekTrackIdFromParts(payload.username, payload.filename) && nowPlaying.value.local_preview_path) {
+      if (nowPlaying.value?.id === soulseekTrackIdFromParts(payload.username, payload.filename) && nowPlaying.value.soulseek_preview) {
         void stopCurrentOutput()
           .then(() => {
             isPlaying.value = false;

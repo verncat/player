@@ -149,6 +149,12 @@ pub enum TrackSource {
         end_secs: Option<f64>,
         duration_secs: Option<f64>,
     },
+    SoulseekPreview {
+        username: String,
+        filename: String,
+        size: u64,
+        cache_path: PathBuf,
+    },
 }
 
 // ── Managed state ─────────────────────────────────────────────────────────────
