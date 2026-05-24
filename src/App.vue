@@ -3403,7 +3403,7 @@ async function playTrackLocally(track: Track, autoplay: boolean, position = 0) {
   if (track.local_preview_path) {
     await invoke('playback_play_absolute', { path: track.local_preview_path, growing: !!track.preview_growing });
   } else {
-    await invoke('playback_play', { path: track.path });
+    await invoke('playback_play_track', { id: track.id });
   }
   if (position > 0) {
     await invoke('playback_seek', { position });

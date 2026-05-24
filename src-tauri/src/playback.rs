@@ -142,7 +142,9 @@ impl SpectrumAnalyzer {
 
 fn build_spectrum_band_ranges(sample_rate: u32) -> Vec<(usize, usize)> {
     let nyquist_bin = SPECTRUM_WIN_SIZE / 2;
-    let max_hz = (sample_rate as f32 * 0.48).min(SPECTRUM_MAX_HZ).max(SPECTRUM_MIN_HZ + 1.0);
+    let max_hz = (sample_rate as f32 * 0.48)
+        .min(SPECTRUM_MAX_HZ)
+        .max(SPECTRUM_MIN_HZ + 1.0);
     let log_min = SPECTRUM_MIN_HZ.ln();
     let log_max = max_hz.ln();
     let mut ranges = Vec::with_capacity(SPECTRUM_BANDS);
@@ -196,8 +198,7 @@ impl BeatState {
         if self.mono_buf.len() < BEAT_WIN_SIZE {
             return false;
         }
-        let energy: f32 =
-            self.mono_buf.iter().map(|s| s * s).sum::<f32>() / BEAT_WIN_SIZE as f32;
+        let energy: f32 = self.mono_buf.iter().map(|s| s * s).sum::<f32>() / BEAT_WIN_SIZE as f32;
         self.mono_buf.clear();
 
         self.energy_hist[self.hist_idx] = energy;
@@ -208,7 +209,10 @@ impl BeatState {
         if self.hist_count < 2 {
             return false;
         }
-        let avg: f32 = self.energy_hist[..self.hist_count].iter().copied().sum::<f32>()
+        let avg: f32 = self.energy_hist[..self.hist_count]
+            .iter()
+            .copied()
+            .sum::<f32>()
             / self.hist_count as f32;
         energy > avg * BEAT_SENSITIVITY && energy > BEAT_MIN_ENERGY
     }
@@ -276,6 +280,49 @@ pub struct PlaybackState {
     inner: Arc<Shared>,
 }
 
+#[derive(Clone, Debug)]
+struct DecodeSource {
+    path: PathBuf,
+    follow_growing: bool,
+    segment_start_secs: f64,
+    segment_end_secs: Option<f64>,
+    duration_secs: Option<f64>,
+}
+
+impl DecodeSource {
+    fn file(path: PathBuf) -> Self {
+        Self {
+            path,
+            follow_growing: false,
+            segment_start_secs: 0.0,
+            segment_end_secs: None,
+            duration_secs: None,
+        }
+    }
+
+    fn growing_file(path: PathBuf) -> Self {
+        Self {
+            follow_growing: true,
+            ..Self::file(path)
+        }
+    }
+
+    fn segment(
+        path: PathBuf,
+        start_secs: f64,
+        end_secs: Option<f64>,
+        duration_secs: Option<f64>,
+    ) -> Self {
+        Self {
+            path,
+            follow_growing: false,
+            segment_start_secs: start_secs.max(0.0),
+            segment_end_secs: end_secs,
+            duration_secs,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct OutputStreamFormat {
     sample_rate: u32,
@@ -298,6 +345,8 @@ struct Shared {
     finished: AtomicBool,
     /// Currently loaded file path (for display/debug)
     current_file: Mutex<Option<PathBuf>>,
+    /// Current playback source, including segment bounds.
+    current_source: Mutex<Option<DecodeSource>>,
     /// Selected output device name
     selected_device: Mutex<Option<String>>,
     /// Active cpal output stream — dropped when replaced, which stops it.
@@ -328,6 +377,7 @@ impl PlaybackState {
                 volume: AtomicU64::new(7000), // 0.7
                 finished: AtomicBool::new(false),
                 current_file: Mutex::new(None),
+                current_source: Mutex::new(None),
                 selected_device: Mutex::new(None),
                 active_stream: Mutex::new(None),
                 next_stream_id: AtomicU64::new(1),
@@ -341,14 +391,29 @@ impl PlaybackState {
 
     /// Start playing a file. Stops any previous playback first.
     pub fn play(&self, path: PathBuf) -> Result<(), String> {
-        self.play_inner(path, false)
+        self.play_source(DecodeSource::file(path))
     }
 
     pub fn play_growing(&self, path: PathBuf) -> Result<(), String> {
-        self.play_inner(path, true)
+        self.play_source(DecodeSource::growing_file(path))
     }
 
-    fn play_inner(&self, path: PathBuf, follow_growing: bool) -> Result<(), String> {
+    pub fn play_segment(
+        &self,
+        path: PathBuf,
+        start_secs: f64,
+        end_secs: Option<f64>,
+        duration_secs: Option<f64>,
+    ) -> Result<(), String> {
+        self.play_source(DecodeSource::segment(
+            path,
+            start_secs,
+            end_secs,
+            duration_secs,
+        ))
+    }
+
+    fn play_source(&self, source: DecodeSource) -> Result<(), String> {
         // Signal previous threads to stop
         self.inner.stop.store(true, Ordering::SeqCst);
         self.inner.ring_cvar.notify_all();
@@ -359,18 +424,28 @@ impl PlaybackState {
         self.inner.stop.store(false, Ordering::SeqCst);
         self.inner.finished.store(false, Ordering::SeqCst);
         self.inner.playing.store(true, Ordering::SeqCst);
-        self.inner.follow_growing.store(follow_growing, Ordering::SeqCst);
+        self.inner
+            .follow_growing
+            .store(source.follow_growing, Ordering::SeqCst);
         self.inner.position_ms.store(0, Ordering::SeqCst);
+        if let Some(duration_secs) = source.duration_secs {
+            self.inner
+                .duration_ms
+                .store((duration_secs.max(0.0) * 1000.0) as u64, Ordering::SeqCst);
+        } else {
+            self.inner.duration_ms.store(0, Ordering::SeqCst);
+        }
         {
             let mut ring = self.inner.ring.lock().unwrap();
             *ring = RingBuf::new(ring.buf.len());
         }
         clear_spectrum(&self.inner);
-        *self.inner.current_file.lock().unwrap() = Some(path.clone());
+        *self.inner.current_file.lock().unwrap() = Some(source.path.clone());
+        *self.inner.current_source.lock().unwrap() = Some(source.clone());
 
         let shared = Arc::clone(&self.inner);
         thread::spawn(move || {
-            if let Err(e) = decode_thread(shared, &path, follow_growing) {
+            if let Err(e) = decode_thread(shared, source) {
                 eprintln!("[playback] decode error: {e}");
             }
         });
@@ -394,11 +469,9 @@ impl PlaybackState {
                 return;
             };
 
-            if let Err(err) = start_output_stream(
-                Arc::clone(&self.inner),
-                format.sample_rate,
-                format.channels,
-            ) {
+            if let Err(err) =
+                start_output_stream(Arc::clone(&self.inner), format.sample_rate, format.channels)
+            {
                 eprintln!("[playback] resume failed to restart stream: {err}");
                 clear_spectrum(&self.inner);
                 return;
@@ -426,8 +499,8 @@ impl PlaybackState {
         let was_playing = self.inner.playing.load(Ordering::SeqCst);
         // For now, seeking requires restarting decode from the position.
         // We'll implement this by stopping and replaying from offset.
-        let file = self.inner.current_file.lock().unwrap().clone();
-        if let Some(path) = file {
+        let source = self.inner.current_source.lock().unwrap().clone();
+        if let Some(source) = source {
             self.inner.stop.store(true, Ordering::SeqCst);
             self.inner.ring_cvar.notify_all();
             thread::sleep(std::time::Duration::from_millis(50));
@@ -443,9 +516,8 @@ impl PlaybackState {
 
             let shared = Arc::clone(&self.inner);
             let seek_to = position_secs;
-            let follow_growing = self.inner.follow_growing.load(Ordering::SeqCst);
             thread::spawn(move || {
-                if let Err(e) = decode_thread_seek(shared, &path, seek_to, follow_growing) {
+                if let Err(e) = decode_thread_seek(shared, source, seek_to) {
                     eprintln!("[playback] decode-seek error: {e}");
                 }
             });
@@ -501,8 +573,8 @@ impl PlaybackState {
 
 // ── Decode thread ─────────────────────────────────────────────────────────────
 
-fn decode_thread(shared: Arc<Shared>, path: &Path, follow_growing: bool) -> Result<(), String> {
-    decode_thread_seek(shared, path, 0.0, follow_growing)
+fn decode_thread(shared: Arc<Shared>, source: DecodeSource) -> Result<(), String> {
+    decode_thread_seek(shared, source, 0.0)
 }
 
 fn notify_playback_finished(shared: &Shared) {
@@ -543,13 +615,20 @@ enum GrowingFileWaitResult {
     Terminal,
 }
 
-fn wait_for_growing_file(shared: &Shared, path: &Path, last_known_size: &mut u64) -> GrowingFileWaitResult {
+fn wait_for_growing_file(
+    shared: &Shared,
+    path: &Path,
+    last_known_size: &mut u64,
+) -> GrowingFileWaitResult {
     loop {
         if shared.stop.load(Ordering::SeqCst) {
             return GrowingFileWaitResult::Terminal;
         }
 
-        let current_size = path.metadata().map(|meta| meta.len()).unwrap_or(*last_known_size);
+        let current_size = path
+            .metadata()
+            .map(|meta| meta.len())
+            .unwrap_or(*last_known_size);
         if current_size > *last_known_size {
             *last_known_size = current_size;
             return GrowingFileWaitResult::Grew;
@@ -573,7 +652,34 @@ fn wait_for_growing_file(shared: &Shared, path: &Path, last_known_size: &mut u64
     }
 }
 
-fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64, follow_growing: bool) -> Result<(), String> {
+fn packet_time_secs(
+    codec_params: &symphonia::core::codecs::CodecParameters,
+    ts: u64,
+) -> Option<f64> {
+    let time_base = codec_params.time_base?;
+    let time = time_base.calc_time(ts);
+    Some(time.seconds as f64 + time.frac)
+}
+
+fn packet_duration_secs(
+    codec_params: &symphonia::core::codecs::CodecParameters,
+    duration: u64,
+) -> f64 {
+    codec_params
+        .time_base
+        .map(|time_base| {
+            let time = time_base.calc_time(duration);
+            time.seconds as f64 + time.frac
+        })
+        .unwrap_or(0.0)
+}
+
+fn decode_thread_seek(
+    shared: Arc<Shared>,
+    source: DecodeSource,
+    seek_secs: f64,
+) -> Result<(), String> {
+    let path = source.path.as_path();
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -593,21 +699,19 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64, follow_g
 
     let mut format = probed.format;
 
-    let track = format
-        .default_track()
-        .ok_or("no audio track found")?;
+    let track = format.default_track().ok_or("no audio track found")?;
 
     let track_id = track.id;
     let codec_params = track.codec_params.clone();
 
     let sample_rate = codec_params.sample_rate.unwrap_or(44100);
-    let channels = codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(2);
+    let channels = codec_params.channels.map(|c| c.count()).unwrap_or(2);
 
     // Store duration
-    if let Some(n_frames) = codec_params.n_frames {
+    if let Some(duration_secs) = source.duration_secs {
+        let dur_ms = (duration_secs.max(0.0) * 1000.0) as u64;
+        shared.duration_ms.store(dur_ms, Ordering::SeqCst);
+    } else if let Some(n_frames) = codec_params.n_frames {
         let dur_ms = (n_frames as f64 / sample_rate as f64 * 1000.0) as u64;
         shared.duration_ms.store(dur_ms, Ordering::SeqCst);
     }
@@ -617,11 +721,12 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64, follow_g
         .map_err(|e| format!("decoder error: {e}"))?;
 
     // Seek if requested
-    if seek_secs > 0.0 {
+    let absolute_seek_secs = source.segment_start_secs + seek_secs.max(0.0);
+    if absolute_seek_secs > 0.0 {
         let _ = format.seek(
             SeekMode::Coarse,
             SeekTo::Time {
-                time: Time::new(seek_secs as u64, seek_secs.fract()),
+                time: Time::new(absolute_seek_secs as u64, absolute_seek_secs.fract()),
                 track_id: Some(track_id),
             },
         );
@@ -643,7 +748,7 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64, follow_g
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
-                if follow_growing {
+                if source.follow_growing {
                     match wait_for_growing_file(&shared, path, &mut last_known_size) {
                         GrowingFileWaitResult::Grew => continue,
                         GrowingFileWaitResult::Completed => {
@@ -669,6 +774,20 @@ fn decode_thread_seek(shared: Arc<Shared>, path: &Path, seek_secs: f64, follow_g
 
         if packet.track_id() != track_id {
             continue;
+        }
+
+        if let Some(packet_start) = packet_time_secs(&codec_params, packet.ts()) {
+            if packet_start + packet_duration_secs(&codec_params, packet.dur())
+                <= source.segment_start_secs
+            {
+                continue;
+            }
+            if let Some(end_secs) = source.segment_end_secs {
+                if packet_start >= end_secs {
+                    finish_playback(&shared);
+                    break;
+                }
+            }
         }
 
         match decoder.decode(&packet) {
@@ -711,7 +830,10 @@ fn write_to_ring(
         }
         AudioBufferRef::S16(b) => {
             for frame in 0..frames {
-                let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32 / 32768.0).sum::<f32>() / channels as f32;
+                let mono = (0..channels)
+                    .map(|ch| b.chan(ch)[frame] as f32 / 32768.0)
+                    .sum::<f32>()
+                    / channels as f32;
                 check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32 / 32768.0;
@@ -721,7 +843,10 @@ fn write_to_ring(
         }
         AudioBufferRef::S32(b) => {
             for frame in 0..frames {
-                let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32 / 2_147_483_648.0).sum::<f32>() / channels as f32;
+                let mono = (0..channels)
+                    .map(|ch| b.chan(ch)[frame] as f32 / 2_147_483_648.0)
+                    .sum::<f32>()
+                    / channels as f32;
                 check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32 / 2_147_483_648.0;
@@ -731,7 +856,10 @@ fn write_to_ring(
         }
         AudioBufferRef::U8(b) => {
             for frame in 0..frames {
-                let mono = (0..channels).map(|ch| (b.chan(ch)[frame] as f32 - 128.0) / 128.0).sum::<f32>() / channels as f32;
+                let mono = (0..channels)
+                    .map(|ch| (b.chan(ch)[frame] as f32 - 128.0) / 128.0)
+                    .sum::<f32>()
+                    / channels as f32;
                 check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = (b.chan(ch)[frame] as f32 - 128.0) / 128.0;
@@ -741,7 +869,10 @@ fn write_to_ring(
         }
         AudioBufferRef::F64(b) => {
             for frame in 0..frames {
-                let mono = (0..channels).map(|ch| b.chan(ch)[frame] as f32).sum::<f32>() / channels as f32;
+                let mono = (0..channels)
+                    .map(|ch| b.chan(ch)[frame] as f32)
+                    .sum::<f32>()
+                    / channels as f32;
                 check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
                     let sample = b.chan(ch)[frame] as f32;
@@ -789,11 +920,7 @@ fn push_sample(shared: &Shared, sample: f32) {
 
 // ── cpal output stream ────────────────────────────────────────────────────────
 
-fn start_output_stream(
-    shared: Arc<Shared>,
-    sample_rate: u32,
-    channels: u16,
-) -> Result<(), String> {
+fn start_output_stream(shared: Arc<Shared>, sample_rate: u32, channels: u16) -> Result<(), String> {
     let stream_id = shared.next_stream_id.fetch_add(1, Ordering::SeqCst);
     let host = cpal::default_host();
 
@@ -912,6 +1039,27 @@ pub fn playback_play(
 ) -> Result<(), String> {
     let full = lib.data_dir().join(&path);
     state.play(full)
+}
+
+#[tauri::command]
+pub fn playback_play_track(
+    id: i64,
+    state: tauri::State<'_, PlaybackState>,
+    lib: tauri::State<'_, crate::library::LibraryState>,
+) -> Result<(), String> {
+    let conn = lib.conn();
+    let conn = conn.lock().unwrap();
+    let source = crate::library::track_source_for_track(&conn, lib.data_dir(), id)?
+        .ok_or_else(|| "Track not found".to_string())?;
+    match source {
+        crate::library::TrackSource::File { path } => state.play(path),
+        crate::library::TrackSource::CueSegment {
+            audio_path,
+            start_secs,
+            end_secs,
+            duration_secs,
+        } => state.play_segment(audio_path, start_secs, end_secs, duration_secs),
+    }
 }
 
 #[tauri::command]

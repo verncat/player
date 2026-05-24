@@ -16,8 +16,12 @@ static INIT_TRACING: Once = Once::new();
 
 fn play_sine(freq: f32) -> cpal::Stream {
     let host = cpal::default_host();
-    let device = host.default_output_device().expect("no output device available");
-    let config = device.default_output_config().expect("no default output config");
+    let device = host
+        .default_output_device()
+        .expect("no output device available");
+    let config = device
+        .default_output_config()
+        .expect("no default output config");
     let sample_rate = config.sample_rate() as f32;
     let channels = config.channels() as usize;
 
@@ -51,9 +55,7 @@ fn greet(name: &str) -> String {
 fn init_tracing() {
     INIT_TRACING.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new(
-                "warn,player_lib=info,soulseek_rs=trace"
-            )
+            tracing_subscriber::EnvFilter::new("warn,player_lib=info,soulseek_rs=trace")
         });
 
         let _ = tracing_subscriber::fmt()
@@ -176,6 +178,7 @@ pub fn run() {
             about::about_check_updates,
             about::about_do_update,
             playback::playback_play,
+            playback::playback_play_track,
             playback::playback_play_absolute,
             playback::playback_pause,
             playback::playback_resume,

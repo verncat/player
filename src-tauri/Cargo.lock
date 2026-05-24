@@ -3154,6 +3154,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "cpal",
+ "encoding_rs",
  "flate2",
  "futures-util",
  "hostname",

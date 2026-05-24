@@ -18,6 +18,7 @@
 //!   3. Filename pattern: `<track>[-. ]<title>` or plain stem.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use encoding_rs::WINDOWS_1251;
 use lofty::picture::PictureType;
 use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
@@ -38,6 +39,10 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "ogg", "opus", "aac", "m4a", "wav", "wv", "ape",
 ];
+
+const CUE_EXTENSIONS: &[&str] = &["cue"];
+const SOURCE_KIND_FILE: &str = "file";
+const SOURCE_KIND_CUE: &str = "cue";
 
 const INTERNAL_LIBRARY_DIRECTORIES: &[&str] = &[
     ".soulseek-temp",
@@ -133,6 +138,19 @@ struct SidecarCoverCandidate {
     mime: String,
 }
 
+#[derive(Debug, Clone)]
+pub enum TrackSource {
+    File {
+        path: PathBuf,
+    },
+    CueSegment {
+        audio_path: PathBuf,
+        start_secs: f64,
+        end_secs: Option<f64>,
+        duration_secs: Option<f64>,
+    },
+}
+
 // ── Managed state ─────────────────────────────────────────────────────────────
 
 /// Tauri managed state for the music library. `Send + Sync` — safe to share.
@@ -151,7 +169,10 @@ impl LibraryState {
         Self::new_with_storage(data_dir, app_handle, false)
     }
 
-    pub fn new_in_memory(data_dir: PathBuf, app_handle: tauri::AppHandle) -> Result<Self, BoxError> {
+    pub fn new_in_memory(
+        data_dir: PathBuf,
+        app_handle: tauri::AppHandle,
+    ) -> Result<Self, BoxError> {
         Self::new_with_storage(data_dir, app_handle, true)
     }
 
@@ -259,11 +280,27 @@ impl LibraryState {
                FROM device_config
               WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         );
 
         match existing {
-            Ok((emoji, device_name, sync_enabled, soulseek_enabled, soulseek_username, soulseek_password)) => Ok(DeviceSettings {
+            Ok((
+                emoji,
+                device_name,
+                sync_enabled,
+                soulseek_enabled,
+                soulseek_username,
+                soulseek_password,
+            )) => Ok(DeviceSettings {
                 emoji,
                 device_name,
                 sync_enabled: sync_enabled != 0,
@@ -403,8 +440,8 @@ fn purge_internal_library_rows(conn: &Connection) -> rusqlite::Result<()> {
 
 fn random_emoji() -> String {
     const EMOJIS: &[&str] = &[
-        "🎵", "🎶", "🎤", "🎧", "🎼", "🎹", "🎸", "🥁", "📱", "💻",
-        "🖥️", "⌚", "📻", "📡", "🔊", "🎺", "🎻", "🪕", "🎷", "🍕",
+        "🎵", "🎶", "🎤", "🎧", "🎼", "🎹", "🎸", "🥁", "📱", "💻", "🖥️", "⌚", "📻", "📡", "🔊",
+        "🎺", "🎻", "🪕", "🎷", "🍕",
     ];
     let idx = {
         use std::time::UNIX_EPOCH;
@@ -440,20 +477,32 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_data BLOB");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_mime TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_source_path TEXT");
-    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_source_mtime INTEGER NOT NULL DEFAULT 0");
+    let _ = conn.execute_batch(
+        "ALTER TABLE tracks ADD COLUMN cover_source_mtime INTEGER NOT NULL DEFAULT 0",
+    );
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN rarity TEXT");
-    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0");
+    let _ = conn
+        .execute_batch("ALTER TABLE tracks ADD COLUMN manually_edited INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN is_liked INTEGER NOT NULL DEFAULT 0");
-    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0");
+    let _ =
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN year INTEGER");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN genre TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN date_added INTEGER");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN tags TEXT");
-    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN is_duplicate INTEGER NOT NULL DEFAULT 0");
+    let _ =
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN is_duplicate INTEGER NOT NULL DEFAULT 0");
+    let _ = conn
+        .execute_batch("ALTER TABLE tracks ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'file'");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN source_path TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cue_path TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN segment_start_secs REAL");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN segment_end_secs REAL");
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre COLLATE NOCASE);
-         CREATE INDEX IF NOT EXISTS idx_tags ON tracks(tags COLLATE NOCASE);",
+         CREATE INDEX IF NOT EXISTS idx_tags ON tracks(tags COLLATE NOCASE);
+         CREATE INDEX IF NOT EXISTS idx_tracks_cue_path ON tracks(cue_path);",
     )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS play_history (
@@ -487,12 +536,22 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_pt_playlist ON playlist_tracks(playlist_id, position);",
     )?;
-    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
-    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 0");
-    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_enabled INTEGER NOT NULL DEFAULT 0");
-    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_username TEXT NOT NULL DEFAULT ''");
-    let _ = conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_password TEXT NOT NULL DEFAULT ''");
-    let _ = conn.execute_batch("ALTER TABLE playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    let _ = conn
+        .execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
+    let _ = conn.execute_batch(
+        "ALTER TABLE device_config ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 0",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE device_config ADD COLUMN soulseek_enabled INTEGER NOT NULL DEFAULT 0",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE device_config ADD COLUMN soulseek_username TEXT NOT NULL DEFAULT ''",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE device_config ADD COLUMN soulseek_password TEXT NOT NULL DEFAULT ''",
+    );
+    let _ =
+        conn.execute_batch("ALTER TABLE playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE playlists ADD COLUMN pinned_at INTEGER");
     // Smart (flexible) playlists — previously in localStorage, now in DB for sync.
     conn.execute_batch(
@@ -506,7 +565,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
         );",
     )?;
-    let _ = conn.execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    let _ = conn
+        .execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned_at INTEGER");
     Ok(())
 }
@@ -531,6 +591,60 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         tags: row.get(15).unwrap_or(None),
         is_duplicate: row.get::<_, i64>(16).unwrap_or(0) != 0,
     })
+}
+
+pub fn track_source_for_track(
+    conn: &Connection,
+    data_dir: &Path,
+    id: i64,
+) -> Result<Option<TrackSource>, String> {
+    let row: Option<(
+        String,
+        Option<String>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+    )> = conn
+        .query_row(
+            "SELECT path,
+                    source_path,
+                    segment_start_secs,
+                    segment_end_secs,
+                    duration_secs
+               FROM tracks
+              WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .ok();
+
+    let Some((path, source_path, segment_start, segment_end, duration_secs)) = row else {
+        return Ok(None);
+    };
+
+    let rel_source = source_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&path);
+    let audio_path = rel_to_abs_path(data_dir, rel_source);
+    if let Some(start_secs) = segment_start {
+        Ok(Some(TrackSource::CueSegment {
+            audio_path,
+            start_secs,
+            end_secs: segment_end,
+            duration_secs,
+        }))
+    } else {
+        Ok(Some(TrackSource::File { path: audio_path }))
+    }
 }
 
 fn get_track_by_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<Track>> {
@@ -597,7 +711,10 @@ fn get_track_replacement_row_by_id(
 }
 
 fn option_text_present(value: &Option<String>) -> bool {
-    value.as_deref().map(|text| !text.trim().is_empty()).unwrap_or(false)
+    value
+        .as_deref()
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn merge_optional_text(existing: Option<String>, replacement: Option<String>) -> Option<String> {
@@ -620,7 +737,11 @@ fn merge_cover(
     replacement_data: Option<Vec<u8>>,
     replacement_mime: Option<String>,
 ) -> (Option<Vec<u8>>, Option<String>) {
-    if existing_data.as_ref().map(|data| !data.is_empty()).unwrap_or(false) {
+    if existing_data
+        .as_ref()
+        .map(|data| !data.is_empty())
+        .unwrap_or(false)
+    {
         (existing_data, existing_mime)
     } else {
         (replacement_data, replacement_mime)
@@ -675,9 +796,12 @@ fn replacement_target_path(current_abs: &Path, source_abs: &Path) -> Result<Path
         return Ok(current_abs.to_path_buf());
     }
 
-    let parent = current_abs
-        .parent()
-        .ok_or_else(|| format!("Track path has no parent directory: {}", current_abs.display()))?;
+    let parent = current_abs.parent().ok_or_else(|| {
+        format!(
+            "Track path has no parent directory: {}",
+            current_abs.display()
+        )
+    })?;
     let stem = current_abs
         .file_stem()
         .and_then(|value| value.to_str())
@@ -731,30 +855,34 @@ fn emit_index_progress(
     track_name: Option<String>,
 ) {
     use tauri::Emitter;
-    let _ = app.emit("index-progress", IndexProgress {
-        current,
-        total,
-        status: status.to_owned(),
-        added,
-        track_name,
-    });
+    let _ = app.emit(
+        "index-progress",
+        IndexProgress {
+            current,
+            total,
+            status: status.to_owned(),
+            added,
+            track_name,
+        },
+    );
 }
 
 /// Async version that emits progress events.
-fn index_directory_async(
-    conn: &Arc<Mutex<Connection>>,
-    data_dir: &Path,
-    app: &tauri::AppHandle,
-) {
-    // Collect all audio files first.
+fn index_directory_async(conn: &Arc<Mutex<Connection>>, data_dir: &Path, app: &tauri::AppHandle) {
+    // Collect all audio and cue files first.
     let files: Vec<PathBuf> = WalkDir::new(data_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| !is_internal_library_path(data_dir, e.path()))
         .filter(|e| {
-            let ext = e.path().extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
-            AUDIO_EXTENSIONS.contains(&ext.as_str())
+            let ext = e
+                .path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            is_audio_extension(&ext) || is_cue_extension(&ext)
         })
         .map(|e| e.into_path())
         .collect();
@@ -765,11 +893,30 @@ fn index_directory_async(
 
     for (i, path) in files.iter().enumerate() {
         let rel = rel_path(data_dir, path);
-        visited.insert(rel.clone());
+        let ext = path
+            .extension()
+            .and_then(|x| x.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
 
         let conn = conn.lock().unwrap();
-        match index_file(&conn, data_dir, path) {
-            Ok(true) => {
+        let index_result: Result<Vec<String>, BoxError> = if is_cue_extension(&ext) {
+            index_cue_file(&conn, data_dir, path)
+        } else {
+            visited.insert(rel.clone());
+            index_file(&conn, data_dir, path).map(|changed| {
+                if changed {
+                    vec![rel.clone()]
+                } else {
+                    Vec::new()
+                }
+            })
+        };
+        match index_result {
+            Ok(paths) if !paths.is_empty() => {
+                for path in paths {
+                    visited.insert(path);
+                }
                 added += 1;
                 emit_index_progress(
                     app,
@@ -780,8 +927,8 @@ fn index_directory_async(
                     Some(track_name_from_rel(&rel)),
                 );
             }
+            Ok(_) => {}
             Err(e) => eprintln!("[library] failed to index {}: {e}", path.display()),
-            _ => {}
         }
         drop(conn);
 
@@ -795,7 +942,9 @@ fn index_directory_async(
     {
         let conn = conn.lock().unwrap();
         let stale: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT path FROM tracks").unwrap_or_else(|_| unreachable!());
+            let mut stmt = conn
+                .prepare("SELECT path FROM tracks")
+                .unwrap_or_else(|_| unreachable!());
             stmt.query_map([], |row| row.get(0))
                 .unwrap_or_else(|_| unreachable!())
                 .filter_map(|r| r.ok())
@@ -835,15 +984,25 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+        if !is_audio_extension(&ext) && !is_cue_extension(&ext) {
             continue;
         }
 
         let rel = rel_path(data_dir, path);
-        visited.insert(rel);
-
-        if let Err(e) = index_file(conn, data_dir, path) {
-            eprintln!("[library] failed to index {}: {e}", path.display());
+        if is_cue_extension(&ext) {
+            match index_cue_file(conn, data_dir, path) {
+                Ok(paths) => {
+                    for path in paths {
+                        visited.insert(path);
+                    }
+                }
+                Err(e) => eprintln!("[library] failed to index {}: {e}", path.display()),
+            }
+        } else {
+            visited.insert(rel);
+            if let Err(e) = index_file(conn, data_dir, path) {
+                eprintln!("[library] failed to index {}: {e}", path.display());
+            }
         }
     }
 
@@ -919,7 +1078,15 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
     };
 
     if modified_secs > 0 {
-        if let Some((ms, Some(_), _, cached_cover_source_path, cached_cover_source_mtime, Some(_))) = &cached {
+        if let Some((
+            ms,
+            Some(_),
+            _,
+            cached_cover_source_path,
+            cached_cover_source_mtime,
+            Some(_),
+        )) = &cached
+        {
             if *ms == modified_secs
                 && sidecar_cover_state_matches(
                     cached_cover_source_path.as_deref(),
@@ -985,8 +1152,8 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
 
     conn.execute(
         "INSERT INTO tracks
-             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, cover_source_path, cover_source_mtime, file_hash, rarity, year, genre, date_added)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, cover_source_path, cover_source_mtime, file_hash, rarity, year, genre, date_added, source_kind, source_path, cue_path, segment_start_secs, segment_end_secs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, NULL, NULL)
          ON CONFLICT(path) DO UPDATE SET
              title         = excluded.title,
              artist        = excluded.artist,
@@ -1002,7 +1169,12 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
              rarity        = excluded.rarity,
              year          = excluded.year,
              genre         = excluded.genre,
-             date_added    = COALESCE(tracks.date_added, excluded.date_added)",
+             date_added    = COALESCE(tracks.date_added, excluded.date_added),
+             source_kind   = excluded.source_kind,
+             source_path   = excluded.source_path,
+             cue_path      = NULL,
+             segment_start_secs = NULL,
+             segment_end_secs = NULL",
         params![
             rel,
             meta.title,
@@ -1020,6 +1192,8 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             meta.year,
             meta.genre,
             date_added_secs,
+            SOURCE_KIND_FILE,
+            rel,
         ],
     )?;
 
@@ -1036,9 +1210,7 @@ fn remove_stale_tracks_with_same_hash(
     current_path: &str,
     file_hash: &str,
 ) -> rusqlite::Result<()> {
-    let mut stmt = conn.prepare(
-        "SELECT path FROM tracks WHERE file_hash = ?1 AND path != ?2",
-    )?;
+    let mut stmt = conn.prepare("SELECT path FROM tracks WHERE file_hash = ?1 AND path != ?2")?;
     let stale_paths: Vec<String> = stmt
         .query_map(params![file_hash, current_path], |row| row.get(0))?
         .filter_map(|row| row.ok())
@@ -1065,6 +1237,14 @@ fn rel_path(data_dir: &Path, abs: &Path) -> String {
     abs.strip_prefix(data_dir)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| abs.to_string_lossy().to_string())
+}
+
+fn rel_to_abs_path(data_dir: &Path, rel: &str) -> PathBuf {
+    rel.split('/')
+        .fold(data_dir.to_path_buf(), |mut path, part| {
+            path.push(part);
+            path
+        })
 }
 
 fn track_name_from_rel(rel: &str) -> String {
@@ -1102,7 +1282,10 @@ fn sidecar_cover_state_matches(
     }
 }
 
-fn find_sidecar_cover_candidate(data_dir: &Path, audio_path: &Path) -> Option<SidecarCoverCandidate> {
+fn find_sidecar_cover_candidate(
+    data_dir: &Path,
+    audio_path: &Path,
+) -> Option<SidecarCoverCandidate> {
     let directory = audio_path.parent()?;
     let mut best_match: Option<(usize, PathBuf)> = None;
 
@@ -1184,7 +1367,11 @@ fn sibling_audio_files(directory: &Path) -> Vec<PathBuf> {
     };
 
     for entry in entries.filter_map(Result::ok) {
-        if !entry.file_type().map(|file_type| file_type.is_file()).unwrap_or(false) {
+        if !entry
+            .file_type()
+            .map(|file_type| file_type.is_file())
+            .unwrap_or(false)
+        {
             continue;
         }
 
@@ -1236,6 +1423,15 @@ fn rarity_from_hash(hex: &str) -> String {
     grade.to_owned()
 }
 
+fn hash_virtual_track(parts: &[&str]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 // ── Metadata extraction ───────────────────────────────────────────────────────
 
 /// Tries to read embedded tags + duration. Falls back to adjacent cover files when present.
@@ -1257,7 +1453,11 @@ fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -
 
     let duration_secs = {
         let d = tagged.properties().duration().as_secs_f64();
-        if d > 0.0 { Some(d) } else { None }
+        if d > 0.0 {
+            Some(d)
+        } else {
+            None
+        }
     };
 
     let tag = match tagged.primary_tag().or_else(|| tagged.first_tag()) {
@@ -1292,6 +1492,312 @@ fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -
         cover_source_path,
         cover_source_mtime,
     }
+}
+
+#[derive(Default)]
+struct CueSheet {
+    title: Option<String>,
+    performer: Option<String>,
+    files: Vec<CueFile>,
+}
+
+struct CueFile {
+    filename: String,
+    tracks: Vec<CueTrack>,
+}
+
+struct CueTrack {
+    number: i64,
+    title: Option<String>,
+    performer: Option<String>,
+    index01_secs: Option<f64>,
+}
+
+fn is_cue_extension(ext: &str) -> bool {
+    CUE_EXTENSIONS.contains(&ext)
+}
+
+fn is_audio_extension(ext: &str) -> bool {
+    AUDIO_EXTENSIONS.contains(&ext)
+}
+
+fn cue_value(line: &str) -> Option<String> {
+    let rest = line.split_once(char::is_whitespace)?.1.trim();
+    if let Some(stripped) = rest.strip_prefix('"') {
+        let end = stripped.find('"')?;
+        Some(stripped[..end].to_string())
+    } else {
+        rest.split_whitespace().next().map(str::to_string)
+    }
+}
+
+fn cue_time_to_secs(value: &str) -> Option<f64> {
+    let mut parts = value.split(':');
+    let minutes = parts.next()?.parse::<f64>().ok()?;
+    let seconds = parts.next()?.parse::<f64>().ok()?;
+    let frames = parts.next()?.parse::<f64>().ok()?;
+    Some(minutes * 60.0 + seconds + frames / 75.0)
+}
+
+fn read_cue_text(path: &Path) -> Result<String, BoxError> {
+    let bytes = std::fs::read(path)?;
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text.trim_start_matches('\u{feff}').to_string()),
+        Err(error) => {
+            let bytes = error.into_bytes();
+            let (decoded, _, _) = WINDOWS_1251.decode(&bytes);
+            Ok(decoded.trim_start_matches('\u{feff}').to_string())
+        }
+    }
+}
+
+fn parse_cue_sheet(path: &Path) -> Result<CueSheet, BoxError> {
+    let text = read_cue_text(path)?;
+    let mut sheet = CueSheet::default();
+    let mut current_file: Option<usize> = None;
+    let mut current_track: Option<usize> = None;
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with("REM ") {
+            continue;
+        }
+
+        let command = line
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+
+        match command.as_str() {
+            "FILE" => {
+                if let Some(filename) = cue_value(line) {
+                    sheet.files.push(CueFile {
+                        filename,
+                        tracks: Vec::new(),
+                    });
+                    current_file = Some(sheet.files.len() - 1);
+                    current_track = None;
+                }
+            }
+            "TRACK" => {
+                let mut parts = line.split_whitespace();
+                let _ = parts.next();
+                let number = parts
+                    .next()
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(0);
+                let track_type = parts.next().unwrap_or("").to_ascii_uppercase();
+                if track_type != "AUDIO" {
+                    current_track = None;
+                    continue;
+                }
+                if let Some(file_index) = current_file {
+                    sheet.files[file_index].tracks.push(CueTrack {
+                        number,
+                        title: None,
+                        performer: None,
+                        index01_secs: None,
+                    });
+                    current_track = Some(sheet.files[file_index].tracks.len() - 1);
+                }
+            }
+            "TITLE" => {
+                if let Some(value) = cue_value(line) {
+                    if let (Some(file_index), Some(track_index)) = (current_file, current_track) {
+                        sheet.files[file_index].tracks[track_index].title = Some(value);
+                    } else {
+                        sheet.title = Some(value);
+                    }
+                }
+            }
+            "PERFORMER" => {
+                if let Some(value) = cue_value(line) {
+                    if let (Some(file_index), Some(track_index)) = (current_file, current_track) {
+                        sheet.files[file_index].tracks[track_index].performer = Some(value);
+                    } else {
+                        sheet.performer = Some(value);
+                    }
+                }
+            }
+            "INDEX" => {
+                let mut parts = line.split_whitespace();
+                let _ = parts.next();
+                let index_number = parts.next().unwrap_or("");
+                let index_time = parts.next().unwrap_or("");
+                if index_number == "01" {
+                    if let (Some(file_index), Some(track_index)) = (current_file, current_track) {
+                        sheet.files[file_index].tracks[track_index].index01_secs =
+                            cue_time_to_secs(index_time);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(sheet)
+}
+
+fn cue_virtual_path(cue_rel: &str, track_number: i64) -> String {
+    format!("{cue_rel}#{track_number:02}")
+}
+
+fn resolve_cue_audio_path(cue_abs: &Path, filename: &str) -> PathBuf {
+    let normalized = filename.replace('\\', "/");
+    cue_abs
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(normalized)
+}
+
+fn index_cue_file(
+    conn: &Connection,
+    data_dir: &Path,
+    cue_abs: &Path,
+) -> Result<Vec<String>, BoxError> {
+    let cue_rel = rel_path(data_dir, cue_abs);
+    let cue_modified_secs = path_modified_secs(cue_abs);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let sheet = parse_cue_sheet(cue_abs)?;
+    let mut visited = Vec::new();
+
+    let existing_paths: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT path FROM tracks WHERE cue_path = ?1")?;
+        let rows = stmt
+            .query_map(params![cue_rel.clone()], |row| row.get(0))?
+            .filter_map(|row| row.ok())
+            .collect();
+        rows
+    };
+
+    for cue_file in sheet.files {
+        let audio_abs = resolve_cue_audio_path(cue_abs, &cue_file.filename);
+        if !audio_abs.exists() {
+            continue;
+        }
+
+        let audio_rel = rel_path(data_dir, &audio_abs);
+        let sidecar_cover = find_sidecar_cover_candidate(data_dir, &audio_abs);
+        let mut audio_meta = read_audio_meta(&audio_abs, sidecar_cover.as_ref());
+        let audio_duration = audio_meta.duration_secs;
+        let cover_data = audio_meta.cover_data.take();
+        let cover_mime = audio_meta.cover_mime.take();
+        let cover_source_path = audio_meta.cover_source_path.take();
+        let cover_source_mtime = audio_meta.cover_source_mtime;
+        let modified_secs = cue_modified_secs.max(path_modified_secs(&audio_abs));
+        let starts: Vec<Option<f64>> = cue_file
+            .tracks
+            .iter()
+            .map(|track| track.index01_secs)
+            .collect();
+
+        for (index, cue_track) in cue_file.tracks.iter().enumerate() {
+            let Some(start_secs) = cue_track.index01_secs else {
+                continue;
+            };
+            let end_secs = starts
+                .iter()
+                .skip(index + 1)
+                .flatten()
+                .copied()
+                .next()
+                .or(audio_duration)
+                .filter(|end| *end > start_secs);
+            let duration_secs = end_secs.map(|end| end - start_secs);
+            let virtual_path = cue_virtual_path(&cue_rel, cue_track.number);
+            let track_number = if cue_track.number > 0 {
+                Some(cue_track.number)
+            } else {
+                Some((index + 1) as i64)
+            };
+            let fallback = infer_from_path(&virtual_path);
+            let title = cue_track
+                .title
+                .clone()
+                .or_else(|| fallback.title.clone())
+                .or_else(|| Some(track_name_from_rel(&virtual_path)));
+            let artist = cue_track
+                .performer
+                .clone()
+                .or_else(|| sheet.performer.clone())
+                .or(fallback.artist.clone());
+            let album = sheet.title.clone().or(fallback.album.clone());
+            let start_key = format!("{start_secs:.3}");
+            let end_key = end_secs
+                .map(|value| format!("{value:.3}"))
+                .unwrap_or_default();
+            let number_key = cue_track.number.to_string();
+            let file_hash =
+                hash_virtual_track(&[&cue_rel, &audio_rel, &number_key, &start_key, &end_key]);
+            let rarity = rarity_from_hash(&file_hash);
+
+            conn.execute(
+                "INSERT INTO tracks
+                     (path, title, artist, album, track_number, duration_secs, modified_secs,
+                      cover_data, cover_mime, cover_source_path, cover_source_mtime,
+                      file_hash, rarity, year, genre, date_added, source_kind, source_path,
+                      cue_path, segment_start_secs, segment_end_secs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                 ON CONFLICT(path) DO UPDATE SET
+                     title = CASE WHEN tracks.manually_edited != 0 THEN tracks.title ELSE excluded.title END,
+                     artist = CASE WHEN tracks.manually_edited != 0 THEN tracks.artist ELSE excluded.artist END,
+                     album = CASE WHEN tracks.manually_edited != 0 THEN tracks.album ELSE excluded.album END,
+                     track_number = CASE WHEN tracks.manually_edited != 0 THEN tracks.track_number ELSE excluded.track_number END,
+                     duration_secs = excluded.duration_secs,
+                     modified_secs = excluded.modified_secs,
+                     cover_data = excluded.cover_data,
+                     cover_mime = excluded.cover_mime,
+                     cover_source_path = excluded.cover_source_path,
+                     cover_source_mtime = excluded.cover_source_mtime,
+                     file_hash = excluded.file_hash,
+                     rarity = excluded.rarity,
+                     year = CASE WHEN tracks.manually_edited != 0 THEN tracks.year ELSE excluded.year END,
+                     genre = CASE WHEN tracks.manually_edited != 0 THEN tracks.genre ELSE excluded.genre END,
+                     date_added = COALESCE(tracks.date_added, excluded.date_added),
+                     source_kind = excluded.source_kind,
+                     source_path = excluded.source_path,
+                     cue_path = excluded.cue_path,
+                     segment_start_secs = excluded.segment_start_secs,
+                     segment_end_secs = excluded.segment_end_secs",
+                params![
+                    virtual_path,
+                    title,
+                    artist,
+                    album,
+                    track_number,
+                    duration_secs,
+                    modified_secs,
+                    cover_data.clone(),
+                    cover_mime.clone(),
+                    cover_source_path.clone(),
+                    cover_source_mtime,
+                    file_hash,
+                    rarity,
+                    audio_meta.year,
+                    audio_meta.genre,
+                    Some(now_secs),
+                    SOURCE_KIND_CUE,
+                    audio_rel,
+                    cue_rel,
+                    start_secs,
+                    end_secs,
+                ],
+            )?;
+            visited.push(virtual_path);
+        }
+    }
+
+    for stale_path in existing_paths {
+        if !visited.contains(&stale_path) {
+            conn.execute("DELETE FROM tracks WHERE path = ?1", params![stale_path])?;
+        }
+    }
+
+    Ok(visited)
 }
 
 /// Extracts the first embedded cover image from a tag, falling back to sidecar folder art.
@@ -1431,7 +1937,10 @@ fn handle_fs_events_batch(
     for result in events {
         let event = match result {
             Ok(e) => e,
-            Err(e) => { eprintln!("[library] watcher error: {e}"); continue; }
+            Err(e) => {
+                eprintln!("[library] watcher error: {e}");
+                continue;
+            }
         };
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) => {
@@ -1439,8 +1948,12 @@ fn handle_fs_events_batch(
                     if is_internal_library_path(data_dir, &path) {
                         continue;
                     }
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-                    if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if is_audio_extension(&ext) || is_cue_extension(&ext) {
                         to_index.push(path);
                     } else if is_sidecar_cover_path(&path) {
                         if let Some(directory) = path.parent() {
@@ -1454,8 +1967,12 @@ fn handle_fs_events_batch(
                     if is_internal_library_path(data_dir, &path) {
                         continue;
                     }
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-                    if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if is_audio_extension(&ext) || is_cue_extension(&ext) {
                         to_remove.push(path);
                     } else if is_sidecar_cover_path(&path) {
                         if let Some(directory) = path.parent() {
@@ -1473,7 +1990,9 @@ fn handle_fs_events_batch(
     to_index.dedup();
 
     let total = to_index.len() + to_remove.len();
-    if total == 0 { return; }
+    if total == 0 {
+        return;
+    }
 
     let mut added: usize = 0;
     let mut current: usize = 0;
@@ -1482,7 +2001,17 @@ fn handle_fs_events_batch(
         let rel = rel_path(data_dir, path);
         current += 1;
         let c = conn.lock().unwrap();
-        match index_file(&c, data_dir, path) {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let changed = if is_cue_extension(&ext) {
+            index_cue_file(&c, data_dir, path).map(|paths| !paths.is_empty())
+        } else {
+            index_file(&c, data_dir, path)
+        };
+        match changed {
             Ok(true) => {
                 added += 1;
                 emit_index_progress(
@@ -1505,12 +2034,26 @@ fn handle_fs_events_batch(
 
     for path in &to_remove {
         let rel = rel_path(data_dir, path);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let c = conn.lock().unwrap();
-        if c.execute("DELETE FROM tracks WHERE path = ?1", params![rel]).unwrap_or(0) > 0 {
+        let removed = if is_cue_extension(&ext) {
+            c.execute("DELETE FROM tracks WHERE cue_path = ?1", params![rel])
+                .unwrap_or(0)
+        } else {
+            c.execute(
+                "DELETE FROM tracks WHERE path = ?1 OR source_path = ?1",
+                params![rel],
+            )
+            .unwrap_or(0)
+        };
+        if removed > 0 {
             added += 1;
         }
         drop(c);
-        current += 1;
     }
 
     emit_index_progress(app_handle, total, total, "done", added, None);
@@ -1596,10 +2139,7 @@ pub fn index_track_by_path(
 }
 
 #[tauri::command]
-pub fn reindex(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, LibraryState>,
-) -> Result<(), String> {
+pub fn reindex(app: tauri::AppHandle, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
     state.reindex(&app);
     Ok(())
 }
@@ -1636,7 +2176,20 @@ pub fn update_track(
                 rarity = ?11,
                 manually_edited = 1
           WHERE id = ?12",
-        params![title, artist, album, track_number, year, genre, tags, play_count, is_liked, date_added, rarity, id],
+        params![
+            title,
+            artist,
+            album,
+            track_number,
+            year,
+            genre,
+            tags,
+            play_count,
+            is_liked,
+            date_added,
+            rarity,
+            id
+        ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1689,7 +2242,8 @@ pub fn replace_track_with_file(
 
     if target_rel != existing.track.path {
         if let Some(conflict) = get_track_by_path(&conn, &target_rel).map_err(|e| e.to_string())? {
-            let replacing_from_conflicting_path = source_rel.as_deref() == Some(target_rel.as_str());
+            let replacing_from_conflicting_path =
+                source_rel.as_deref() == Some(target_rel.as_str());
             if conflict.id != id && replacing_from_conflicting_path {
                 conn.execute(
                     "DELETE FROM tracks WHERE path = ?1 AND id != ?2",
@@ -1738,7 +2292,8 @@ pub fn replace_track_with_file(
     let merged_title = merge_optional_text(existing.track.title, replacement_meta.title);
     let merged_artist = merge_optional_text(existing.track.artist, replacement_meta.artist);
     let merged_album = merge_optional_text(existing.track.album, replacement_meta.album);
-    let merged_track_number = merge_optional_i64(existing.track.track_number, replacement_meta.track_number);
+    let merged_track_number =
+        merge_optional_i64(existing.track.track_number, replacement_meta.track_number);
     let merged_year = merge_optional_i64(existing.track.year, replacement_meta.year);
     let merged_genre = merge_optional_text(existing.track.genre, replacement_meta.genre);
     let merged_tags = existing.track.tags;
@@ -1838,8 +2393,9 @@ pub fn reveal_track_in_folder(
         base_dir.join(requested)
     };
 
-    let existing_target = nearest_existing_share_target(&target)
-        .ok_or_else(|| "Failed to resolve track path: No such file or directory (os error 2)".to_string())?;
+    let existing_target = nearest_existing_share_target(&target).ok_or_else(|| {
+        "Failed to resolve track path: No such file or directory (os error 2)".to_string()
+    })?;
     let resolved_target = existing_target
         .canonicalize()
         .map_err(|e| format!("Failed to resolve track path: {e}"))?;
@@ -1884,7 +2440,10 @@ fn reveal_share_target(path: &Path) -> Result<(), String> {
     reveal_status_result(status)
 }
 
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "android", target_os = "ios"))))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "android", target_os = "ios"))
+))]
 fn reveal_share_target(path: &Path) -> Result<(), String> {
     let status = ProcessCommand::new("xdg-open")
         .arg(if path.is_dir() {
@@ -1908,7 +2467,10 @@ fn reveal_share_target(_path: &Path) -> Result<(), String> {
     target_os = "ios",
     target_os = "macos",
     target_os = "windows",
-    all(unix, not(any(target_os = "macos", target_os = "android", target_os = "ios")))
+    all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "ios"))
+    )
 )))]
 fn reveal_share_target(_path: &Path) -> Result<(), String> {
     Err("Reveal in folder is not supported on this platform".into())
@@ -1942,10 +2504,7 @@ fn nearest_existing_share_target(path: &Path) -> Option<PathBuf> {
 }
 
 #[tauri::command]
-pub fn record_play(
-    id: i64,
-    state: tauri::State<'_, LibraryState>,
-) -> Result<(), String> {
+pub fn record_play(id: i64, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1956,10 +2515,12 @@ pub fn record_play(
         params![id, now],
     )
     .map_err(|e| e.to_string())?;
-    let _ = conn.execute(
-        "UPDATE tracks SET play_count = play_count + 1 WHERE id = ?1",
-        rusqlite::params![id],
-    ).map_err(|e| e.to_string())?;
+    let _ = conn
+        .execute(
+            "UPDATE tracks SET play_count = play_count + 1 WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2045,7 +2606,9 @@ pub fn set_device_emoji(
 }
 
 #[tauri::command]
-pub fn get_device_settings(state: tauri::State<'_, LibraryState>) -> Result<DeviceSettings, String> {
+pub fn get_device_settings(
+    state: tauri::State<'_, LibraryState>,
+) -> Result<DeviceSettings, String> {
     state.get_device_settings().map_err(|e| e.to_string())
 }
 
@@ -2079,19 +2642,22 @@ pub fn set_device_settings(
 #[tauri::command]
 pub fn toggle_like(id: i64, state: tauri::State<'_, LibraryState>) -> Result<bool, String> {
     let conn = state.conn.lock().unwrap();
-    let current_liked: i64 = conn.query_row(
-        "SELECT is_liked FROM tracks WHERE id = ?1",
-        rusqlite::params![id],
-        |row| row.get(0),
-    ).unwrap_or(0);
-    
+    let current_liked: i64 = conn
+        .query_row(
+            "SELECT is_liked FROM tracks WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
     let new_liked = if current_liked == 0 { 1 } else { 0 };
-    
+
     conn.execute(
         "UPDATE tracks SET is_liked = ?1 WHERE id = ?2",
         rusqlite::params![new_liked, id],
-    ).map_err(|e| e.to_string())?;
-    
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(new_liked != 0)
 }
 
@@ -2110,20 +2676,26 @@ pub struct Playlist {
 #[tauri::command]
 pub fn get_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<Playlist>, String> {
     let conn = state.conn.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT p.id, p.name, p.created_at, COUNT(pt.id) as track_count, p.pinned, p.pinned_at
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.name, p.created_at, COUNT(pt.id) as track_count, p.pinned, p.pinned_at
          FROM playlists p
          LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
          GROUP BY p.id ORDER BY p.created_at DESC",
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| Ok(Playlist {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        created_at: row.get(2)?,
-        track_count: row.get(3)?,
-        pinned: row.get::<_, i64>(4).unwrap_or(0) != 0,
-        pinned_at: row.get(5).unwrap_or(None),
-    })).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Playlist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+                track_count: row.get(3)?,
+                pinned: row.get::<_, i64>(4).unwrap_or(0) != 0,
+                pinned_at: row.get(5).unwrap_or(None),
+            })
+        })
+        .map_err(|e| e.to_string())?;
     let playlists: Result<Vec<_>, _> = rows.map(|r| r.map_err(|e| e.to_string())).collect();
     if let Ok(ref playlists) = playlists {
         tracing::info!(
@@ -2151,17 +2723,23 @@ pub fn create_playlist(name: String, state: tauri::State<'_, LibraryState>) -> R
     conn.execute(
         "INSERT INTO playlists (name) VALUES (?1)",
         params![playlist_name],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
 }
 
 #[tauri::command]
-pub fn rename_playlist(id: i64, name: String, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+pub fn rename_playlist(
+    id: i64,
+    name: String,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     conn.execute(
         "UPDATE playlists SET name = ?1 WHERE id = ?2",
         params![name, id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2174,7 +2752,11 @@ pub fn delete_playlist(id: i64, state: tauri::State<'_, LibraryState>) -> Result
 }
 
 #[tauri::command]
-pub fn set_playlist_pinned(id: i64, pinned: bool, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+pub fn set_playlist_pinned(
+    id: i64,
+    pinned: bool,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     if pinned {
         conn.execute(
@@ -2193,30 +2775,42 @@ pub fn set_playlist_pinned(id: i64, pinned: bool, state: tauri::State<'_, Librar
 }
 
 #[tauri::command]
-pub fn get_playlist_tracks(playlist_id: i64, state: tauri::State<'_, LibraryState>) -> Result<Vec<Track>, String> {
+pub fn get_playlist_tracks(
+    playlist_id: i64,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Vec<Track>, String> {
     let conn = state.conn.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.path, t.title, t.artist, t.album, t.track_number,
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.path, t.title, t.artist, t.album, t.track_number,
                 t.duration_secs, t.file_hash, t.rarity, t.manually_edited,
                 t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags, t.is_duplicate
          FROM tracks t
          JOIN playlist_tracks pt ON pt.track_id = t.id
          WHERE pt.playlist_id = ?1
          ORDER BY pt.position, pt.id",
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(params![playlist_id], row_to_track)
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![playlist_id], row_to_track)
         .map_err(|e| e.to_string())?;
     rows.map(|r| r.map_err(|e| e.to_string())).collect()
 }
 
 #[tauri::command]
-pub fn add_track_to_playlist(playlist_id: i64, track_id: i64, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+pub fn add_track_to_playlist(
+    playlist_id: i64,
+    track_id: i64,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
-    let max_pos: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = ?1",
-        params![playlist_id],
-        |row| row.get(0),
-    ).unwrap_or(-1);
+    let max_pos: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = ?1",
+            params![playlist_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(-1);
     conn.execute(
         "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
         params![playlist_id, track_id, max_pos + 1],
@@ -2225,12 +2819,17 @@ pub fn add_track_to_playlist(playlist_id: i64, track_id: i64, state: tauri::Stat
 }
 
 #[tauri::command]
-pub fn remove_track_from_playlist(playlist_id: i64, track_id: i64, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+pub fn remove_track_from_playlist(
+    playlist_id: i64,
+    track_id: i64,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     conn.execute(
         "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
         params![playlist_id, track_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2248,20 +2847,26 @@ pub struct SmartPlaylistRow {
 }
 
 #[tauri::command]
-pub fn get_smart_playlists(state: tauri::State<'_, LibraryState>) -> Result<Vec<SmartPlaylistRow>, String> {
+pub fn get_smart_playlists(
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Vec<SmartPlaylistRow>, String> {
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT id, name, match_mode, rules_json, pinned, pinned_at, updated_at FROM smart_playlists ORDER BY name",
     ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| Ok(SmartPlaylistRow {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        match_mode: row.get(2)?,
-        rules_json: row.get(3)?,
-        pinned: row.get::<_, i64>(4).unwrap_or(0) != 0,
-        pinned_at: row.get(5).unwrap_or(None),
-        updated_at: row.get(6)?,
-    })).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SmartPlaylistRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                match_mode: row.get(2)?,
+                rules_json: row.get(3)?,
+                pinned: row.get::<_, i64>(4).unwrap_or(0) != 0,
+                pinned_at: row.get(5).unwrap_or(None),
+                updated_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
     let playlists: Result<Vec<_>, _> = rows.map(|r| r.map_err(|e| e.to_string())).collect();
     if let Ok(ref playlists) = playlists {
         tracing::info!(
@@ -2301,12 +2906,16 @@ pub fn save_smart_playlist(
            rules_json = excluded.rules_json,
            updated_at = strftime('%s','now')",
         params![id, playlist_name, match_mode, rules_json],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(playlist_name)
 }
 
 #[tauri::command]
-pub fn delete_smart_playlist(id: String, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+pub fn delete_smart_playlist(
+    id: String,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     conn.execute("DELETE FROM smart_playlists WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
@@ -2314,7 +2923,11 @@ pub fn delete_smart_playlist(id: String, state: tauri::State<'_, LibraryState>) 
 }
 
 #[tauri::command]
-pub fn set_smart_playlist_pinned(id: String, pinned: bool, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
+pub fn set_smart_playlist_pinned(
+    id: String,
+    pinned: bool,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     if pinned {
         conn.execute(
@@ -2357,10 +2970,7 @@ fn normalize_key(s: &str) -> String {
 /// Try to derive a "display title" from path alone (for tracks without tags).
 fn title_from_path(path: &str) -> String {
     let p = std::path::Path::new(path);
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(path);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(path);
     // Strip leading track-number prefix so "01 - Song" → "Song"
     let (_, title) = parse_filename(stem);
     title
@@ -2663,8 +3273,52 @@ pub fn unmark_duplicates(
             .map_err(|e| e.to_string())?;
     } else {
         for id in ids {
-            let _ = conn.execute("UPDATE tracks SET is_duplicate = 0 WHERE id = ?1", params![id]);
+            let _ = conn.execute(
+                "UPDATE tracks SET is_duplicate = 0 WHERE id = ?1",
+                params![id],
+            );
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn parse_cue_sheet_decodes_windows_1251() {
+        let cue = r#"PERFORMER "Тени Свободы"
+TITLE "Тени Свободы"
+FILE "Тени Свободы - 2015 - Тени Свободы.flac" WAVE
+  TRACK 01 AUDIO
+    TITLE "Для тупиц"
+    PERFORMER "Тени Свободы"
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    TITLE "Засыпай"
+    PERFORMER "Тени Свободы"
+    INDEX 01 03:20:48
+"#;
+        let (encoded, _, _) = WINDOWS_1251.encode(cue);
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("player-cue-{suffix}.cue"));
+        std::fs::write(&path, encoded.as_ref()).unwrap();
+
+        let sheet = parse_cue_sheet(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(sheet.performer.as_deref(), Some("Тени Свободы"));
+        assert_eq!(sheet.title.as_deref(), Some("Тени Свободы"));
+        assert_eq!(
+            sheet.files.first().map(|file| file.filename.as_str()),
+            Some("Тени Свободы - 2015 - Тени Свободы.flac")
+        );
+        assert_eq!(sheet.files[0].tracks[0].title.as_deref(), Some("Для тупиц"));
+        assert_eq!(sheet.files[0].tracks[1].index01_secs, Some(200.64));
+    }
 }

@@ -29,6 +29,7 @@ notify = "6"
 walkdir = "2"
 base64 = "0.22"
 blake3 = "1"
+encoding_rs = "0.8"
 symphonia = { version = "0.5", features = ["all"] }
 rustfft = "6"
 rusty-chromaprint = "0.3"
@@ -43,4 +44,3 @@ whoami = "1"
 soulseek_rs = { package = "soulseek-rs-lib", path = "vendor/soulseek-rs-lib", features = ["tracing"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
