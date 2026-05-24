@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { marked } from "marked";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 
@@ -4185,7 +4185,10 @@ async function openDataDir() {
   }
   // Desktop fallback
   try {
-    await openPath(path);
+    await invoke('reveal_track_in_folder', {
+      path,
+      absolute: true,
+    });
   } catch (_) {
     try { await navigator.clipboard.writeText(path); } catch (_2) {}
     alert(`Data folder:\n${path}`);
