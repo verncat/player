@@ -3177,6 +3177,30 @@ const displayProgressPercent = computed(() => {
   return duration.value > 0 ? Math.max(0, Math.min(100, (pos / duration.value) * 100)) : 0;
 });
 
+const soulseekPreviewBufferPercent = computed(() => {
+  const track = nowPlaying.value;
+  if (!track?.soulseek_preview || !track.preview_growing) {
+    return 0;
+  }
+
+  const username = track.soulseek_username || track.artist || '';
+  const filename = track.soulseek_filename || '';
+  if (!username || !filename) {
+    return 0;
+  }
+
+  const state = soulseekPreviews.value[soulseekResultKey(username, filename)];
+  const downloaded = state?.bytesDownloaded ?? 0;
+  const total = state?.totalBytes ?? track.soulseek_size ?? 0;
+  if (total <= 0 || downloaded <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, (downloaded / total) * 100));
+});
+
+const showSoulseekPreviewBuffer = computed(() => soulseekPreviewBufferPercent.value > 0);
+
 /** Return the full ordered list for a given source */
 function sourceList(src: QueueSource): Track[] {
   if (src === 'recent') {
@@ -6348,6 +6372,11 @@ onUnmounted(() => {
         <div class="progress-row">
           <span class="time">{{ formatTime(currentTime) }}</span>
           <div class="bar" @click="seek">
+            <div
+              v-if="showSoulseekPreviewBuffer"
+              class="bar-buffer"
+              :style="`width:${soulseekPreviewBufferPercent}%`"
+            />
             <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
               <div class="bar-thumb" />
             </div>
@@ -6527,6 +6556,11 @@ onUnmounted(() => {
                 @pointercancel="mobileSeekHoldEnd"
               >
                 <div class="detail-bar-track">
+                  <div
+                    v-if="showSoulseekPreviewBuffer"
+                    class="detail-bar-buffer"
+                    :style="`width:${soulseekPreviewBufferPercent}%`"
+                  />
                   <div class="detail-bar-fill" :style="`width:${displayProgressPercent}%`">
                     <div class="detail-bar-thumb" />
                   </div>
@@ -7176,6 +7210,16 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   height: 100%; background: #fff;
   border-radius: 2px; position: relative;
   transition: background .1s;
+}
+.bar-buffer {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  pointer-events: none;
 }
 .bar-thumb {
   position: absolute; right: -6px; top: 50%;
@@ -8848,6 +8892,17 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   inset: 0 auto 0 0;
   height: 4px;
   background: #fff;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.detail-bar-buffer {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.2);
   border-radius: 999px;
   pointer-events: none;
 }
