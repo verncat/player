@@ -345,7 +345,7 @@ async function generateAiNotes(apiKey, model, repository, tagName, context) {
         'Internal tooling, CI, refactors, dependency bumps, and maintenance should be collapsed into one short catch-all sentence.',
         'Return strict JSON only with keys: summary, highlights, other_improvements.',
         'summary must be 1-2 short sentences.',
-        'highlights must be an array of 1-5 concise bullet strings — always include at least one, even if the release is mostly internal; in that case add a single generic improvement bullet.',,
+        'highlights must be an array of 1-5 concise bullet strings — always include at least one, even if the release is mostly internal; in that case add a single generic improvement bullet.',
         'other_improvements must be a single sentence that groups the remaining work.',
         'Do not mention commit hashes, pull requests, files, CI, workflows, version bumps, or implementation details unless directly user-visible.',
       ].join(' '),
