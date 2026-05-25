@@ -16,11 +16,12 @@
 //!   { peer, phase: "index"|"download"|"reindex"|"done"|"error", total, done, message }
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::{params, Connection};
 use serde::de::DeserializeOwned;
@@ -43,6 +44,10 @@ pub struct RemoteTrack {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    pub source_kind: Option<String>,
+    pub source_path: Option<String>,
+    pub cue_path: Option<String>,
+    pub file_size: Option<u64>,
 }
 
 /// `/tracks` response payload for sync protocol.
@@ -98,6 +103,8 @@ pub struct SyncProgress {
     pub total: usize,
     pub done: usize,
     pub message: Option<String>,
+    pub item_done: Option<u64>,
+    pub item_total: Option<u64>,
 }
 
 // ── Sync-data contract (track fields, playlists, smart playlists, history) ──
@@ -353,7 +360,7 @@ fn dedup_track_meta_by_hash(track_meta: Vec<SyncTrackMeta>) -> Vec<SyncTrackMeta
 fn load_remote_tracks(conn: &Connection) -> Vec<RemoteTrack> {
     let mut tracks: Vec<RemoteTrack> = conn
         .prepare(
-            "SELECT file_hash, path, title, artist, album \
+            "SELECT file_hash, path, title, artist, album, source_kind, source_path, cue_path \
              FROM tracks WHERE file_hash IS NOT NULL",
         )
         .map(|mut s| {
@@ -364,6 +371,10 @@ fn load_remote_tracks(conn: &Connection) -> Vec<RemoteTrack> {
                     title: row.get(2)?,
                     artist: row.get(3)?,
                     album: row.get(4)?,
+                    source_kind: row.get(5)?,
+                    source_path: row.get(6)?,
+                    cue_path: row.get(7)?,
+                    file_size: None,
                 })
             })
             .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
@@ -524,6 +535,10 @@ fn build_sync_content_hashes(remote_tracks: &[RemoteTrack]) -> Vec<SyncContentHa
                 track.title.clone(),
                 track.artist.clone(),
                 track.album.clone(),
+                track.source_kind.clone(),
+                track.source_path.clone(),
+                track.cue_path.clone(),
+                track.file_size,
             ));
             SyncContentHashes {
                 hash: track.hash.clone(),
@@ -1039,7 +1054,7 @@ fn handle_request(
         let playback = app.state::<crate::playback::PlaybackState>();
         serve_control_seek(request, &playback);
     } else if url == "/tracks" {
-        serve_tracks(request, &conn);
+        serve_tracks(request, &conn, &data_dir);
     } else if url == "/sync-data" {
         serve_sync_data(request, &conn);
     } else if url == "/sync-merkle/root" {
@@ -1060,6 +1075,9 @@ fn handle_request(
         serve_sync_merkle_history_chunks(request, &conn);
     } else if let Some(chunk_id) = url.strip_prefix("/sync-merkle/history/chunk/") {
         serve_sync_merkle_history_chunk(request, &conn, chunk_id);
+    } else if let Some(hash) = url.strip_prefix("/cue/") {
+        let hash = hash.to_string();
+        serve_cue_file(request, &hash, &conn, &data_dir);
     } else if let Some(hash) = url.strip_prefix("/file/") {
         let hash = hash.to_string();
         serve_file(request, &hash, &conn, &data_dir);
@@ -1271,10 +1289,19 @@ fn serve_control_seek(mut request: tiny_http::Request, playback: &crate::playbac
     respond_status(request, 204);
 }
 
-fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>) {
+fn attach_remote_track_file_sizes(data_dir: &Path, tracks: &mut [RemoteTrack]) {
+    for track in tracks {
+        let source_rel = remote_track_source_rel(track);
+        let abs = rel_path_to_abs(data_dir, source_rel);
+        track.file_size = std::fs::metadata(abs).ok().map(|meta| meta.len());
+    }
+}
+
+fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>, data_dir: &Path) {
     let body = {
         let c = conn.lock().unwrap();
-        let tracks = load_remote_tracks(&c);
+        let mut tracks = load_remote_tracks(&c);
+        attach_remote_track_file_sizes(data_dir, &mut tracks);
         let (device_name, device_emoji) = device_identity(&c);
         serde_json::to_vec(&TracksResponse {
             version: APP_VERSION.to_string(),
@@ -1293,7 +1320,7 @@ fn serve_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Connecti
         .lock()
         .unwrap()
         .query_row(
-            "SELECT path FROM tracks WHERE file_hash = ?1 LIMIT 1",
+            "SELECT COALESCE(NULLIF(source_path, ''), path) FROM tracks WHERE file_hash = ?1 LIMIT 1",
             params![hash],
             |row| row.get(0),
         )
@@ -1312,6 +1339,32 @@ fn serve_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Connecti
                 Header::from_bytes(b"Content-Type", b"application/octet-stream").unwrap();
             let _ = request
                 .respond(tiny_http::Response::from_data(data).with_header(content_type));
+        }
+        Err(_) => {
+            let _ = request.respond(tiny_http::Response::empty(404));
+        }
+    }
+}
+
+fn serve_cue_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Connection>>, data_dir: &Path) {
+    let rel: Option<String> = conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT cue_path FROM tracks WHERE file_hash = ?1 AND cue_path IS NOT NULL LIMIT 1",
+            params![hash],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(rel) = rel else {
+        let _ = request.respond(tiny_http::Response::empty(404));
+        return;
+    };
+    let abs = rel_path_to_abs(data_dir, &rel);
+    match std::fs::read(&abs) {
+        Ok(data) => {
+            let content_type = Header::from_bytes(b"Content-Type", b"application/octet-stream").unwrap();
+            let _ = request.respond(tiny_http::Response::from_data(data).with_header(content_type));
         }
         Err(_) => {
             let _ = request.respond(tiny_http::Response::empty(404));
@@ -1604,6 +1657,35 @@ fn emit(
             total,
             done,
             message: msg,
+            item_done: None,
+            item_total: None,
+        },
+    );
+}
+
+fn emit_download_item(
+    app: &AppHandle,
+    peer: &str,
+    device_name: Option<&str>,
+    device_emoji: Option<&str>,
+    total: usize,
+    done: usize,
+    label: &str,
+    item_done: u64,
+    item_total: Option<u64>,
+) {
+    let _ = app.emit(
+        "sync-progress",
+        SyncProgress {
+            peer: peer.to_string(),
+            device_name: device_name.map(|s| s.to_string()),
+            device_emoji: device_emoji.map(|s| s.to_string()),
+            phase: "download".to_string(),
+            total,
+            done,
+            message: Some(label.to_string()),
+            item_done: Some(item_done),
+            item_total,
         },
     );
 }
@@ -1727,6 +1809,157 @@ fn choose_download_save_path(initial_path: &Path, remote_hash: &str) -> PathBuf 
         .unwrap_or_default()
         .as_nanos() as usize;
     path_with_hash_suffix(initial_path, short_hash, fallback_attempt)
+}
+
+fn remote_track_source_rel(track: &RemoteTrack) -> &str {
+    track
+        .source_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(track.path.as_str())
+}
+
+fn remote_track_cue_rel(track: &RemoteTrack) -> Option<&str> {
+    track.cue_path.as_deref().filter(|value| !value.trim().is_empty())
+}
+
+fn is_cue_remote_track(track: &RemoteTrack) -> bool {
+    track.source_kind.as_deref() == Some("cue") || remote_track_cue_rel(track).is_some()
+}
+
+fn rel_filename(rel: &str) -> &str {
+    rel.rsplit(|ch| ch == '/' || ch == '\\')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(rel)
+}
+
+fn download_cue_file_for_track(
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+    track: &RemoteTrack,
+    save_dir: &Path,
+    downloaded_cues: &mut HashSet<String>,
+) {
+    let Some(cue_rel) = remote_track_cue_rel(track) else {
+        return;
+    };
+    if downloaded_cues.contains(cue_rel) {
+        return;
+    }
+    let cue_filename = rel_filename(cue_rel);
+    let cue_save_path = save_dir.join(cue_filename);
+    if cue_save_path.exists() {
+        downloaded_cues.insert(cue_rel.to_string());
+        return;
+    }
+    if let Some(parent) = cue_save_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let path = format!("/cue/{}", track.hash);
+    match peer_get(client, base_urls, &path) {
+        Ok(bytes) => {
+            if let Err(error) = std::fs::write(&cue_save_path, &bytes) {
+                eprintln!(
+                    "[sync] failed to write cue file for hash {} to {}: {error}",
+                    track.hash,
+                    cue_save_path.display()
+                );
+            } else {
+                downloaded_cues.insert(cue_rel.to_string());
+            }
+        }
+        Err(error) => {
+            eprintln!("[sync] failed to download cue file for hash {}: {error}", track.hash);
+        }
+    }
+}
+
+struct DownloadProgressContext<'a> {
+    app: &'a AppHandle,
+    peer_name: &'a str,
+    device_name: Option<&'a str>,
+    device_emoji: Option<&'a str>,
+    total: usize,
+    done: usize,
+    label: &'a str,
+    item_total_hint: Option<u64>,
+}
+
+fn peer_download_with_progress(
+    client: &reqwest::blocking::Client,
+    base_urls: &[String],
+    path: &str,
+    progress: &DownloadProgressContext<'_>,
+) -> Result<Vec<u8>, String> {
+    let mut last_err = String::from("no reachable peer address");
+    for base in base_urls {
+        let url = format!("{}{}", base, path);
+        match client.get(&url).send() {
+            Ok(mut resp) if resp.status().is_success() => {
+                let item_total = resp.content_length().or(progress.item_total_hint);
+                let mut bytes = Vec::with_capacity(item_total.unwrap_or(0).min(usize::MAX as u64) as usize);
+                let mut buf = [0u8; 64 * 1024];
+                let mut item_done = 0u64;
+                let mut last_emit = Instant::now() - Duration::from_millis(250);
+
+                emit_download_item(
+                    progress.app,
+                    progress.peer_name,
+                    progress.device_name,
+                    progress.device_emoji,
+                    progress.total,
+                    progress.done,
+                    progress.label,
+                    0,
+                    item_total,
+                );
+
+                loop {
+                    let read = resp.read(&mut buf).map_err(|e| e.to_string())?;
+                    if read == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buf[..read]);
+                    item_done = item_done.saturating_add(read as u64);
+                    if last_emit.elapsed() >= Duration::from_millis(250) {
+                        emit_download_item(
+                            progress.app,
+                            progress.peer_name,
+                            progress.device_name,
+                            progress.device_emoji,
+                            progress.total,
+                            progress.done,
+                            progress.label,
+                            item_done,
+                            item_total,
+                        );
+                        last_emit = Instant::now();
+                    }
+                }
+
+                emit_download_item(
+                    progress.app,
+                    progress.peer_name,
+                    progress.device_name,
+                    progress.device_emoji,
+                    progress.total,
+                    progress.done,
+                    progress.label,
+                    item_done,
+                    item_total.or(Some(item_done)),
+                );
+                return Ok(bytes);
+            }
+            Ok(resp) => {
+                last_err = format!("HTTP {}", resp.status());
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+    }
+    Err(last_err)
 }
 
 fn merge_remote_track_metadata_via_merkle(
@@ -2010,6 +2243,8 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
 
     let mut done = 0usize;
     let mut added = 0usize;
+    let mut downloaded_sources: HashSet<String> = HashSet::new();
+    let mut downloaded_cues: HashSet<String> = HashSet::new();
     for track in &missing {
         // Build target path based on metadata
         // Get artist and album, sanitizing them for use as directory names
@@ -2048,15 +2283,15 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             }
         }
 
-        // Get the filename from the track path
-        let filename = track
-            .path
-            .rsplit(|ch| ch == '/' || ch == '\\')
-            .next()
-            .filter(|value| !value.is_empty())
-            .unwrap_or(track.path.as_str());
+        // Get the filename from the physical source path when this is a virtual track.
+        let source_rel = remote_track_source_rel(track);
+        let filename = rel_filename(source_rel);
         let requested_save_path = save_dir.join(filename);
-        let save_path = choose_download_save_path(&requested_save_path, &track.hash);
+        let save_path = if is_cue_remote_track(track) {
+            requested_save_path.clone()
+        } else {
+            choose_download_save_path(&requested_save_path, &track.hash)
+        };
         if save_path != requested_save_path {
             eprintln!(
                 "[sync] path collision for hash {}: requested {}, using {}",
@@ -2066,9 +2301,29 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             );
         }
 
+        if downloaded_sources.contains(source_rel) {
+            download_cue_file_for_track(&client, &base_urls, track, &save_dir, &mut downloaded_cues);
+            done += 1;
+            let label = track.title.as_deref()
+                .filter(|t| !t.is_empty())
+                .unwrap_or(filename);
+            emit(
+                &app,
+                &peer_name,
+                remote_device_name.as_deref(),
+                remote_device_emoji.as_deref(),
+                "download",
+                total,
+                done,
+                Some(label.to_string()),
+            );
+            continue;
+        }
+
         // Recheck the DB at download time and reserve this hash across
         // concurrent sync workers so two peers can't fetch the same track.
         if !claim_in_flight_hash(&app, &conn, &track.hash) {
+            download_cue_file_for_track(&client, &base_urls, track, &save_dir, &mut downloaded_cues);
             done += 1;
             let label = track.title.as_deref()
                 .filter(|t| !t.is_empty())
@@ -2092,6 +2347,8 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
                 eprintln!("[sync] failed to register existing file for hash {}: {e}", track.hash);
             } else {
                 added += 1;
+                downloaded_sources.insert(source_rel.to_string());
+                download_cue_file_for_track(&client, &base_urls, track, &save_dir, &mut downloaded_cues);
             }
             release_in_flight_hash(&app, &track.hash);
             done += 1;
@@ -2115,13 +2372,28 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             let _ = std::fs::create_dir_all(parent);
         }
 
+        let label = track.title.as_deref()
+            .filter(|t| !t.is_empty())
+            .unwrap_or(filename);
         let path = format!("/file/{}", track.hash);
-        if let Ok(bytes) = peer_get(&client, &base_urls, &path) {
+        let progress = DownloadProgressContext {
+            app: &app,
+            peer_name: &peer_name,
+            device_name: remote_device_name.as_deref(),
+            device_emoji: remote_device_emoji.as_deref(),
+            total,
+            done,
+            label,
+            item_total_hint: track.file_size,
+        };
+        if let Ok(bytes) = peer_download_with_progress(&client, &base_urls, &path, &progress) {
             if std::fs::write(&save_path, &bytes).is_ok() {
                 if let Err(e) = register_downloaded_hash(&conn, &data_dir, &save_path, &track.hash) {
                     eprintln!("[sync] failed to register downloaded file for hash {}: {e}", track.hash);
                 } else {
                     added += 1;
+                    downloaded_sources.insert(source_rel.to_string());
+                    download_cue_file_for_track(&client, &base_urls, track, &save_dir, &mut downloaded_cues);
                 }
             }
         }

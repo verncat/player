@@ -414,6 +414,9 @@ interface LogSession {
   emoji?: string;
   filesAdded: number;
   files: string[];
+  total?: number;
+  currentMessage?: string;
+  phase?: string;
   // shared
   startedAt: number;
   finishedAt?: number;
@@ -423,6 +426,7 @@ interface LogSession {
 const indexLog = ref<LogSession[]>([]);
 const indexLogRef = ref<HTMLElement | null>(null);
 const indexLogOpen = ref(false);
+let suppressLocalIndexLogUntil = 0;
 
 /* ── Queue state ── */
 type QueueSource = 'recent' | 'library' | 'playlist' | 'soulseek';
@@ -1469,9 +1473,14 @@ interface SyncProgress {
   total: number;
   done: number;
   message?: string;
+  item_done?: number | null;
+  item_total?: number | null;
 }
 const syncEnabled = ref(false);
 const syncProgress = ref<Record<string, SyncProgress>>({});
+const syncActive = computed(() => Object.values(syncProgress.value).some((progress) => (
+  ['index', 'download', 'reindex', 'merging'].includes(progress.phase)
+)));
 const peerDeviceNames = ref<Record<string, string>>({});
 const deviceEmoji = ref('🎵');
 const EMOJI_OPTIONS = ['🎵', '🎶', '🎤', '🎧', '🎼', '🎹', '🎸', '🥁', '📱', '💻', '🖥️', '⌚', '📻', '📡', '🔊', '🎺', '🎻', '🪕', '🎷', '🍕'];
@@ -2781,6 +2790,49 @@ async function toggleSync() {
 
 function syncPeer(peer: Peer) {
   invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
+}
+
+function percent(value: number, total: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.min(100, (value / total) * 100));
+}
+
+function syncOverallPercent(progress: SyncProgress) {
+  return percent(progress.done, progress.total);
+}
+
+function syncItemPercent(progress: SyncProgress) {
+  if (progress.phase !== 'download') return syncOverallPercent(progress);
+  const itemDone = progress.item_done ?? 0;
+  const itemTotal = progress.item_total ?? 0;
+  return itemTotal > 0 ? percent(itemDone, itemTotal) : 0;
+}
+
+function syncStatusText(progress: SyncProgress) {
+  if (progress.phase === 'index') return progress.message || 'Fetching index';
+  if (progress.phase === 'download') return progress.message || 'Downloading track';
+  if (progress.phase === 'reindex') return 'Indexing downloaded tracks';
+  if (progress.phase === 'merging') return progress.message || 'Merging library data';
+  if (progress.phase === 'done') return progress.message || 'Sync complete';
+  if (progress.phase === 'error') return progress.message || 'Sync failed';
+  return progress.message || progress.phase;
+}
+
+function syncCountText(progress: SyncProgress) {
+  if (progress.total <= 0) return '';
+  return `${progress.done}/${progress.total}`;
+}
+
+function parseSyncAddedCount(message?: string | null) {
+  const match = message?.match(/^(\d+)\s+new track/i);
+  return match ? Number(match[1]) : null;
+}
+
+function addSessionFile(session: LogSession, file: string | null | undefined) {
+  const value = file?.trim();
+  if (!value) return;
+  if (session.files.some((existing) => existing.trim().toLowerCase() === value.toLowerCase())) return;
+  session.files.push(value);
 }
 
 function peerLabel(peer: Peer) {
@@ -4456,16 +4508,29 @@ onMounted(() => {
 
     // Update device label once we get it
     if (p.device_name) { session.device = p.device_name; session.emoji = p.device_emoji || undefined; }
+    session.phase = p.phase;
+    session.total = p.total;
+    session.currentMessage = syncStatusText(p);
+    if (p.phase === 'reindex') {
+      suppressLocalIndexLogUntil = Date.now() + 30_000;
+    }
 
     if (p.phase === 'download') {
+      const previousDone = session.filesAdded;
       session.filesAdded = p.done;
-      if (p.message) session.files.push(p.message);
+      if (p.message && p.done > previousDone && session.files[session.files.length - 1] !== p.message) {
+        addSessionFile(session, p.message);
+      }
       indexLog.value = [...indexLog.value]; // trigger reactivity
     } else if (p.phase === 'done') {
-      session.filesAdded = p.done;
-      session.addedCount = p.done;
+      const addedCount = parseSyncAddedCount(p.message);
+      session.filesAdded = addedCount ?? (p.message?.includes('Library metadata synced') ? 0 : session.files.length);
+      session.addedCount = session.filesAdded;
+      if (session.filesAdded === 0) session.files = [];
+      session.currentMessage = p.message || 'Sync complete';
       session.status = 'done';
       session.finishedAt = Date.now();
+      suppressLocalIndexLogUntil = 0;
       indexLog.value = [...indexLog.value];
       delete syncSessions[p.peer];
       void loadAppData('sync');
@@ -4473,9 +4538,13 @@ onMounted(() => {
     } else if (p.phase === 'error') {
       session.status = 'error';
       session.errorMsg = p.message || 'Connection failed';
+      session.currentMessage = session.errorMsg;
       session.finishedAt = Date.now();
+      suppressLocalIndexLogUntil = 0;
       indexLog.value = [...indexLog.value];
       delete syncSessions[p.peer];
+    } else {
+      indexLog.value = [...indexLog.value];
     }
     nextTick(() => { if (indexLogRef.value) indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight; });
   });
@@ -4500,7 +4569,9 @@ onMounted(() => {
 
   listen<{current: number; total: number; status: string; added: number; track_name?: string | null}>('index-progress', (e) => {
     const p = e.payload;
+    const suppressLocalLog = Date.now() < suppressLocalIndexLogUntil;
     const ensureLocalSession = () => {
+      if (suppressLocalLog) return;
       if (!localSession) {
         localSession = { id: crypto.randomUUID(), kind: 'local', addedCount: 0, filesAdded: 0, files: [], startedAt: Date.now(), status: 'running' };
         indexLog.value.push(localSession);
@@ -4515,11 +4586,12 @@ onMounted(() => {
       if (indexDismissTimer) { clearTimeout(indexDismissTimer); indexDismissTimer = null; }
     } else if (p.status === 'added') {
       ensureLocalSession();
-      localSession!.addedCount++;
-      localSession!.filesAdded++;
-      if (p.track_name) localSession!.files.push(p.track_name);
-      // trigger reactivity
-      indexLog.value = [...indexLog.value];
+      if (localSession) {
+        localSession.addedCount++;
+        localSession.filesAdded++;
+        addSessionFile(localSession, p.track_name);
+        indexLog.value = [...indexLog.value];
+      }
     } else if (p.status === 'done') {
       indexAdded.value = p.added;
       indexDone.value = true;
@@ -4635,7 +4707,8 @@ onUnmounted(() => {
         <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="activeNav = 'discovery'; showMobileNav = false" href="#">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
           Devices
-          <span v-if="peers.length" class="peer-badge">{{ peers.length }}</span>
+          <span v-if="syncActive" class="nav-sync-spinner" aria-label="Sync in progress" />
+          <span v-else-if="peers.length" class="peer-badge">{{ peers.length }}</span>
         </a>
         <a class="nav-item" href="#" @click.prevent="openDataDir(); showMobileNav = false">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
@@ -5835,27 +5908,18 @@ onUnmounted(() => {
                   </span>
                   <template v-if="syncProgress[peer.name]">
                     <div class="discovery-sync-block">
-                      <div class="sync-bar-wrap" v-if="syncProgress[peer.name].phase === 'download'">
-                        <div
-                          class="sync-bar"
-                          :style="{ width: syncProgress[peer.name].total > 0
-                            ? (syncProgress[peer.name].done / syncProgress[peer.name].total * 100) + '%'
-                            : '0%' }"
-                        />
+                      <div class="sync-status-row">
+                        <span class="sync-status" :class="'sync-' + syncProgress[peer.name].phase">
+                          {{ syncStatusText(syncProgress[peer.name]) }}
+                        </span>
+                        <span v-if="syncCountText(syncProgress[peer.name])" class="sync-count">
+                          {{ syncCountText(syncProgress[peer.name]) }}
+                        </span>
                       </div>
-                      <span class="sync-status" :class="'sync-' + syncProgress[peer.name].phase">
-                        <template v-if="syncProgress[peer.name].phase === 'index'">{{ syncProgress[peer.name].message || 'Fetching index...' }}</template>
-                        <template v-else-if="syncProgress[peer.name].phase === 'download'">
-                          Loading {{ syncProgress[peer.name].done }}/{{ syncProgress[peer.name].total }}
-                        </template>
-                        <template v-else-if="syncProgress[peer.name].phase === 'reindex'">Indexing</template>
-                        <template v-else-if="syncProgress[peer.name].phase === 'done'">
-                          {{ syncProgress[peer.name].message }}
-                        </template>
-                        <template v-else-if="syncProgress[peer.name].phase === 'error'">
-                          {{ syncProgress[peer.name].message }}
-                        </template>
-                      </span>
+                      <div class="sync-bar-wrap" v-if="['download','reindex','merging'].includes(syncProgress[peer.name].phase)">
+                        <div class="sync-bar" :style="{ width: syncItemPercent(syncProgress[peer.name]) + '%' }" />
+                        <div class="sync-bar-overall" :style="{ width: syncOverallPercent(syncProgress[peer.name]) + '%' }" />
+                      </div>
                     </div>
                   </template>
                 </div>
@@ -5863,7 +5927,7 @@ onUnmounted(() => {
                   v-if="syncEnabled"
                   class="sync-now-btn discovery-sync-btn"
                   @click="syncPeer(peer)"
-                  :disabled="['index','download','reindex'].includes(syncProgress[peer.name]?.phase ?? '')"
+                  :disabled="['index','download','reindex','merging'].includes(syncProgress[peer.name]?.phase ?? '')"
                   title="Sync now"
                 >
                   <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
@@ -6205,15 +6269,24 @@ onUnmounted(() => {
       </div>
     </Transition>
 
+    <!-- Index progress pill (clickable to open log) -->
+    <div class="activity-dock" :class="{ 'activity-active': indexRunning }">
+      <button type="button" class="identify-mini activity-mini" :class="{ 'index-done': indexDone }" @click="indexLogOpen = true">
+        <template v-if="indexRunning">
+          <div v-if="!indexDone" class="identify-mini-spinner" />
+          <svg v-else viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+          <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
+          <span v-else>+{{ indexAdded }}</span>
+        </template>
+        <template v-else>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2z"/></svg>
+        </template>
+        <span v-if="!indexRunning" class="activity-mini-label">Activity</span>
+      </button>
+    </div>
+
     <!-- Identify progress mini indicator (top-right when minimized) -->
     <div class="status-pills">
-    <!-- Index progress pill (clickable to open log) -->
-      <div v-if="indexRunning" class="identify-mini" :class="{ 'index-done': indexDone }" @click="indexLogOpen = true">
-        <div v-if="!indexDone" class="identify-mini-spinner" />
-        <svg v-else viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-        <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
-        <span v-else>+{{ indexAdded }}</span>
-      </div>
       <!-- Identify progress pill -->
       <div v-if="identifyRunning && identifyMinimized" class="identify-mini" @click="identifyMinimized = false">
         <div v-if="!identifyDone" class="identify-mini-spinner" />
@@ -6278,9 +6351,8 @@ onUnmounted(() => {
               <div v-for="session in [...indexLog].reverse()" :key="session.id" class="log-session" :class="`ls-${session.status} ls-${session.kind}`">
                 <!-- Icon + source label -->
                 <div class="ls-header">
-                  <span class="ls-icon">
-                    <span v-if="session.kind === 'local'">💿</span>
-                    <span v-else>{{ session.emoji || '📱' }}</span>
+                  <span class="ls-kind">
+                    {{ session.kind === 'local' ? 'Local' : 'Sync' }}
                   </span>
                   <span class="ls-source">
                     <template v-if="session.kind === 'local'">Local library</template>
@@ -6288,7 +6360,8 @@ onUnmounted(() => {
                   </span>
                   <span class="ls-badge" v-if="session.status === 'running'">
                     <span class="ls-spinner" />
-                    <template v-if="session.kind === 'sync' && session.filesAdded > 0">{{ session.filesAdded }} files…</template>
+                    <template v-if="session.kind === 'sync' && session.currentMessage">{{ session.currentMessage }}</template>
+                    <template v-else-if="session.kind === 'sync' && session.filesAdded > 0">{{ session.filesAdded }} files</template>
                     <template v-else>scanning…</template>
                   </span>
                   <span class="ls-badge ls-badge-done" v-else-if="session.status === 'done'">
@@ -6304,10 +6377,13 @@ onUnmounted(() => {
                 </div>
                 <!-- Error detail -->
                 <div v-if="session.status === 'error' && session.errorMsg" class="ls-error-msg">{{ session.errorMsg }}</div>
+                <div v-else-if="session.kind === 'sync' && session.status !== 'running' && session.currentMessage" class="ls-current-msg">
+                  {{ session.currentMessage }}
+                </div>
                 <!-- File list -->
                 <div v-if="session.files.length" class="ls-files">
                   <div v-for="(f, i) in session.files" :key="i" class="ls-file-item">
-                    <span class="ls-file-icon">♪</span>{{ f }}
+                    <span class="ls-file-icon" />{{ f }}
                   </div>
                 </div>
               </div>
@@ -6700,10 +6776,21 @@ a, button, [role="button"] {
   background: #1db954;
   color: #000;
   font-size: var(--fs-eyebrow); font-weight: 700;
-  min-width: 18px; height: 18px;
+  width: 18px; height: 18px;
   border-radius: 9px;
   display: flex; align-items: center; justify-content: center;
-  padding: 0 5px;
+  padding: 0;
+}
+.nav-sync-spinner {
+  box-sizing: border-box;
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #555;
+  border-top-color: #1db954;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  flex-shrink: 0;
 }
 
 .discovery-header {
@@ -6780,9 +6867,15 @@ a, button, [role="button"] {
 .discovery-sync-block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   margin-top: 2px;
   max-width: 420px;
+}
+.sync-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 .discovery-output-pill {
   flex-shrink: 0;
@@ -6952,10 +7045,42 @@ a, button, [role="button"] {
 .discovery-sync-btn { margin-left: 10px; }
 
 .sync-bar-wrap {
-  height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-top: 2px;
+  position: relative;
+  height: 8px;
+  background: #292929;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 1px;
 }
-.sync-bar { height: 100%; background: #1db954; border-radius: 2px; transition: width 0.3s; }
-.sync-status { font-size: var(--fs-powered-by); color: #a7a7a7; }
+.sync-bar {
+  height: 5px;
+  background: rgba(29, 185, 84, 0.92);
+  border-radius: 4px 4px 2px 2px;
+  transition: width 0.22s linear;
+}
+.sync-bar-overall {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.32);
+  border-radius: 0 0 4px 4px;
+  transition: width 0.3s ease;
+}
+.sync-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-powered-by);
+  color: #c8c8c8;
+}
+.sync-count {
+  flex-shrink: 0;
+  font-size: var(--fs-powered-by);
+  color: #777;
+  font-variant-numeric: tabular-nums;
+}
 .sync-done { color: #1db954; }
 .sync-error { color: #e9283e; }
 
@@ -8063,6 +8188,29 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 
 /* ── Identify progress ── */
+/* Activity tab tucked behind the bottom player bar on desktop. */
+.activity-dock {
+  position: fixed;
+  right: 24px;
+  bottom: 90px;
+  z-index: 90;
+  transform: translateY(calc(100% - 8px));
+  transition: transform 0.18s ease;
+}
+.activity-dock:hover,
+.activity-dock:focus-within,
+.activity-dock.activity-active {
+  transform: translateY(-10px);
+}
+.activity-mini {
+  border-radius: 18px 18px 0 0;
+  border-bottom: none;
+  min-height: 34px;
+}
+.activity-mini-label {
+  color: #d8d8d8;
+}
+
 /* ── Status pills container ── */
 .status-pills {
   position: fixed;
@@ -8223,7 +8371,20 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   gap: 8px;
   font-size: var(--fs-body-md);
 }
-.ls-icon { font-size: 16px; flex-shrink: 0; }
+.ls-kind {
+  flex-shrink: 0;
+  min-width: 42px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #252525;
+  color: #bdbdbd;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
 .ls-source { font-weight: 600; color: #fff; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ls-time { font-size: var(--fs-powered-by); color: #666; flex-shrink: 0; }
 
@@ -8253,6 +8414,14 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   color: #ff7070;
   word-break: break-all;
 }
+.ls-current-msg {
+  margin-top: 6px;
+  font-size: var(--fs-body-sm);
+  color: #a7a7a7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .ls-files {
   margin-top: 6px;
   display: flex;
@@ -8269,7 +8438,13 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ls-file-icon { color: #777; flex-shrink: 0; font-style: normal; }
+.ls-file-icon {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #777;
+  flex-shrink: 0;
+}
 
 /* Hidden on desktop; appears above footer on mobile/tablet */
 .mobile-seek-wrap { display: none; }
@@ -8528,6 +8703,18 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     opacity: 1;
   }
 
+  .activity-dock {
+    right: 14px;
+    bottom: calc(130px + env(safe-area-inset-bottom));
+    display: none;
+    transform: none;
+    z-index: 400;
+  }
+  .activity-dock.activity-active { display: block; transform: none; }
+  .activity-mini {
+    border-radius: 20px;
+    border-bottom: 1px solid #3e3e3e;
+  }
   .status-pills { top: auto; bottom: calc(150px + env(safe-area-inset-bottom)); right: 14px; flex-direction: column; align-items: end; }
 
   .modal { width: 95vw; }
