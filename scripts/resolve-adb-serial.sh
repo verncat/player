@@ -6,7 +6,12 @@ if [ -n "${ANDROID_SERIAL:-}" ]; then
   exit 0
 fi
 
-device_serials=$(adb devices | awk 'NR > 1 && $2 == "device" { print $1 }')
+device_serials=$(adb devices | awk '
+  NR > 1 && $NF == "device" {
+    sub(/[[:space:]]+device$/, "")
+    print
+  }
+')
 
 if [ -z "$device_serials" ]; then
   echo "No adb devices found. Connect a device or set ANDROID_SERIAL." >&2
