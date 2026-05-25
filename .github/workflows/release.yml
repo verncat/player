@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, e.g. v0.2.4
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -13,6 +18,8 @@ jobs:
   build-desktop:
     name: Build Desktop (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,6 +35,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
           submodules: false
           sparse-checkout: |
@@ -101,11 +109,14 @@ jobs:
   build-android:
     name: Build Android
     runs-on: ubuntu-22.04
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
           submodules: false
           sparse-checkout: |
@@ -199,7 +210,7 @@ jobs:
           fi
 
           build_tools_dir="$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -n1)"
-          signed_apk="release-assets/player-${GITHUB_REF_NAME}-android-universal.apk"
+          signed_apk="release-assets/player-${RELEASE_TAG}-android-universal.apk"
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
           "$ANDROID_SDK_ROOT/build-tools/$build_tools_dir/zipalign" -f -p 4 "$unsigned_apk" "$RUNNER_TEMP/app-aligned.apk"
           "$ANDROID_SDK_ROOT/build-tools/$build_tools_dir/apksigner" sign \
@@ -226,6 +237,8 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     needs:
       - build-desktop
       - build-android
@@ -254,15 +267,15 @@ jobs:
           openrouter-api-key: ${{ secrets.OPEN_ROUTER_API_KEY || secrets.OPEN_ROUTER_KEY || secrets.OPEN_ROUTER }}
           github-api-url: ${{ github.api_url }}
           repository: ${{ github.repository }}
-          tag-name: ${{ github.ref_name }}
+          tag-name: ${{ env.RELEASE_TAG }}
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         with:
-          tag_name: ${{ github.ref_name }}
-          name: player ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: player ${{ env.RELEASE_TAG }}
           draft: false
           prerelease: false
           generate_release_notes: false
