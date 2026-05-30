@@ -5,12 +5,13 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { marked } from "marked";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
+import ResponsivePopup from "./components/ResponsivePopup.vue";
 
 // marked: no external links, open in browser via tauri
 marked.use({ gfm: true, breaks: true });
 
-interface AudioDevice { name: string }
-interface DeviceList { devices: AudioDevice[]; current: string | null }
+interface AudioDevice { name: string; sample_rates: number[] }
+interface DeviceList { devices: AudioDevice[]; current: string | null; current_sample_rate: number | null }
 
 interface SoulseekStatus {
   enabled: boolean;
@@ -137,6 +138,8 @@ const showDeviceMenu = ref(false);
 const showMobileNav = ref(false);
 const outputDevices = ref<AudioDevice[]>([]);
 const currentDevice = ref<string | null>(null);
+const currentSampleRate = ref<number | null>(null);
+const nativeSampleRate = ref<number | null>(null);
 const deviceMenuError = ref('');
 const activeNav = ref("home");
 const navHistory = ref<string[]>(['home']);
@@ -1879,6 +1882,11 @@ function formatSampleRate(sampleRate: number | null | undefined) {
   return `${Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)} kHz`;
 }
 
+function nativeSampleRateLabel() {
+  const formatted = formatSampleRate(nativeSampleRate.value);
+  return formatted ? `Native rate (${formatted})` : 'Native rate';
+}
+
 async function loadSoulseekStatus() {
   try {
     soulseekStatus.value = await invoke<SoulseekStatus>('soulseek_get_status');
@@ -3480,7 +3488,7 @@ function jumpToQueueItem(index: number) {
   showQueueMenu.value = false;
 }
 
-interface PlaybackStatus { playing: boolean; finished: boolean; position: number; duration: number; }
+interface PlaybackStatus { playing: boolean; finished: boolean; position: number; duration: number; source_sample_rate?: number | null; }
 
 function trackForHash(hash?: string | null) {
   if (!hash) return null;
@@ -3626,6 +3634,7 @@ async function refreshPlaybackState() {
   const reportedDuration = st.duration > 0 ? Math.floor(st.duration) : 0;
   isPlaying.value = st.playing;
   currentTime.value = Math.floor(st.position);
+  nativeSampleRate.value = st.source_sample_rate ?? nativeSampleRate.value;
   if (currentTrack?.preview_growing) {
     duration.value = Math.max(duration.value, metadataDuration, reportedDuration, currentTime.value);
   } else if (reportedDuration > 0) {
@@ -3787,23 +3796,45 @@ function setVolume(e: MouseEvent) {
 }
 
 async function toggleDeviceMenu() {
+  const willOpen = !showDeviceMenu.value;
+  if (willOpen) {
+    showQueueMenu.value = false;
+    showUserMenu.value = false;
+  }
   if (!showDeviceMenu.value) {
     deviceMenuError.value = '';
     const res = await invoke<DeviceList>('get_output_devices');
     outputDevices.value = res.devices;
     currentDevice.value = res.current;
+    currentSampleRate.value = res.current_sample_rate;
+    try {
+      const status = await invoke<PlaybackStatus>('playback_status');
+      nativeSampleRate.value = status.source_sample_rate ?? null;
+    } catch (_) {
+      nativeSampleRate.value = null;
+    }
   }
   showDeviceMenu.value = !showDeviceMenu.value;
 }
 
-async function pickLocalDevice(name: string) {
+function toggleQueueMenu() {
+  const willOpen = !showQueueMenu.value;
+  if (willOpen) {
+    showDeviceMenu.value = false;
+    showUserMenu.value = false;
+  }
+  showQueueMenu.value = !showQueueMenu.value;
+}
+
+async function pickLocalDevice(name: string, sampleRate?: number | null, keepOpen = false) {
   deviceMenuError.value = '';
   try {
     if (remoteOutputPeer.value) {
       const previousRemotePeer = remoteOutputPeer.value;
       const snapshot = await capturePlaybackSnapshot();
-      await invoke('set_output_device', { name });
+      await invoke('set_output_device', { name, sampleRate: sampleRate ?? currentSampleRate.value });
       currentDevice.value = name;
+      currentSampleRate.value = sampleRate ?? currentSampleRate.value;
       if (snapshot.track) {
         await playTrackLocally(snapshot.track, false, snapshot.position);
       }
@@ -3819,13 +3850,29 @@ async function pickLocalDevice(name: string) {
       syncAndroid();
     } else {
       const useDefault = name === currentDevice.value;
-      await invoke('set_output_device', { name: useDefault ? null : name });
+      const nextName = useDefault && sampleRate === undefined ? null : name;
+      const nextSampleRate = sampleRate === undefined ? (useDefault ? null : currentSampleRate.value) : sampleRate;
+      await invoke('set_output_device', { name: nextName, sampleRate: nextSampleRate });
       currentDevice.value = useDefault ? null : name;
+      currentSampleRate.value = nextSampleRate;
     }
-    showDeviceMenu.value = false;
+    if (!keepOpen) {
+      showDeviceMenu.value = false;
+    } else {
+      try {
+        const status = await invoke<PlaybackStatus>('playback_status');
+        nativeSampleRate.value = status.source_sample_rate ?? nativeSampleRate.value;
+      } catch (_) {}
+    }
   } catch (e: any) {
     deviceMenuError.value = String(e ?? 'Failed to switch output device');
   }
+}
+
+async function pickLocalSampleRate(device: AudioDevice, event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  const sampleRate = value ? Number(value) : null;
+  await pickLocalDevice(device.name, sampleRate, true);
 }
 
 async function pickRemoteDevice(peer: Peer) {
@@ -6469,12 +6516,17 @@ onUnmounted(() => {
 
       <!-- Right: extras -->
       <div class="player-right">
-        <div class="queue-menu-wrapper">
-          <button class="icon-btn" title="Queue" @click.stop="showQueueMenu = !showQueueMenu">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
-          </button>
-          <Transition name="dropdown">
-            <div v-if="showQueueMenu" class="dropdown queue-dropdown">
+        <ResponsivePopup
+          :open="showQueueMenu"
+          wrapper-class="queue-menu-wrapper"
+          panel-class="queue-dropdown"
+          @close="showQueueMenu = false"
+        >
+          <template #trigger>
+            <button class="icon-btn" title="Queue" @click.stop="toggleQueueMenu">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+            </button>
+          </template>
               <div class="dropdown-header">Queue · {{ queueSource === 'recent' ? 'Recently played' : 'Library' }}</div>
               <div class="queue-now" v-if="nowPlaying">
                 <span class="queue-now-label">Now playing</span>
@@ -6508,27 +6560,43 @@ onUnmounted(() => {
                 </div>
               </div>
               <div v-else class="queue-empty">Queue is empty</div>
-            </div>
-          </Transition>
-        </div>
-        <div class="device-menu-wrapper">
-          <button class="icon-btn" title="Output device" @click.stop="toggleDeviceMenu">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM12 20c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm5-12H7V5h10v3z"/></svg>
-          </button>
-          <Transition name="dropdown">
-            <div v-if="showDeviceMenu" class="dropdown device-dropdown">
+        </ResponsivePopup>
+        <ResponsivePopup
+          :open="showDeviceMenu"
+          wrapper-class="device-menu-wrapper"
+          panel-class="device-dropdown"
+          @close="showDeviceMenu = false"
+        >
+          <template #trigger>
+            <button class="icon-btn" title="Output device" @click.stop="toggleDeviceMenu">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM12 20c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm5-12H7V5h10v3z"/></svg>
+            </button>
+          </template>
               <div class="dropdown-header">Output device</div>
               <div class="device-list">
-                <a
+                <div
                   v-for="dev in outputDevices"
                   :key="dev.name"
-                  href="#"
-                  class="device-item"
-                  @click.prevent="pickLocalDevice(dev.name)"
+                  class="device-item device-item-local"
+                  @click="pickLocalDevice(dev.name, undefined, true)"
                 >
-                  <span class="device-check">{{ !remoteOutputPeer && dev.name === currentDevice ? '✓' : '' }}</span>
-                  <span class="device-name">{{ dev.name }}</span>
-                </a>
+                  <div class="device-item-main">
+                    <span class="device-check">{{ !remoteOutputPeer && dev.name === currentDevice ? '✓' : '' }}</span>
+                    <span class="device-name">{{ dev.name }}</span>
+                    <select
+                      v-if="!remoteOutputPeer && dev.name === currentDevice && dev.sample_rates.length"
+                      class="device-sample-rate"
+                      :value="currentSampleRate ?? ''"
+                      @click.stop
+                      @change="pickLocalSampleRate(dev, $event)"
+                    >
+                      <option value="">{{ nativeSampleRateLabel() }}</option>
+                      <option v-for="rate in dev.sample_rates" :key="rate" :value="rate">
+                        {{ formatSampleRate(rate) }}
+                      </option>
+                    </select>
+                  </div>
+                </div>
                 <div v-if="remoteOutputDevices.length" class="device-section-label">Player devices</div>
                 <a
                   v-for="peer in remoteOutputDevices"
@@ -6542,9 +6610,7 @@ onUnmounted(() => {
                 </a>
               </div>
               <div v-if="deviceMenuError" class="device-error">{{ deviceMenuError }}</div>
-            </div>
-          </Transition>
-        </div>
+        </ResponsivePopup>
         <div class="vol-wrap">
           <button class="icon-btn">
             <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
@@ -8051,6 +8117,16 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   cursor: pointer;
 }
 .device-item:hover { background: #3e3e3e; }
+.device-item-local {
+  gap: 10px;
+}
+.device-item-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
 .device-check {
   width: 18px;
   text-align: center;
@@ -8062,6 +8138,39 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.device-sample-rate {
+  width: 178px;
+  flex: 0 0 178px;
+  min-height: 30px;
+  padding: 5px 32px 5px 12px;
+  border: 1px solid #535353;
+  border-radius: 20px;
+  background-color: transparent;
+  color: #a7a7a7;
+  font-size: var(--fs-control);
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px 12px;
+  outline: none;
+  transition: border-color .15s, color .15s, background-color .15s;
+}
+.device-sample-rate:hover,
+.device-sample-rate:focus {
+  border-color: #fff;
+  color: #fff;
+}
+.device-sample-rate option {
+  background: #282828;
+  color: #fff;
 }
 .device-error {
   padding: 0 16px 12px;

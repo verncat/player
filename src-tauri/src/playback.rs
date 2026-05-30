@@ -357,6 +357,8 @@ struct Shared {
     position_ms: AtomicU64,
     /// total duration in seconds × 1000
     duration_ms: AtomicU64,
+    /// Source sample rate for the currently decoded track.
+    source_sample_rate: AtomicU64,
     /// volume 0.0–1.0 stored as u32 (val × 10000)
     volume: AtomicU64,
     /// Finished naturally (not stopped by user)
@@ -367,6 +369,8 @@ struct Shared {
     current_source: Mutex<Option<DecodeSource>>,
     /// Selected output device name
     selected_device: Mutex<Option<String>>,
+    /// Selected output sample rate. `None` means use the track's native rate.
+    selected_sample_rate: Mutex<Option<u32>>,
     /// Active cpal output stream — dropped when replaced, which stops it.
     active_stream: Mutex<Option<cpal::Stream>>,
     /// Monotonic counter used to assign unique ids to output streams.
@@ -392,11 +396,13 @@ impl PlaybackState {
                 follow_growing: AtomicBool::new(false),
                 position_ms: AtomicU64::new(0),
                 duration_ms: AtomicU64::new(0),
+                source_sample_rate: AtomicU64::new(0),
                 volume: AtomicU64::new(7000), // 0.7
                 finished: AtomicBool::new(false),
                 current_file: Mutex::new(None),
                 current_source: Mutex::new(None),
                 selected_device: Mutex::new(None),
+                selected_sample_rate: Mutex::new(None),
                 active_stream: Mutex::new(None),
                 next_stream_id: AtomicU64::new(1),
                 active_stream_id: AtomicU64::new(0),
@@ -580,8 +586,9 @@ impl PlaybackState {
         self.inner.current_file.lock().unwrap().clone()
     }
 
-    pub fn set_device(&self, name: Option<String>) {
+    pub fn set_device(&self, name: Option<String>, sample_rate: Option<u32>) {
         *self.inner.selected_device.lock().unwrap() = name;
+        *self.inner.selected_sample_rate.lock().unwrap() = sample_rate;
     }
 
     pub fn selected_device_name(&self) -> Option<String> {
@@ -727,7 +734,15 @@ fn decode_thread_seek(
     let codec_params = track.codec_params.clone();
 
     let sample_rate = codec_params.sample_rate.unwrap_or(44100);
+    shared
+        .source_sample_rate
+        .store(sample_rate as u64, Ordering::SeqCst);
     let channels = codec_params.channels.map(|c| c.count()).unwrap_or(2);
+    let output_sample_rate = shared
+        .selected_sample_rate
+        .lock()
+        .unwrap()
+        .unwrap_or(sample_rate);
 
     // Store duration
     if let Some(duration_secs) = source.duration_secs {
@@ -755,7 +770,7 @@ fn decode_thread_seek(
     }
 
     // Start cpal output stream (stores it in shared.active_stream)
-    start_output_stream(Arc::clone(&shared), sample_rate, channels as u16)?;
+    start_output_stream(Arc::clone(&shared), output_sample_rate, channels as u16)?;
 
     let mut beat_state = BeatState::new();
     let mut last_known_size = path.metadata().map(|meta| meta.len()).unwrap_or(0);
@@ -814,7 +829,14 @@ fn decode_thread_seek(
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                write_to_ring(&shared, &decoded, sample_rate, channels, &mut beat_state);
+                write_to_ring(
+                    &shared,
+                    &decoded,
+                    sample_rate,
+                    output_sample_rate,
+                    channels,
+                    &mut beat_state,
+                );
             }
             Err(symphonia::core::errors::Error::DecodeError(e)) => {
                 eprintln!("[playback] decode warning: {e}");
@@ -833,77 +855,93 @@ fn decode_thread_seek(
 fn write_to_ring(
     shared: &Shared,
     buf: &AudioBufferRef,
-    sample_rate: u32,
+    source_sample_rate: u32,
+    output_sample_rate: u32,
     channels: usize,
     beat: &mut BeatState,
 ) {
+    let Some((samples, frames)) = decoded_to_interleaved_f32(buf, channels) else {
+        return;
+    };
+
+    for frame in 0..frames {
+        let start = frame * channels;
+        let mono = samples[start..start + channels]
+            .iter()
+            .copied()
+            .sum::<f32>()
+            / channels as f32;
+        check_beat(shared, beat, mono, source_sample_rate, channels);
+    }
+
+    if source_sample_rate == output_sample_rate || frames <= 1 {
+        for sample in samples {
+            push_sample(shared, sample);
+        }
+        return;
+    }
+
+    let output_frames = ((frames as u64 * output_sample_rate as u64)
+        / source_sample_rate.max(1) as u64)
+        .max(1) as usize;
+    let step = source_sample_rate as f64 / output_sample_rate.max(1) as f64;
+    for out_frame in 0..output_frames {
+        let source_pos = out_frame as f64 * step;
+        let left = source_pos.floor() as usize;
+        let right = (left + 1).min(frames - 1);
+        let frac = (source_pos - left as f64) as f32;
+        for ch in 0..channels {
+            let a = samples[left * channels + ch];
+            let b = samples[right * channels + ch];
+            push_sample(shared, a + (b - a) * frac);
+        }
+    }
+}
+
+fn decoded_to_interleaved_f32(buf: &AudioBufferRef, channels: usize) -> Option<(Vec<f32>, usize)> {
     let frames = buf.frames();
-    // Convert to interleaved f32
+    let mut samples = Vec::with_capacity(frames * channels);
+
     match buf {
         AudioBufferRef::F32(b) => {
             for frame in 0..frames {
-                let mono = (0..channels).map(|ch| b.chan(ch)[frame]).sum::<f32>() / channels as f32;
-                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
-                    let sample = b.chan(ch)[frame];
-                    push_sample(shared, sample);
+                    samples.push(b.chan(ch)[frame]);
                 }
             }
         }
         AudioBufferRef::S16(b) => {
             for frame in 0..frames {
-                let mono = (0..channels)
-                    .map(|ch| b.chan(ch)[frame] as f32 / 32768.0)
-                    .sum::<f32>()
-                    / channels as f32;
-                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
-                    let sample = b.chan(ch)[frame] as f32 / 32768.0;
-                    push_sample(shared, sample);
+                    samples.push(b.chan(ch)[frame] as f32 / 32768.0);
                 }
             }
         }
         AudioBufferRef::S32(b) => {
             for frame in 0..frames {
-                let mono = (0..channels)
-                    .map(|ch| b.chan(ch)[frame] as f32 / 2_147_483_648.0)
-                    .sum::<f32>()
-                    / channels as f32;
-                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
-                    let sample = b.chan(ch)[frame] as f32 / 2_147_483_648.0;
-                    push_sample(shared, sample);
+                    samples.push(b.chan(ch)[frame] as f32 / 2_147_483_648.0);
                 }
             }
         }
         AudioBufferRef::U8(b) => {
             for frame in 0..frames {
-                let mono = (0..channels)
-                    .map(|ch| (b.chan(ch)[frame] as f32 - 128.0) / 128.0)
-                    .sum::<f32>()
-                    / channels as f32;
-                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
-                    let sample = (b.chan(ch)[frame] as f32 - 128.0) / 128.0;
-                    push_sample(shared, sample);
+                    samples.push((b.chan(ch)[frame] as f32 - 128.0) / 128.0);
                 }
             }
         }
         AudioBufferRef::F64(b) => {
             for frame in 0..frames {
-                let mono = (0..channels)
-                    .map(|ch| b.chan(ch)[frame] as f32)
-                    .sum::<f32>()
-                    / channels as f32;
-                check_beat(shared, beat, mono, sample_rate, channels);
                 for ch in 0..channels {
-                    let sample = b.chan(ch)[frame] as f32;
-                    push_sample(shared, sample);
+                    samples.push(b.chan(ch)[frame] as f32);
                 }
             }
         }
-        _ => {} // unsupported format, skip
+        _ => return None,
     }
+
+    Some((samples, frames))
 }
 
 fn check_beat(shared: &Shared, beat: &mut BeatState, mono: f32, sample_rate: u32, channels: usize) {
@@ -1126,6 +1164,7 @@ pub struct PlaybackStatus {
     pub finished: bool,
     pub position: f64,
     pub duration: f64,
+    pub source_sample_rate: Option<u32>,
 }
 
 #[tauri::command]
@@ -1135,5 +1174,9 @@ pub fn playback_status(state: tauri::State<'_, PlaybackState>) -> PlaybackStatus
         finished: state.is_finished(),
         position: state.position_secs(),
         duration: state.duration_secs(),
+        source_sample_rate: match state.inner.source_sample_rate.load(Ordering::Relaxed) {
+            0 => None,
+            sample_rate => Some(sample_rate as u32),
+        },
     }
 }
