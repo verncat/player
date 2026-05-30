@@ -101,28 +101,27 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
                     album = ?3,
                     track_number = ?4,
                     duration_secs = ?5,
-                    cover_data = ?6,
+                    cover_data = NULL,
                     cover_mime = 'image/svg+xml',
                     cover_source_path = NULL,
                     cover_source_mtime = 0,
-                    file_hash = ?7,
-                    rarity = ?8,
+                    file_hash = ?6,
+                    rarity = ?7,
                     manually_edited = 1,
-                    is_liked = ?9,
-                    play_count = ?10,
-                    year = ?11,
-                    genre = ?12,
-                    date_added = ?13,
-                    tags = ?14,
+                    is_liked = ?8,
+                    play_count = ?9,
+                    year = ?10,
+                    genre = ?11,
+                    date_added = ?12,
+                    tags = ?13,
                     is_duplicate = 0
-              WHERE path = ?15",
+              WHERE path = ?14",
             params![
                 track.title,
                 track.artist,
                 track.album,
                 track.track_number,
                 track.duration_secs as f64,
-                cover_data,
                 file_hash,
                 track.rarity,
                 if track.liked { 1 } else { 0 },
@@ -144,6 +143,9 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
             params![track.rel_path],
             |row| row.get(0),
         )?;
+        let covers_dir = data_dir.join(".covers");
+        fs::create_dir_all(&covers_dir)?;
+        fs::write(covers_dir.join(format!("{id}.jpg")), cover_data)?;
         track_ids.insert(track.rel_path, id);
     }
 
@@ -518,7 +520,7 @@ fn demo_smart_playlists() -> Vec<DemoSmartPlaylist> {
 
 fn build_cover_svg(track: &DemoTrack) -> String {
     format!(
-                r##"<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640">
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="{primary}"/>

@@ -45,6 +45,7 @@ const SOURCE_KIND_FILE: &str = "file";
 const SOURCE_KIND_CUE: &str = "cue";
 
 const INTERNAL_LIBRARY_DIRECTORIES: &[&str] = &[
+    ".covers",
     ".soulseek-temp",
     ".soulseek-cover-cache",
     ".soulseek-preview-cache",
@@ -124,7 +125,7 @@ struct Meta {
     duration_secs: Option<f64>,
     year: Option<i64>,
     genre: Option<String>,
-    /// Raw bytes of the embedded cover image.
+    /// Raw bytes of the embedded cover image before it is persisted to disk.
     cover_data: Option<Vec<u8>>,
     cover_mime: Option<String>,
     cover_source_path: Option<String>,
@@ -201,6 +202,7 @@ impl LibraryState {
             None => Connection::open_in_memory()?,
         };
         init_schema(&conn)?;
+        migrate_cover_blobs_to_files(&conn, &data_dir)?;
         purge_internal_library_rows(&conn)?;
 
         // Only run the full directory scan on first launch (new DB).
@@ -577,6 +579,87 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn cover_store_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(".covers")
+}
+
+fn cover_file_path(data_dir: &Path, track_id: i64) -> PathBuf {
+    cover_store_dir(data_dir).join(format!("{track_id}.jpg"))
+}
+
+fn read_cover_file(data_dir: &Path, track_id: i64) -> Option<Vec<u8>> {
+    std::fs::read(cover_file_path(data_dir, track_id)).ok()
+}
+
+fn remove_cover_file(data_dir: &Path, track_id: i64) -> Result<(), BoxError> {
+    let path = cover_file_path(data_dir, track_id);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+fn persist_track_cover(
+    conn: &Connection,
+    data_dir: &Path,
+    track_id: i64,
+    cover_data: Option<Vec<u8>>,
+    cover_mime: Option<String>,
+) -> Result<(), BoxError> {
+    match cover_data {
+        Some(data) if !data.is_empty() => {
+            std::fs::create_dir_all(cover_store_dir(data_dir))?;
+            std::fs::write(cover_file_path(data_dir, track_id), data)?;
+            conn.execute(
+                "UPDATE tracks SET cover_data = NULL, cover_mime = ?1 WHERE id = ?2",
+                params![cover_mime, track_id],
+            )?;
+        }
+        _ => {
+            remove_cover_file(data_dir, track_id)?;
+            conn.execute(
+                "UPDATE tracks SET cover_data = NULL, cover_mime = NULL WHERE id = ?1",
+                params![track_id],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn migrate_cover_blobs_to_files(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
+    let covers: Vec<(i64, Vec<u8>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, cover_data
+               FROM tracks
+              WHERE cover_data IS NOT NULL
+                AND length(cover_data) > 0",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(Result::ok)
+            .collect();
+        rows
+    };
+
+    if covers.is_empty() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(cover_store_dir(data_dir))?;
+    for (track_id, data) in covers {
+        std::fs::write(cover_file_path(data_dir, track_id), data)?;
+        conn.execute(
+            "UPDATE tracks SET cover_data = NULL WHERE id = ?1",
+            params![track_id],
+        )?;
+    }
+
+    let _ = conn.execute_batch("VACUUM");
+    Ok(())
+}
+
 fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
     Ok(Track {
         id: row.get(0)?,
@@ -676,6 +759,7 @@ struct TrackReplacementRow {
 
 fn get_track_replacement_row_by_id(
     conn: &Connection,
+    data_dir: &Path,
     id: i64,
 ) -> rusqlite::Result<Option<TrackReplacementRow>> {
     match conn.query_row(
@@ -705,7 +789,7 @@ fn get_track_replacement_row_by_id(
                     tags: row.get(15).unwrap_or(None),
                     is_duplicate: row.get::<_, i64>(16).unwrap_or(0) != 0,
                 },
-                cover_data: row.get(17).unwrap_or(None),
+                cover_data: read_cover_file(data_dir, id).or_else(|| row.get(17).unwrap_or(None)),
                 cover_mime: row.get(18).unwrap_or(None),
             })
         },
@@ -1107,28 +1191,35 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
 
     // If manually edited, only update file hash, rarity, duration, cover — preserve metadata.
     if let Some((_, _, true, _, _, _)) = &cached {
-        let meta = read_audio_meta(abs, sidecar_cover.as_ref());
+        let mut meta = read_audio_meta(abs, sidecar_cover.as_ref());
+        let cover_data = meta.cover_data.take();
+        let cover_mime = meta.cover_mime.take();
         let file_hash = hash_file(abs);
         let rarity = file_hash.as_deref().map(rarity_from_hash);
         conn.execute(
             "UPDATE tracks SET modified_secs = ?1, file_hash = ?2, rarity = ?3,
-             duration_secs = COALESCE(?4, duration_secs), cover_data = ?5, cover_mime = ?6,
-             cover_source_path = ?7, cover_source_mtime = ?8,
-             date_added = COALESCE(date_added, ?9)
-             WHERE path = ?10",
+             duration_secs = COALESCE(?4, duration_secs), cover_data = NULL, cover_mime = ?5,
+             cover_source_path = ?6, cover_source_mtime = ?7,
+             date_added = COALESCE(date_added, ?8)
+             WHERE path = ?9",
             params![
                 modified_secs,
                 file_hash,
                 rarity,
                 meta.duration_secs,
-                meta.cover_data,
-                meta.cover_mime,
+                cover_mime.clone(),
                 meta.cover_source_path,
                 meta.cover_source_mtime,
                 date_added_secs,
                 rel,
             ],
         )?;
+        let track_id: i64 = conn.query_row(
+            "SELECT id FROM tracks WHERE path = ?1",
+            params![rel],
+            |row| row.get(0),
+        )?;
+        persist_track_cover(&conn, data_dir, track_id, cover_data, cover_mime)?;
         if let Some(file_hash) = file_hash.as_deref() {
             remove_stale_tracks_with_same_hash(conn, data_dir, &rel, file_hash)?;
         }
@@ -1155,11 +1246,13 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
     // Hash file contents for gacha rarity.
     let file_hash = hash_file(abs);
     let rarity = file_hash.as_deref().map(rarity_from_hash);
+    let cover_data = meta.cover_data.take();
+    let cover_mime = meta.cover_mime.take();
 
     conn.execute(
         "INSERT INTO tracks
              (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, cover_source_path, cover_source_mtime, file_hash, rarity, year, genre, date_added, source_kind, source_path, cue_path, segment_start_secs, segment_end_secs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, NULL, NULL)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, NULL, NULL)
          ON CONFLICT(path) DO UPDATE SET
              title         = excluded.title,
              artist        = excluded.artist,
@@ -1189,8 +1282,7 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             meta.track_number,
             meta.duration_secs,
             modified_secs,
-            meta.cover_data,
-            meta.cover_mime,
+            cover_mime.clone(),
             meta.cover_source_path,
             meta.cover_source_mtime,
             file_hash,
@@ -1202,6 +1294,12 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             rel,
         ],
     )?;
+    let track_id: i64 = conn.query_row(
+        "SELECT id FROM tracks WHERE path = ?1",
+        params![rel],
+        |row| row.get(0),
+    )?;
+    persist_track_cover(&conn, data_dir, track_id, cover_data, cover_mime)?;
 
     if let Some(file_hash) = file_hash.as_deref() {
         remove_stale_tracks_with_same_hash(conn, data_dir, &rel, file_hash)?;
@@ -1747,7 +1845,7 @@ fn index_cue_file(
                       cover_data, cover_mime, cover_source_path, cover_source_mtime,
                       file_hash, rarity, year, genre, date_added, source_kind, source_path,
                       cue_path, segment_start_secs, segment_end_secs)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
                  ON CONFLICT(path) DO UPDATE SET
                      title = CASE WHEN tracks.manually_edited != 0 THEN tracks.title ELSE excluded.title END,
                      artist = CASE WHEN tracks.manually_edited != 0 THEN tracks.artist ELSE excluded.artist END,
@@ -1777,7 +1875,6 @@ fn index_cue_file(
                     track_number,
                     duration_secs,
                     modified_secs,
-                    cover_data.clone(),
                     cover_mime.clone(),
                     cover_source_path.clone(),
                     cover_source_mtime,
@@ -1792,6 +1889,18 @@ fn index_cue_file(
                     start_secs,
                     end_secs,
                 ],
+            )?;
+            let track_id: i64 = conn.query_row(
+                "SELECT id FROM tracks WHERE path = ?1",
+                params![virtual_path],
+                |row| row.get(0),
+            )?;
+            persist_track_cover(
+                conn,
+                data_dir,
+                track_id,
+                cover_data.clone(),
+                cover_mime.clone(),
             )?;
             visited.push(virtual_path);
         }
@@ -2084,8 +2193,26 @@ pub fn get_track_cover(
         |row| Ok((row.get(0)?, row.get(1)?)),
     );
     match result {
+        Ok((blob_data, mime)) if read_cover_file(&state.data_dir, id).is_some() => {
+            let data = read_cover_file(&state.data_dir, id).unwrap_or_default();
+            let mime = mime.unwrap_or_else(|| "image/jpeg".to_owned());
+            if blob_data.is_some() {
+                let _ = conn.execute(
+                    "UPDATE tracks SET cover_data = NULL WHERE id = ?1",
+                    params![id],
+                );
+            }
+            Ok(Some(format!("data:{};base64,{}", mime, B64.encode(&data))))
+        }
         Ok((Some(data), mime)) => {
             let mime = mime.unwrap_or_else(|| "image/jpeg".to_owned());
+            let _ = persist_track_cover(
+                &conn,
+                &state.data_dir,
+                id,
+                Some(data.clone()),
+                Some(mime.clone()),
+            );
             Ok(Some(format!("data:{};base64,{}", mime, B64.encode(&data))))
         }
         Ok((None, _)) => Ok(None),
@@ -2219,7 +2346,7 @@ pub fn replace_track_with_file(
     }
 
     let conn = state.conn.lock().unwrap();
-    let existing = get_track_replacement_row_by_id(&conn, id)
+    let existing = get_track_replacement_row_by_id(&conn, &state.data_dir, id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Track not found: {}", id))?;
 
@@ -2319,21 +2446,21 @@ pub fn replace_track_with_file(
                 track_number = ?5,
                 duration_secs = ?6,
                 modified_secs = ?7,
-                cover_data = ?8,
-                cover_mime = ?9,
+                cover_data = NULL,
+                cover_mime = ?8,
                 cover_source_path = NULL,
                 cover_source_mtime = 0,
-                file_hash = ?10,
-                rarity = ?11,
-                year = ?12,
-                genre = ?13,
-                date_added = ?14,
-                tags = ?15,
-                manually_edited = ?16,
-                is_liked = ?17,
-                play_count = ?18,
-                is_duplicate = ?19
-          WHERE id = ?20",
+                file_hash = ?9,
+                rarity = ?10,
+                year = ?11,
+                genre = ?12,
+                date_added = ?13,
+                tags = ?14,
+                manually_edited = ?15,
+                is_liked = ?16,
+                play_count = ?17,
+                is_duplicate = ?18
+          WHERE id = ?19",
         params![
             target_rel,
             merged_title,
@@ -2342,8 +2469,7 @@ pub fn replace_track_with_file(
             merged_track_number,
             replacement_meta.duration_secs,
             modified_secs,
-            merged_cover_data,
-            merged_cover_mime,
+            merged_cover_mime.clone(),
             file_hash,
             rarity,
             merged_year,
@@ -2356,6 +2482,14 @@ pub fn replace_track_with_file(
             if existing.track.is_duplicate { 1 } else { 0 },
             id,
         ],
+    )
+    .map_err(|e| e.to_string())?;
+    persist_track_cover(
+        &conn,
+        &state.data_dir,
+        id,
+        merged_cover_data,
+        merged_cover_mime,
     )
     .map_err(|e| e.to_string())?;
 
