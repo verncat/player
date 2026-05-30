@@ -965,6 +965,7 @@ struct SyncInner {
     enabled: bool,
     server_started: bool,
     in_flight_hashes: HashSet<String>,
+    in_flight_sources: HashSet<String>,
 }
 
 impl SyncState {
@@ -974,6 +975,7 @@ impl SyncState {
                 enabled,
                 server_started: false,
                 in_flight_hashes: HashSet::new(),
+                in_flight_sources: HashSet::new(),
             })),
         }
     }
@@ -1721,6 +1723,23 @@ fn release_in_flight_hash(app: &AppHandle, hash: &str) {
     inner.in_flight_hashes.remove(hash);
 }
 
+fn claim_in_flight_source(app: &AppHandle, source_rel: &str) -> bool {
+    let sync = app.state::<SyncState>();
+    let mut inner = sync.inner.lock().unwrap();
+    if inner.in_flight_sources.contains(source_rel) {
+        return false;
+    }
+
+    inner.in_flight_sources.insert(source_rel.to_string());
+    true
+}
+
+fn release_in_flight_source(app: &AppHandle, source_rel: &str) {
+    let sync = app.state::<SyncState>();
+    let mut inner = sync.inner.lock().unwrap();
+    inner.in_flight_sources.remove(source_rel);
+}
+
 fn register_downloaded_hash(
     conn: &Arc<Mutex<Connection>>,
     data_dir: &Path,
@@ -2372,6 +2391,30 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             let _ = std::fs::create_dir_all(parent);
         }
 
+        let source_claimed = if is_cue_remote_track(track) {
+            if !claim_in_flight_source(&app, source_rel) {
+                release_in_flight_hash(&app, &track.hash);
+                done += 1;
+                let label = track.title.as_deref()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or(filename);
+                emit(
+                    &app,
+                    &peer_name,
+                    remote_device_name.as_deref(),
+                    remote_device_emoji.as_deref(),
+                    "download",
+                    total,
+                    done,
+                    Some(label.to_string()),
+                );
+                continue;
+            }
+            true
+        } else {
+            false
+        };
+
         let label = track.title.as_deref()
             .filter(|t| !t.is_empty())
             .unwrap_or(filename);
@@ -2396,6 +2439,9 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
                     download_cue_file_for_track(&client, &base_urls, track, &save_dir, &mut downloaded_cues);
                 }
             }
+        }
+        if source_claimed {
+            release_in_flight_source(&app, source_rel);
         }
         release_in_flight_hash(&app, &track.hash);
 
