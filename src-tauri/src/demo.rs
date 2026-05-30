@@ -145,7 +145,7 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
         )?;
         let covers_dir = data_dir.join(".covers");
         fs::create_dir_all(&covers_dir)?;
-        fs::write(covers_dir.join(format!("{id}.jpg")), cover_data)?;
+        fs::write(covers_dir.join(format!("{id}.svg")), cover_data)?;
         track_ids.insert(track.rel_path, id);
     }
 

@@ -4470,7 +4470,10 @@ onMounted(() => {
     await handleFinishedPlayback(playbackTransitionSequence);
   });
   
-  listen('library-changed', () => { void loadAppData('sync'); });
+  listen('library-changed', () => {
+    covers.value = {};
+    void loadAppData('sync');
+  });
   listen<number>('beat', (e) => {
     const lag = Math.max(0, Date.now() - e.payload);
     startBeatAnimation(lag);
