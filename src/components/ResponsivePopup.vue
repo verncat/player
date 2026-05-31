@@ -9,6 +9,9 @@ const props = defineProps<{
   cancelLabel?: string;
   saveLabel?: string;
   saveDisabled?: boolean;
+  anchorX?: number | null;
+  anchorY?: number | null;
+  centered?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -31,10 +34,29 @@ function updateDesktopPosition() {
 
   const gap = 12;
   const margin = 12;
-  const triggerRect = wrapper.getBoundingClientRect();
   const panelRect = panel.getBoundingClientRect();
   const panelWidth = panelRect.width;
   const panelHeight = panelRect.height;
+
+  if (props.centered) {
+    desktopStyle.value = {
+      top: `${Math.round(Math.max(margin, (window.innerHeight - panelHeight) / 2))}px`,
+      left: `${Math.round(Math.max(margin, (window.innerWidth - panelWidth) / 2))}px`,
+    };
+    return;
+  }
+
+  if (props.anchorX !== null && props.anchorX !== undefined && props.anchorY !== null && props.anchorY !== undefined) {
+    const maxLeft = Math.max(margin, window.innerWidth - panelWidth - margin);
+    const maxTop = Math.max(margin, window.innerHeight - panelHeight - margin);
+    desktopStyle.value = {
+      top: `${Math.round(Math.max(margin, Math.min(props.anchorY, maxTop)))}px`,
+      left: `${Math.round(Math.max(margin, Math.min(props.anchorX, maxLeft)))}px`,
+    };
+    return;
+  }
+
+  const triggerRect = wrapper.getBoundingClientRect();
   const spaceBelow = window.innerHeight - triggerRect.bottom;
   const spaceAbove = triggerRect.top;
   const openBelow = spaceBelow >= panelHeight + gap || spaceBelow >= spaceAbove;
@@ -54,8 +76,8 @@ function updateDesktopPosition() {
 }
 
 watch(
-  () => props.open,
-  async (open) => {
+  () => [props.open, props.anchorX, props.anchorY, props.centered],
+  async ([open]) => {
     if (open) {
       await nextTick();
       updateDesktopPosition();
@@ -79,11 +101,19 @@ onUnmounted(() => {
     <slot name="trigger" />
     <Transition name="dropdown">
       <div
+        v-if="open && centered"
+        class="responsive-popup-desktop-backdrop"
+        @click="emit('close')"
+      />
+    </Transition>
+    <Transition name="dropdown">
+      <div
         v-if="open"
         ref="desktopPanelRef"
         class="responsive-popup-desktop dropdown"
         :class="panelClass"
         :style="desktopStyle"
+        @click.stop
       >
         <div class="responsive-popup-body">
           <slot />
@@ -146,6 +176,13 @@ onUnmounted(() => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.responsive-popup-desktop-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+  background: rgba(0, 0, 0, 0.42);
 }
 
 .responsive-popup-body {
@@ -231,6 +268,10 @@ onUnmounted(() => {
 
 @media (max-width: 900px) {
   .responsive-popup-desktop {
+    display: none;
+  }
+
+  .responsive-popup-desktop-backdrop {
     display: none;
   }
 

@@ -3935,6 +3935,15 @@ function onDocClick(e: MouseEvent) {
   if (!(e.target as HTMLElement).closest(".soulseek-settings-menu-wrapper")) {
     soulseekSettingsOpen.value = false;
   }
+  if (!(e.target as HTMLElement).closest(".track-context-menu-wrapper")) {
+    trackContextMenu.value = null;
+  }
+  if (!(e.target as HTMLElement).closest(".home-pinned-context-menu-wrapper")) {
+    homePinnedContextMenu.value = null;
+  }
+  if (!(e.target as HTMLElement).closest(".add-to-playlist-menu-wrapper")) {
+    addToPlaylistMenu.value = null;
+  }
 }
 
 function onKeyDown(e: KeyboardEvent) {
@@ -6179,97 +6188,102 @@ onUnmounted(() => {
       </div>
     </main>
 
-    <!-- Add to playlist menu -->
-    <Teleport to="body">
-      <div v-if="trackContextMenu" class="playlist-menu-backdrop" @click="trackContextMenu = null">
-        <div
-          class="playlist-menu track-context-menu"
-          :style="{ top: trackContextMenu.y + 'px', left: trackContextMenu.x + 'px' }"
-          @click.stop
+    <!-- Context menus -->
+    <ResponsivePopup
+      :open="!!trackContextMenu"
+      :anchor-x="trackContextMenu?.x ?? null"
+      :anchor-y="trackContextMenu?.y ?? null"
+      wrapper-class="track-context-menu-wrapper"
+      panel-class="playlist-menu track-context-menu"
+      @close="trackContextMenu = null"
+    >
+      <template v-if="trackContextMenu">
+        <div class="playlist-menu-header">Track actions</div>
+        <button class="playlist-menu-item" @click="toggleLikeFromTrackContext">{{ trackContextMenu.track.is_liked ? 'Unlike' : 'Like' }}</button>
+        <button class="playlist-menu-item" @click="openTrackReplaceDialogFromTrackContext">Search and replace</button>
+        <button class="playlist-menu-item" @click="shareTrackFromTrackContext">Share</button>
+        <button class="playlist-menu-item" @click="addTrackToPlaylistFromTrackContext">Add to playlist</button>
+        <button class="playlist-menu-item" @click="editTrackFromTrackContext">Edit metadata</button>
+        <button class="playlist-menu-item" @click="identifyTrackFromTrackContext">Identify</button>
+        <button
+          v-if="trackContextMenu.playlistId !== null"
+          class="playlist-menu-item danger"
+          @click="removeTrackFromPlaylistFromTrackContext"
         >
-          <div class="playlist-menu-header">Track actions</div>
-          <button class="playlist-menu-item" @click="toggleLikeFromTrackContext">{{ trackContextMenu.track.is_liked ? 'Unlike' : 'Like' }}</button>
-          <button class="playlist-menu-item" @click="openTrackReplaceDialogFromTrackContext">Search and replace</button>
-          <button class="playlist-menu-item" @click="shareTrackFromTrackContext">Share</button>
-          <button class="playlist-menu-item" @click="addTrackToPlaylistFromTrackContext">Add to playlist</button>
-          <button class="playlist-menu-item" @click="editTrackFromTrackContext">Edit metadata</button>
-          <button class="playlist-menu-item" @click="identifyTrackFromTrackContext">Identify</button>
-          <button
-            v-if="trackContextMenu.playlistId !== null"
-            class="playlist-menu-item danger"
-            @click="removeTrackFromPlaylistFromTrackContext"
-          >
-            Remove from playlist
-          </button>
-          <button class="playlist-menu-item danger" @click="hideTrackAsDuplicateFromTrackContext">Hide (mark as duplicate)</button>
-        </div>
-      </div>
-    </Teleport>
+          Remove from playlist
+        </button>
+        <button class="playlist-menu-item danger" @click="hideTrackAsDuplicateFromTrackContext">Hide (mark as duplicate)</button>
+      </template>
+    </ResponsivePopup>
 
-    <Teleport to="body">
-      <div v-if="homePinnedContextMenu" class="playlist-menu-backdrop" @click="homePinnedContextMenu = null">
-        <div
-          class="playlist-menu"
-          :style="{ top: homePinnedContextMenu.y + 'px', left: homePinnedContextMenu.x + 'px' }"
-          @click.stop
-        >
-          <div class="playlist-menu-header">{{ homePinnedContextMenu.item.kind === 'regular' ? 'Playlist actions' : 'Flexible playlist actions' }}</div>
-          <button class="playlist-menu-item" @click="openHomePinnedFromContextMenu">Open</button>
-          <button v-if="homePinnedContextMenu.item.trackCount > 0" class="playlist-menu-item" @click="playHomePinnedFromContextMenu">Play</button>
-          <button v-if="homePinnedContextMenu.item.kind === 'smart'" class="playlist-menu-item" @click="editHomePinnedFromContextMenu">Edit rules</button>
-          <button class="playlist-menu-item" @click="unpinHomePinnedFromContextMenu">Unpin from Home</button>
-          <button class="playlist-menu-item danger" @click="deleteHomePinnedFromContextMenu">Delete</button>
-        </div>
-      </div>
-    </Teleport>
+    <ResponsivePopup
+      :open="!!homePinnedContextMenu"
+      :anchor-x="homePinnedContextMenu?.x ?? null"
+      :anchor-y="homePinnedContextMenu?.y ?? null"
+      wrapper-class="home-pinned-context-menu-wrapper"
+      panel-class="playlist-menu"
+      @close="homePinnedContextMenu = null"
+    >
+      <template v-if="homePinnedContextMenu">
+        <div class="playlist-menu-header">{{ homePinnedContextMenu.item.kind === 'regular' ? 'Playlist actions' : 'Flexible playlist actions' }}</div>
+        <button class="playlist-menu-item" @click="openHomePinnedFromContextMenu">Open</button>
+        <button v-if="homePinnedContextMenu.item.trackCount > 0" class="playlist-menu-item" @click="playHomePinnedFromContextMenu">Play</button>
+        <button v-if="homePinnedContextMenu.item.kind === 'smart'" class="playlist-menu-item" @click="editHomePinnedFromContextMenu">Edit rules</button>
+        <button class="playlist-menu-item" @click="unpinHomePinnedFromContextMenu">Unpin from Home</button>
+        <button class="playlist-menu-item danger" @click="deleteHomePinnedFromContextMenu">Delete</button>
+      </template>
+    </ResponsivePopup>
 
-    <Teleport to="body">
-      <div v-if="addToPlaylistMenu" class="playlist-menu-backdrop" @click="addToPlaylistMenu = null">
-        <div
-          class="playlist-menu"
-          :style="{ top: addToPlaylistMenu.y + 'px', left: addToPlaylistMenu.x + 'px' }"
-          @click.stop
+    <ResponsivePopup
+      :open="!!addToPlaylistMenu"
+      :anchor-x="addToPlaylistMenu?.x ?? null"
+      :anchor-y="addToPlaylistMenu?.y ?? null"
+      wrapper-class="add-to-playlist-menu-wrapper"
+      panel-class="playlist-menu"
+      @close="addToPlaylistMenu = null"
+    >
+      <template v-if="addToPlaylistMenu">
+        <div class="playlist-menu-header">Add to playlist</div>
+        <div v-if="playlists.length === 0" class="playlist-menu-empty">No playlists. Create one first.</div>
+        <button
+          v-for="pl in playlists"
+          :key="pl.id"
+          class="playlist-menu-item"
+          @click="addTrackToPlaylist(pl.id, addToPlaylistMenu!.track.id); addToPlaylistMenu = null"
         >
-          <div class="playlist-menu-header">Add to playlist</div>
-          <div v-if="playlists.length === 0" class="playlist-menu-empty">No playlists. Create one first.</div>
-          <button
-            v-for="pl in playlists"
-            :key="pl.id"
-            class="playlist-menu-item"
-            @click="addTrackToPlaylist(pl.id, addToPlaylistMenu!.track.id); addToPlaylistMenu = null"
-          >
-            {{ pl.name }}
-          </button>
-        </div>
-      </div>
-    </Teleport>
+          {{ pl.name }}
+        </button>
+      </template>
+    </ResponsivePopup>
 
     <!-- Dedup confirm modal -->
-    <Transition name="modal">
-      <div v-if="dedupConfirmOpen" class="modal-overlay" @click.self="dedupConfirmOpen = false">
-        <div class="modal identify-modal">
-          <div class="modal-header">
-            <h3>Confirm marking</h3>
-            <button class="icon-btn" @click="dedupConfirmOpen = false">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-            </button>
-          </div>
-          <div class="modal-body">
-            <p style="color:#b3b3b3; line-height:1.5;">
-              <strong style="color:#fff;">{{ dedupMarkedTotal }}</strong>
-              track(s) will be flagged as duplicates in the database. Files stay on disk. You can unmark them at any time.
-            </p>
-            <div v-if="dedupError" class="settings-error">{{ dedupError }}</div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn-secondary" @click="dedupConfirmOpen = false" :disabled="dedupApplying">Cancel</button>
-            <button class="btn-primary" @click="applyDedup()" :disabled="dedupApplying">
-              {{ dedupApplying ? 'Marking…' : 'Mark as duplicates' }}
-            </button>
-          </div>
-        </div>
+    <ResponsivePopup
+      :open="dedupConfirmOpen"
+      wrapper-class="dedup-confirm-popup-wrapper"
+      panel-class="settings-dropdown dedup-confirm-popup"
+      centered
+      show-actions
+      cancel-label="Cancel"
+      :save-label="dedupApplying ? 'Marking…' : 'Mark as duplicates'"
+      :save-disabled="dedupApplying"
+      @close="dedupConfirmOpen = false"
+      @cancel="dedupConfirmOpen = false"
+      @save="applyDedup()"
+    >
+      <div class="modal-header">
+        <h3>Confirm marking</h3>
+        <button class="icon-btn" @click="dedupConfirmOpen = false">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
       </div>
-    </Transition>
+      <div class="modal-body">
+        <p style="color:#b3b3b3; line-height:1.5;">
+          <strong style="color:#fff;">{{ dedupMarkedTotal }}</strong>
+          track(s) will be flagged as duplicates in the database. Files stay on disk. You can unmark them at any time.
+        </p>
+        <div v-if="dedupError" class="settings-error">{{ dedupError }}</div>
+      </div>
+    </ResponsivePopup>
 
     <!-- Edit modal -->
     <Transition name="modal">
@@ -7863,9 +7877,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   color: #535353;
 }
 /* Playlist menu */
-.playlist-menu-backdrop {
-  position: fixed; inset: 0; z-index: 1000;
-}
 .playlist-menu {
   position: fixed; z-index: 1001;
   background: #282828; border: 1px solid #3a3a3a; border-radius: 8px;
@@ -7875,6 +7886,26 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
+}
+.responsive-popup-desktop.playlist-menu,
+.responsive-popup-mobile-panel.playlist-menu {
+  right: auto;
+  padding: 0;
+  min-width: 180px;
+  max-width: 240px;
+  z-index: 1001;
+}
+.responsive-popup-mobile-panel.playlist-menu {
+  max-width: calc(100vw - 24px);
+}
+.dedup-confirm-popup .modal-header {
+  padding: 14px 16px 8px;
+}
+.dedup-confirm-popup .modal-header h3 {
+  color: #fff;
+}
+.dedup-confirm-popup .modal-body {
+  padding: 8px 16px 4px;
 }
 .playlist-menu-header {
   font-size: var(--fs-eyebrow); font-weight: 700; text-transform: uppercase;
