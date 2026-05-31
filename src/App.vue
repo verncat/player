@@ -1559,6 +1559,10 @@ async function fetchDeviceSettings() {
 
 async function openDeviceSettings() {
   settingsError.value = '';
+  showQueueMenu.value = false;
+  showDeviceMenu.value = false;
+  showUserMenu.value = false;
+  soulseekSettingsOpen.value = false;
   const cfg = await fetchDeviceSettings();
   settingsEmoji.value = cfg.emoji || '🎵';
   settingsDeviceName.value = cfg.device_name || '';
@@ -1567,6 +1571,10 @@ async function openDeviceSettings() {
 
 async function openSoulseekSettings() {
   soulseekSettingsError.value = '';
+  showQueueMenu.value = false;
+  showDeviceMenu.value = false;
+  showUserMenu.value = false;
+  settingsOpen.value = false;
   const cfg = await fetchDeviceSettings();
   settingsSoulseekEnabled.value = !!cfg.soulseek_enabled;
   settingsSoulseekUsername.value = cfg.soulseek_username || '';
@@ -3800,6 +3808,8 @@ async function toggleDeviceMenu() {
   if (willOpen) {
     showQueueMenu.value = false;
     showUserMenu.value = false;
+    settingsOpen.value = false;
+    soulseekSettingsOpen.value = false;
   }
   if (!showDeviceMenu.value) {
     deviceMenuError.value = '';
@@ -3822,6 +3832,8 @@ function toggleQueueMenu() {
   if (willOpen) {
     showDeviceMenu.value = false;
     showUserMenu.value = false;
+    settingsOpen.value = false;
+    soulseekSettingsOpen.value = false;
   }
   showQueueMenu.value = !showQueueMenu.value;
 }
@@ -3916,6 +3928,12 @@ function onDocClick(e: MouseEvent) {
   }
   if (!(e.target as HTMLElement).closest(".queue-menu-wrapper")) {
     showQueueMenu.value = false;
+  }
+  if (!(e.target as HTMLElement).closest(".settings-menu-wrapper")) {
+    settingsOpen.value = false;
+  }
+  if (!(e.target as HTMLElement).closest(".soulseek-settings-menu-wrapper")) {
+    soulseekSettingsOpen.value = false;
   }
 }
 
@@ -5175,9 +5193,66 @@ onUnmounted(() => {
                   >
                     {{ soulseekLoading ? 'Searching…' : 'Search' }}
                   </button>
-                  <button class="text-action-btn soulseek-settings-link" @click="openSoulseekSettings">
-                    {{ soulseekStatus?.enabled ? 'Settings' : 'Enable' }}
-                  </button>
+                  <ResponsivePopup
+                    :open="soulseekSettingsOpen"
+                    wrapper-class="soulseek-settings-menu-wrapper"
+                    panel-class="settings-dropdown soulseek-settings-dropdown"
+                    show-actions
+                    cancel-label="Cancel"
+                    :save-label="soulseekSettingsSaving ? 'Saving...' : 'Save'"
+                    :save-disabled="soulseekSettingsSaving"
+                    @close="soulseekSettingsOpen = false"
+                    @cancel="soulseekSettingsOpen = false"
+                    @save="saveSoulseekSettings"
+                  >
+                    <template #trigger>
+                      <button class="text-action-btn soulseek-settings-link" @click.stop="openSoulseekSettings">
+                        {{ soulseekStatus?.enabled ? 'Settings' : 'Enable' }}
+                      </button>
+                    </template>
+
+                    <div class="modal-header settings-popup-header">
+                      <h3>Soulseek settings</h3>
+                      <button class="icon-btn" title="Close" @click="soulseekSettingsOpen = false">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                      </button>
+                    </div>
+                    <div class="modal-body settings-body settings-popup-body">
+                      <div class="settings-toggle-row">
+                        <div>
+                          <span class="settings-toggle-title">Soulseek search</span>
+                          <span class="settings-toggle-copy">Search the Soulseek network and save selected files directly into your local library.</span>
+                        </div>
+                        <button
+                          type="button"
+                          class="sync-toggle settings-toggle-action"
+                          :class="{ active: settingsSoulseekEnabled }"
+                          :aria-pressed="settingsSoulseekEnabled"
+                          :title="settingsSoulseekEnabled ? 'Soulseek search on — click to disable' : 'Soulseek search off — click to enable'"
+                          @click="settingsSoulseekEnabled = !settingsSoulseekEnabled"
+                        >
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16a6.47 6.47 0 0 0 4.23-1.57l.27.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                          Search
+                        </button>
+                      </div>
+
+                      <template v-if="settingsSoulseekEnabled">
+                        <label class="field">
+                          <span>Soulseek username</span>
+                          <input v-model="settingsSoulseekUsername" autocomplete="username" placeholder="username" />
+                        </label>
+
+                        <label class="field">
+                          <span>Soulseek password</span>
+                          <input v-model="settingsSoulseekPassword" type="password" autocomplete="current-password" placeholder="password" />
+                        </label>
+
+                        <p class="settings-note">Downloaded Soulseek files are placed into the Soulseek folder inside your library.</p>
+                      </template>
+
+                      <div v-if="soulseekSettingsError" class="settings-error">{{ soulseekSettingsError }}</div>
+                    </div>
+                  </ResponsivePopup>
                 </div>
               </div>
 
@@ -5913,10 +5988,50 @@ onUnmounted(() => {
                 <h2>Devices on Network</h2>
               </div>
               <div class="discovery-toolbar">
-                <button class="sync-toggle" @click="openDeviceSettings" title="Device settings">
-                  <span class="device-emoji">{{ deviceEmoji }}</span>
-                  Settings
-                </button>
+                <ResponsivePopup
+                  :open="settingsOpen"
+                  wrapper-class="settings-menu-wrapper"
+                  panel-class="settings-dropdown"
+                  show-actions
+                  cancel-label="Cancel"
+                  :save-label="settingsSaving ? 'Saving...' : 'Save'"
+                  :save-disabled="settingsSaving"
+                  @close="settingsOpen = false"
+                  @cancel="settingsOpen = false"
+                  @save="saveDeviceSettings"
+                >
+                  <template #trigger>
+                    <button class="sync-toggle" @click.stop="openDeviceSettings" title="Device settings">
+                      <span class="device-emoji">{{ deviceEmoji }}</span>
+                      Settings
+                    </button>
+                  </template>
+                  <div class="modal-header settings-popup-header">
+                    <h3>Device settings</h3>
+                    <button class="icon-btn" title="Close" @click="settingsOpen = false">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    </button>
+                  </div>
+                  <div class="modal-body settings-body settings-popup-body">
+                    <label class="field">
+                      <span>Device name</span>
+                      <input v-model="settingsDeviceName" placeholder="My Player" />
+                    </label>
+
+                    <div class="settings-label">Emoji</div>
+                    <div class="emoji-grid">
+                      <button
+                        v-for="emoji in EMOJI_OPTIONS"
+                        :key="emoji"
+                        class="emoji-cell"
+                        :class="{ active: settingsEmoji === emoji }"
+                        @click="settingsEmoji = emoji"
+                      >{{ emoji }}</button>
+                    </div>
+
+                    <div v-if="settingsError" class="settings-error">{{ settingsError }}</div>
+                  </div>
+                </ResponsivePopup>
                 <button
                   class="sync-toggle"
                   :class="{ active: syncEnabled }"
@@ -6221,99 +6336,6 @@ onUnmounted(() => {
           <div class="modal-footer">
             <button class="btn-secondary" @click="editingTrack = null">Cancel</button>
             <button class="btn-primary" @click="saveTrack">Save</button>
-          </div>
-        </div>
-      </div>
-    </Transition>
-
-    <!-- Device settings modal -->
-    <Transition name="modal">
-      <div v-if="settingsOpen" class="modal-overlay" @click.self="settingsOpen = false">
-        <div class="modal identify-modal">
-          <div class="modal-header">
-            <h3>Device settings</h3>
-            <button class="icon-btn" title="Close" @click="settingsOpen = false">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-            </button>
-          </div>
-          <div class="modal-body settings-body">
-            <label class="field">
-              <span>Device name</span>
-              <input v-model="settingsDeviceName" placeholder="My Player" />
-            </label>
-
-            <div class="settings-label">Emoji</div>
-            <div class="emoji-grid">
-              <button
-                v-for="emoji in EMOJI_OPTIONS"
-                :key="emoji"
-                class="emoji-cell"
-                :class="{ active: settingsEmoji === emoji }"
-                @click="settingsEmoji = emoji"
-              >{{ emoji }}</button>
-            </div>
-
-            <div v-if="settingsError" class="settings-error">{{ settingsError }}</div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn-secondary" @click="settingsOpen = false">Cancel</button>
-            <button class="btn-primary" :disabled="settingsSaving" @click="saveDeviceSettings">
-              {{ settingsSaving ? 'Saving...' : 'Save' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Transition>
-
-    <Transition name="modal">
-      <div v-if="soulseekSettingsOpen" class="modal-overlay" @click.self="soulseekSettingsOpen = false">
-        <div class="modal identify-modal">
-          <div class="modal-header">
-            <h3>Soulseek settings</h3>
-            <button class="icon-btn" title="Close" @click="soulseekSettingsOpen = false">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-            </button>
-          </div>
-          <div class="modal-body settings-body">
-            <div class="settings-toggle-row">
-              <div>
-                <span class="settings-toggle-title">Soulseek search</span>
-                <span class="settings-toggle-copy">Search the Soulseek network and save selected files directly into your local library.</span>
-              </div>
-              <button
-                type="button"
-                class="sync-toggle settings-toggle-action"
-                :class="{ active: settingsSoulseekEnabled }"
-                :aria-pressed="settingsSoulseekEnabled"
-                :title="settingsSoulseekEnabled ? 'Soulseek search on — click to disable' : 'Soulseek search off — click to enable'"
-                @click="settingsSoulseekEnabled = !settingsSoulseekEnabled"
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16a6.47 6.47 0 0 0 4.23-1.57l.27.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                Search
-              </button>
-            </div>
-
-            <template v-if="settingsSoulseekEnabled">
-              <label class="field">
-                <span>Soulseek username</span>
-                <input v-model="settingsSoulseekUsername" autocomplete="username" placeholder="username" />
-              </label>
-
-              <label class="field">
-                <span>Soulseek password</span>
-                <input v-model="settingsSoulseekPassword" type="password" autocomplete="current-password" placeholder="password" />
-              </label>
-
-              <p class="settings-note">Downloaded Soulseek files are placed into the Soulseek folder inside your library.</p>
-            </template>
-
-            <div v-if="soulseekSettingsError" class="settings-error">{{ soulseekSettingsError }}</div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn-secondary" @click="soulseekSettingsOpen = false">Cancel</button>
-            <button class="btn-primary" :disabled="soulseekSettingsSaving" @click="saveSoulseekSettings">
-              {{ soulseekSettingsSaving ? 'Saving...' : 'Save' }}
-            </button>
           </div>
         </div>
       </div>
@@ -6960,6 +6982,22 @@ a, button, [role="button"] {
 .sync-toggle.active { background: #1db954; border-color: #1db954; color: #000; }
 
 .settings-body { gap: 12px; }
+.settings-menu-wrapper,
+.soulseek-settings-menu-wrapper {
+  position: relative;
+}
+.soulseek-settings-menu-wrapper {
+  display: inline-flex;
+}
+.settings-popup-header {
+  padding: 12px 14px 6px;
+}
+.settings-popup-header h3 {
+  color: #fff;
+}
+.settings-popup-body {
+  padding: 10px 16px 4px;
+}
 .settings-label { font-size: var(--fs-field-label); font-weight: 700; color: #a7a7a7; margin-top: 2px; }
 .settings-toggle-row {
   padding: 0;

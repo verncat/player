@@ -1,21 +1,101 @@
 <script setup lang="ts">
-defineProps<{
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+
+const props = defineProps<{
   open: boolean;
   wrapperClass?: string;
   panelClass?: string;
+  showActions?: boolean;
+  cancelLabel?: string;
+  saveLabel?: string;
+  saveDisabled?: boolean;
 }>();
 
 const emit = defineEmits<{
   close: [];
+  cancel: [];
+  save: [];
 }>();
+
+const wrapperRef = ref<HTMLElement | null>(null);
+const desktopPanelRef = ref<HTMLElement | null>(null);
+const desktopStyle = ref<Record<string, string>>({});
+
+function updateDesktopPosition() {
+  const wrapper = wrapperRef.value;
+  const panel = desktopPanelRef.value;
+  if (!props.open || !wrapper || !panel || window.innerWidth <= 900) {
+    desktopStyle.value = {};
+    return;
+  }
+
+  const gap = 12;
+  const margin = 12;
+  const triggerRect = wrapper.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  const panelWidth = panelRect.width;
+  const panelHeight = panelRect.height;
+  const spaceBelow = window.innerHeight - triggerRect.bottom;
+  const spaceAbove = triggerRect.top;
+  const openBelow = spaceBelow >= panelHeight + gap || spaceBelow >= spaceAbove;
+
+  const top = openBelow
+    ? Math.min(triggerRect.bottom + gap, window.innerHeight - panelHeight - margin)
+    : Math.max(margin, triggerRect.top - panelHeight - gap);
+  const left = Math.min(
+    Math.max(margin, triggerRect.right - panelWidth),
+    window.innerWidth - panelWidth - margin,
+  );
+
+  desktopStyle.value = {
+    top: `${Math.round(top)}px`,
+    left: `${Math.round(left)}px`,
+  };
+}
+
+watch(
+  () => props.open,
+  async (open) => {
+    if (open) {
+      await nextTick();
+      updateDesktopPosition();
+    }
+  },
+);
+
+onMounted(() => {
+  window.addEventListener('resize', updateDesktopPosition);
+  window.addEventListener('scroll', updateDesktopPosition, true);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateDesktopPosition);
+  window.removeEventListener('scroll', updateDesktopPosition, true);
+});
 </script>
 
 <template>
-  <div class="responsive-popup-wrapper" :class="wrapperClass">
+  <div ref="wrapperRef" class="responsive-popup-wrapper" :class="wrapperClass">
     <slot name="trigger" />
     <Transition name="dropdown">
-      <div v-if="open" class="responsive-popup-desktop dropdown" :class="panelClass">
-        <slot />
+      <div
+        v-if="open"
+        ref="desktopPanelRef"
+        class="responsive-popup-desktop dropdown"
+        :class="panelClass"
+        :style="desktopStyle"
+      >
+        <div class="responsive-popup-body">
+          <slot />
+        </div>
+        <div v-if="showActions" class="responsive-popup-actions">
+          <button class="responsive-popup-cancel" @click="emit('cancel')">
+            {{ cancelLabel ?? 'Cancel' }}
+          </button>
+          <button class="responsive-popup-save" :disabled="saveDisabled" @click="emit('save')">
+            {{ saveLabel ?? 'Save' }}
+          </button>
+        </div>
       </div>
     </Transition>
   </div>
@@ -32,7 +112,17 @@ const emit = defineEmits<{
           :class="panelClass"
           @click.stop
         >
-          <slot />
+          <div class="responsive-popup-body">
+            <slot />
+          </div>
+          <div v-if="showActions" class="responsive-popup-actions">
+            <button class="responsive-popup-cancel" @click="emit('cancel')">
+              {{ cancelLabel ?? 'Cancel' }}
+            </button>
+            <button class="responsive-popup-save" :disabled="saveDisabled" @click="emit('save')">
+              {{ saveLabel ?? 'Save' }}
+            </button>
+          </div>
         </div>
       </div>
     </Transition>
@@ -45,16 +135,36 @@ const emit = defineEmits<{
 }
 
 .responsive-popup-desktop {
-  position: absolute;
-  top: auto;
-  right: 0;
-  bottom: calc(100% + 12px);
+  position: fixed;
   background: #282828;
   border-radius: 4px;
   padding: 4px 0;
   min-width: 190px;
   box-shadow: 0 16px 32px rgba(0, 0, 0, .5);
   z-index: 200;
+  max-height: min(72vh, 560px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.responsive-popup-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.responsive-popup-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.responsive-popup-body::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 3px;
+}
+
+.responsive-popup-body::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .responsive-popup-mobile {
@@ -68,6 +178,55 @@ const emit = defineEmits<{
 
 .responsive-popup-desktop.device-dropdown {
   min-width: 220px;
+}
+
+.responsive-popup-desktop.settings-dropdown {
+  min-width: 340px;
+  max-width: 380px;
+}
+
+.responsive-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px 14px;
+  flex-shrink: 0;
+  background: #282828;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.responsive-popup-cancel,
+.responsive-popup-save {
+  border-radius: 20px;
+  font-size: var(--fs-button, 13px);
+  font-weight: 700;
+  padding: 8px 22px;
+  cursor: pointer;
+}
+
+.responsive-popup-cancel {
+  background: transparent;
+  border: 1px solid #535353;
+  color: #fff;
+}
+
+.responsive-popup-cancel:hover {
+  border-color: #fff;
+}
+
+.responsive-popup-save {
+  background: #1db954;
+  border: none;
+  color: #000;
+}
+
+.responsive-popup-save:hover:not(:disabled) {
+  background: #1ed760;
+}
+
+.responsive-popup-save:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 @media (max-width: 900px) {
@@ -97,6 +256,8 @@ const emit = defineEmits<{
     max-width: calc(100vw - 24px) !important;
     max-height: min(72vh, 560px);
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
     transform: none;
     background: #282828;
     border-radius: 4px;
