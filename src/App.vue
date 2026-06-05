@@ -4,118 +4,39 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { marked } from "marked";
+import {
+  TRACK_RARITY_OPTIONS,
+  rarityColors,
+  type AudioDevice,
+  type DeviceList,
+  type SoulseekDownloadEvent,
+  type SoulseekSearchResult,
+  type SoulseekStatus,
+  type Track,
+} from "./types";
+import {
+  formatBytes,
+  formatDuration,
+  formatSampleRate,
+  formatTime,
+  formatTransferRate,
+} from "./utils/format";
+import {
+  normalizeNonNegativeInteger,
+  normalizeOptionalInteger,
+  normalizePath,
+  normalizeTrackTagsInput,
+  parseTrackDateInput,
+  trackDateInputValue,
+  trackTagsList,
+  trackTagsText,
+} from "./utils/tracks";
+import { hashToColors, rarityClass, rarityVars } from "./utils/rarity";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 import ResponsivePopup from "./components/ResponsivePopup.vue";
 
 // marked: no external links, open in browser via tauri
 marked.use({ gfm: true, breaks: true });
-
-interface AudioDevice { name: string; sample_rates: number[] }
-interface DeviceList { devices: AudioDevice[]; current: string | null; current_sample_rate: number | null }
-
-interface SoulseekStatus {
-  enabled: boolean;
-  configured: boolean;
-  username: string | null;
-  activeSession: boolean;
-}
-
-interface SoulseekSearchResult {
-  username: string;
-  filename: string;
-  basename: string;
-  coverFilename: string | null;
-  coverSize: number | null;
-  size: number;
-  bitrate: number | null;
-  duration: number | null;
-  sampleRate: number | null;
-  bitDepth: number | null;
-  vbr: boolean | null;
-  peerSpeed: number;
-  freeUploadSlots: number;
-  extension: string | null;
-}
-
-interface SoulseekDownloadEvent {
-  transferId: string;
-  username: string;
-  filename: string;
-  basename: string;
-  state: string;
-  bytesDownloaded: number | null;
-  totalBytes: number | null;
-  speedBytesPerSec: number | null;
-  queuePosition: number | null;
-  localPath: string | null;
-  error: string | null;
-}
-
-interface Track {
-  id: number;
-  path: string;
-  title: string | null;
-  artist: string | null;
-  album: string | null;
-  track_number: number | null;
-  duration_secs: number | null;
-  file_hash: string | null;
-  rarity: string | null;
-  manually_edited: boolean;
-  is_liked: boolean;
-  play_count: number;
-  year: number | null;
-  genre: string | null;
-  tags: string | null;
-  date_added: number | null;
-  is_duplicate: boolean;
-  local_preview_path?: string | null;
-  preview_growing?: boolean;
-  soulseek_preview?: boolean;
-  soulseek_username?: string | null;
-  soulseek_filename?: string | null;
-  soulseek_size?: number | null;
-}
-
-const rarityColors: Record<string, string> = {
-  Common: '#b0b0b0',
-  Uncommon: '#1db954',
-  Rare: '#4fc3f7',
-  Epic: '#ba68c8',
-  Legendary: '#ffa726',
-  Mythic: '#ff5252',
-};
-const animatedRarities = new Set(['Epic', 'Legendary', 'Mythic']);
-const TRACK_RARITY_OPTIONS = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary', 'Mythic'] as const;
-
-function rarityClass(r: string | null) {
-  if (!r || r === 'Common') return '';
-  if (animatedRarities.has(r)) return `rarity-animated rarity-${r.toLowerCase()}`;
-  return 'rarity-tint';
-}
-function rarityVars(r: string | null): Record<string, string> {
-  if (!r || r === 'Common') return {};
-  const c = rarityColors[r] || '#b0b0b0';
-  return { '--rc': c };
-}
-
-/** Derive two complementary HSL colors from a hex hash string (or fallback). */
-function hashToColors(hash: string | null): [string, string] {
-  if (!hash || hash.length < 8) return ['#1a1a2e', '#16213e'];
-  // Take two 3-byte windows from the hash as seeds
-  const a = parseInt(hash.slice(0, 6), 16);
-  const b = parseInt(hash.slice(6, 12), 16);
-  const hueA = a % 360;
-  const hueB = (hueA + 137) % 360;  // golden angle offset for contrast
-  const satA = 45 + (a >> 16 & 0x1f); // 45-76%
-  const satB = 45 + (b >> 16 & 0x1f);
-  const litA = 20 + (a >> 8 & 0x0f);  // 20-35%
-  const litB = 15 + (b >> 8 & 0x0f);  // 15-30%
-  return [
-    `hsl(${hueA}, ${satA}%, ${litA}%)`,
-    `hsl(${hueB}, ${satB}%, ${litB}%)`,
-  ];
-}
 
 const madeForYou = [
   { id: 7,  title: "The Logic Gate Sh...", artist: "John von Neumann", colors: ["#4527a0", "#283593"] },
@@ -192,53 +113,6 @@ const covers = ref<Record<number, string | null>>({});
 
 function filterDuplicateTracks(tracks: Track[]) {
   return showDuplicateTracks.value ? tracks : tracks.filter((track) => !track.is_duplicate);
-}
-
-function trackTagsList(track: Pick<Track, 'tags'>): string[] {
-  if (!track.tags) return [];
-  const seen = new Set<string>();
-  const tags: string[] = [];
-  for (const raw of track.tags.split(/[\n,;]+/)) {
-    const tag = raw.trim();
-    const key = tag.toLowerCase();
-    if (!tag || seen.has(key)) continue;
-    seen.add(key);
-    tags.push(tag);
-  }
-  return tags;
-}
-
-function trackTagsText(track: Pick<Track, 'tags'>) {
-  return trackTagsList(track).join(', ');
-}
-
-function normalizeTrackTagsInput(value: string): string | null {
-  const tags = trackTagsList({ tags: value });
-  return tags.length ? tags.join(', ') : null;
-}
-
-function trackDateInputValue(value: number | null) {
-  if (value == null) return '';
-  const date = new Date(value * 1000);
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
-}
-
-function parseTrackDateInput(value: string): number | null {
-  if (!value) return null;
-  const parsed = Date.parse(`${value}T00:00:00Z`);
-  return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
-}
-
-function normalizeOptionalInteger(value: unknown): number | null {
-  if (value == null || value === '') return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-}
-
-function normalizeNonNegativeInteger(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, Math.trunc(parsed));
 }
 
 /* ── Beat animation ── */
@@ -1866,30 +1740,6 @@ function soulseekDownloadBusy(result: SoulseekSearchResult) {
   return state === 'starting' || state === 'queued_local' || state === 'queued_remote' || state === 'progress' || state === 'promoting';
 }
 
-function formatBytes(bytes: number | null | undefined) {
-  if (bytes == null) return '—';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  const precision = unitIndex === 0 || value >= 100 ? 0 : 1;
-  return `${value.toFixed(precision)} ${units[unitIndex]}`;
-}
-
-function formatTransferRate(bytesPerSecond: number | null | undefined) {
-  if (bytesPerSecond == null) return '—';
-  return `${formatBytes(bytesPerSecond)}/s`;
-}
-
-function formatSampleRate(sampleRate: number | null | undefined) {
-  if (!sampleRate) return '';
-  const khz = sampleRate / 1000;
-  return `${Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)} kHz`;
-}
-
 function nativeSampleRateLabel() {
   const formatted = formatSampleRate(nativeSampleRate.value);
   return formatted ? `Native rate (${formatted})` : 'Native rate';
@@ -1909,10 +1759,6 @@ async function ensureLibraryDataDir() {
     libraryDataDir.value = await invoke<string>('get_data_dir');
   }
   return libraryDataDir.value;
-}
-
-function normalizePath(path: string) {
-  return path.replace(/\\/g, '/');
 }
 
 async function soulseekLocalRelativePath(localPath: string) {
@@ -3651,11 +3497,6 @@ async function refreshPlaybackState() {
   return st;
 }
 
-function formatTime(s: number) {
-  const m = Math.floor(s / 60);
-  return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-}
-
 let ticker: ReturnType<typeof setInterval> | null = null;
 let androidSyncCounter = 0;
 let playbackTransitionSequence = 0;
@@ -4290,12 +4131,6 @@ async function saveTrack() {
       isLiked.value = refreshedTrack.is_liked;
     }
   }
-}
-
-function formatDuration(secs: number | null) {
-  if (!secs) return '--:--';
-  const m = Math.floor(secs / 60);
-  return `${m}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
 }
 
 async function openDataDir() {
