@@ -14,6 +14,33 @@ use std::sync::Once;
 
 static INIT_TRACING: Once = Once::new();
 
+#[cfg(feature = "tracy")]
+struct TracyConfig {
+    formatter: tracing_subscriber::fmt::format::DefaultFields,
+}
+
+#[cfg(feature = "tracy")]
+impl Default for TracyConfig {
+    fn default() -> Self {
+        Self {
+            formatter: tracing_subscriber::fmt::format::DefaultFields::new(),
+        }
+    }
+}
+
+#[cfg(feature = "tracy")]
+impl tracing_tracy::Config for TracyConfig {
+    type Formatter = tracing_subscriber::fmt::format::DefaultFields;
+
+    fn formatter(&self) -> &Self::Formatter {
+        &self.formatter
+    }
+
+    fn format_fields_in_zone_name(&self) -> bool {
+        false
+    }
+}
+
 fn play_sine(freq: f32) -> cpal::Stream {
     let host = cpal::default_host();
     let device = host
@@ -58,6 +85,30 @@ fn init_tracing() {
             tracing_subscriber::EnvFilter::new("warn,player_lib=info,soulseek_rs=trace")
         });
 
+        #[cfg(feature = "tracy")]
+        {
+            use tracing_subscriber::{
+                filter::filter_fn,
+                layer::{Layer, SubscriberExt},
+                util::SubscriberInitExt,
+            };
+
+            let fmt_layer = tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_ansi(false)
+                .compact()
+                .with_filter(filter);
+            let tracy_layer = tracing_tracy::TracyLayer::new(TracyConfig::default()).with_filter(
+                filter_fn(|metadata| metadata.target() == "player_lib::profile"),
+            );
+
+            let _ = tracing_subscriber::registry()
+                .with(fmt_layer)
+                .with(tracy_layer)
+                .try_init();
+        }
+
+        #[cfg(not(feature = "tracy"))]
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_target(true)

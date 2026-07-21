@@ -26,6 +26,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::process::{Command as ProcessCommand, ExitStatus};
@@ -265,9 +266,11 @@ impl LibraryState {
         let conn = Arc::clone(&self.conn);
         let data_dir = self.data_dir.clone();
         let app = app.clone();
-        thread::spawn(move || {
-            index_directory_async(&conn, &data_dir, &app);
-        });
+        let _ = thread::Builder::new()
+            .name("library-reindex".to_owned())
+            .spawn(move || {
+                index_directory_async(&conn, &data_dir, &app);
+            });
     }
 
     pub fn seed_demo_content(&self) -> Result<(), BoxError> {
@@ -634,6 +637,15 @@ fn remove_cover_files(data_dir: &Path, track_id: i64) -> Result<(), BoxError> {
     Ok(())
 }
 
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.cover.persist",
+        target = "player_lib::profile",
+        skip(conn, data_dir, cover_data, cover_mime),
+        fields(track_id, bytes = cover_data.as_ref().map_or(0, Vec::len))
+    )
+)]
 fn persist_track_cover(
     conn: &Connection,
     data_dir: &Path,
@@ -1069,24 +1081,42 @@ fn emit_index_progress(
 }
 
 /// Async version that emits progress events.
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.index.full_async",
+        target = "player_lib::profile",
+        skip(conn, app),
+        fields(root = %data_dir.display())
+    )
+)]
 fn index_directory_async(conn: &Arc<Mutex<Connection>>, data_dir: &Path, app: &tauri::AppHandle) {
     // Collect all audio and cue files first.
-    let files: Vec<PathBuf> = WalkDir::new(data_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| !is_internal_library_path(data_dir, e.path()))
-        .filter(|e| {
-            let ext = e
-                .path()
-                .extension()
-                .and_then(|x| x.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            is_audio_extension(&ext) || is_cue_extension(&ext)
-        })
-        .map(|e| e.into_path())
-        .collect();
+    let files: Vec<PathBuf> = {
+        #[cfg(feature = "tracy")]
+        let _span = tracing::info_span!(
+            target: "player_lib::profile",
+            "library.index.walk_directory"
+        )
+        .entered();
+
+        WalkDir::new(data_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| !is_internal_library_path(data_dir, e.path()))
+            .filter(|e| {
+                let ext = e
+                    .path()
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                is_audio_extension(&ext) || is_cue_extension(&ext)
+            })
+            .map(|e| e.into_path())
+            .collect()
+    };
 
     let total = files.len();
     let mut visited: HashSet<String> = HashSet::new();
@@ -1100,7 +1130,16 @@ fn index_directory_async(conn: &Arc<Mutex<Connection>>, data_dir: &Path, app: &t
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        let conn = conn.lock().unwrap();
+        let conn = {
+            #[cfg(feature = "tracy")]
+            let _span = tracing::info_span!(
+                target: "player_lib::profile",
+                "library.sqlite.wait_for_lock",
+                operation = "index"
+            )
+            .entered();
+            conn.lock().unwrap()
+        };
         let index_result: Result<Vec<String>, BoxError> = if is_cue_extension(&ext) {
             index_cue_file(&conn, data_dir, path)
         } else {
@@ -1141,7 +1180,22 @@ fn index_directory_async(conn: &Arc<Mutex<Connection>>, data_dir: &Path, app: &t
 
     // Remove stale rows.
     {
-        let conn = conn.lock().unwrap();
+        #[cfg(feature = "tracy")]
+        let _span = tracing::info_span!(
+            target: "player_lib::profile",
+            "library.index.remove_stale"
+        )
+        .entered();
+        let conn = {
+            #[cfg(feature = "tracy")]
+            let _lock_span = tracing::info_span!(
+                target: "player_lib::profile",
+                "library.sqlite.wait_for_lock",
+                operation = "remove_stale"
+            )
+            .entered();
+            conn.lock().unwrap()
+        };
         let stale: Vec<String> = {
             let mut stmt = conn
                 .prepare("SELECT path FROM tracks")
@@ -1169,6 +1223,15 @@ fn index_directory_async(conn: &Arc<Mutex<Connection>>, data_dir: &Path, app: &t
 }
 
 /// Synchronous version for startup (no events available yet).
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.index.full_startup",
+        target = "player_lib::profile",
+        skip(conn),
+        fields(root = %data_dir.display())
+    )
+)]
 fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
     let mut visited: HashSet<String> = HashSet::new();
 
@@ -1232,6 +1295,15 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
 }
 
 /// Returns `Ok(true)` if a new/updated row was written, `Ok(false)` if skipped.
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.index.file",
+        target = "player_lib::profile",
+        skip(conn, data_dir),
+        fields(file = %abs.display())
+    )
+)]
 pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, BoxError> {
     if is_internal_library_path(data_dir, abs) {
         return Ok(false);
@@ -1305,17 +1377,20 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             cover_mime,
         )) = &cached
         {
-            let cover_file_is_current = cover_mime
+            let normalized_cover_mime = cover_mime
                 .clone()
-                .and_then(|mime| normalize_cover_mime(Some(mime)))
+                .and_then(|mime| normalize_cover_mime(Some(mime)));
+            let cached_cover_file_exists = normalized_cover_mime
                 .as_deref()
                 .map(|mime| cover_file_path(data_dir, *track_id, Some(mime)).exists())
-                .unwrap_or(true);
+                .unwrap_or(false);
+            let cover_file_is_current = cover_mime.is_none() || cached_cover_file_exists;
             if *ms == modified_secs
                 && cover_file_is_current
                 && sidecar_cover_state_matches(
                     cached_cover_source_path.as_deref(),
                     *cached_cover_source_mtime,
+                    cached_cover_file_exists,
                     sidecar_cover.as_ref(),
                 )
             {
@@ -1331,6 +1406,13 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
         let cover_mime = meta.cover_mime.take();
         let file_hash = hash_file(abs);
         let rarity = file_hash.as_deref().map(rarity_from_hash);
+        #[cfg(feature = "tracy")]
+        let sqlite_span = tracing::info_span!(
+            target: "player_lib::profile",
+            "library.sqlite.write_track",
+            operation = "update_manual"
+        )
+        .entered();
         conn.execute(
             "UPDATE tracks SET modified_secs = ?1, file_hash = ?2, rarity = ?3,
              duration_secs = COALESCE(?4, duration_secs), cover_data = NULL, cover_mime = ?5,
@@ -1354,6 +1436,8 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             params![rel],
             |row| row.get(0),
         )?;
+        #[cfg(feature = "tracy")]
+        drop(sqlite_span);
         persist_track_cover(&conn, data_dir, track_id, cover_data, cover_mime)?;
         if let Some(file_hash) = file_hash.as_deref() {
             remove_stale_tracks_with_same_hash(conn, data_dir, &rel, file_hash)?;
@@ -1384,6 +1468,13 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
     let cover_data = meta.cover_data.take();
     let cover_mime = meta.cover_mime.take();
 
+    #[cfg(feature = "tracy")]
+    let sqlite_span = tracing::info_span!(
+        target: "player_lib::profile",
+        "library.sqlite.write_track",
+        operation = "upsert_file"
+    )
+    .entered();
     conn.execute(
         "INSERT INTO tracks
              (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, cover_source_path, cover_source_mtime, file_hash, rarity, year, genre, date_added, source_kind, source_path, cue_path, segment_start_secs, segment_end_secs)
@@ -1434,6 +1525,8 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
         params![rel],
         |row| row.get(0),
     )?;
+    #[cfg(feature = "tracy")]
+    drop(sqlite_span);
     persist_track_cover(&conn, data_dir, track_id, cover_data, cover_mime)?;
 
     if let Some(file_hash) = file_hash.as_deref() {
@@ -1510,10 +1603,14 @@ fn path_modified_secs(path: &Path) -> i64 {
 fn sidecar_cover_state_matches(
     cached_cover_source_path: Option<&str>,
     cached_cover_source_mtime: i64,
+    cached_cover_file_exists: bool,
     current_sidecar_cover: Option<&SidecarCoverCandidate>,
 ) -> bool {
     match (cached_cover_source_path, current_sidecar_cover) {
         (None, None) => true,
+        // Embedded artwork has priority over a sidecar. A persisted cover with
+        // no sidecar source therefore stays valid even when cover.jpg exists.
+        (None, Some(_)) if cached_cover_file_exists => true,
         (Some(cached_path), Some(current)) => {
             cached_path == current.rel_path && cached_cover_source_mtime == current.modified_secs
         }
@@ -1521,6 +1618,15 @@ fn sidecar_cover_state_matches(
     }
 }
 
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.cover.find_sidecar",
+        target = "player_lib::profile",
+        skip(data_dir),
+        fields(file = %audio_path.display())
+    )
+)]
 fn find_sidecar_cover_candidate(
     data_dir: &Path,
     audio_path: &Path,
@@ -1631,9 +1737,30 @@ fn sibling_audio_files(directory: &Path) -> Vec<PathBuf> {
 // ── Hashing & Gacha rarity ────────────────────────────────────────────────────
 
 /// BLAKE3 hash of the full file contents, returned as a hex string.
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.file.hash",
+        target = "player_lib::profile",
+        fields(file = %path.display())
+    )
+)]
 fn hash_file(path: &Path) -> Option<String> {
-    let data = std::fs::read(path).ok()?;
-    Some(blake3::hash(&data).to_hex().to_string())
+    const HASH_BUFFER_SIZE: usize = 256 * 1024;
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; HASH_BUFFER_SIZE];
+
+    loop {
+        let bytes_read = file.read(&mut buffer).ok()?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Some(hasher.finalize().to_hex().to_string())
 }
 
 /// Deterministic rarity grade derived from the first byte of the hash.
@@ -1674,6 +1801,15 @@ fn hash_virtual_track(parts: &[&str]) -> String {
 // ── Metadata extraction ───────────────────────────────────────────────────────
 
 /// Tries to read embedded tags + duration. Falls back to adjacent cover files when present.
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.file.read_metadata",
+        target = "player_lib::profile",
+        skip(sidecar_cover),
+        fields(file = %path.display())
+    )
+)]
 fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -> Meta {
     let tagged = match Probe::open(path).ok().and_then(|p| p.read().ok()) {
         Some(t) => t,
@@ -1890,6 +2026,15 @@ fn resolve_cue_audio_path(cue_abs: &Path, filename: &str) -> PathBuf {
         .join(normalized)
 }
 
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.index.cue",
+        target = "player_lib::profile",
+        skip(conn, data_dir),
+        fields(file = %cue_abs.display())
+    )
+)]
 fn index_cue_file(
     conn: &Connection,
     data_dir: &Path,
@@ -1974,6 +2119,14 @@ fn index_cue_file(
                 hash_virtual_track(&[&cue_rel, &audio_rel, &number_key, &start_key, &end_key]);
             let rarity = rarity_from_hash(&file_hash);
 
+            #[cfg(feature = "tracy")]
+            let sqlite_span = tracing::info_span!(
+                target: "player_lib::profile",
+                "library.sqlite.write_track",
+                operation = "upsert_cue",
+                track_number = cue_track.number
+            )
+            .entered();
             conn.execute(
                 "INSERT INTO tracks
                      (path, title, artist, album, track_number, duration_secs, modified_secs,
@@ -2030,6 +2183,8 @@ fn index_cue_file(
                 params![virtual_path],
                 |row| row.get(0),
             )?;
+            #[cfg(feature = "tracy")]
+            drop(sqlite_span);
             persist_track_cover(
                 conn,
                 data_dir,
@@ -2150,31 +2305,42 @@ fn start_watcher(
     )?;
     watcher.watch(&data_dir, RecursiveMode::Recursive)?;
 
-    thread::spawn(move || {
-        let _watcher = watcher;
-        // Collect events and debounce: wait 300ms of silence before processing batch.
-        loop {
-            // Block until first event.
-            let first = match rx.recv() {
-                Ok(r) => r,
-                Err(_) => break,
-            };
-            let mut events = vec![first];
-            // Drain any further events within the debounce window.
+    thread::Builder::new()
+        .name("library-watcher".to_owned())
+        .spawn(move || {
+            let _watcher = watcher;
+            // Collect events and debounce: wait 300ms of silence before processing batch.
             loop {
-                match rx.recv_timeout(Duration::from_millis(300)) {
-                    Ok(e) => events.push(e),
-                    Err(mpsc::RecvTimeoutError::Timeout) => break,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                // Block until first event.
+                let first = match rx.recv() {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+                let mut events = vec![first];
+                // Drain any further events within the debounce window.
+                loop {
+                    match rx.recv_timeout(Duration::from_millis(300)) {
+                        Ok(e) => events.push(e),
+                        Err(mpsc::RecvTimeoutError::Timeout) => break,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
                 }
+                handle_fs_events_batch(events, &conn, &data_dir, &app_handle);
             }
-            handle_fs_events_batch(events, &conn, &data_dir, &app_handle);
-        }
-    });
+        })?;
 
     Ok(())
 }
 
+#[cfg_attr(
+    feature = "tracy",
+    tracing::instrument(
+        name = "library.watcher.batch",
+        target = "player_lib::profile",
+        skip(events, conn, data_dir, app_handle),
+        fields(events = events.len())
+    )
+)]
 fn handle_fs_events_batch(
     events: Vec<notify::Result<Event>>,
     conn: &Arc<Mutex<Connection>>,
@@ -2250,7 +2416,16 @@ fn handle_fs_events_batch(
     for path in &to_index {
         let rel = rel_path(data_dir, path);
         current += 1;
-        let c = conn.lock().unwrap();
+        let c = {
+            #[cfg(feature = "tracy")]
+            let _span = tracing::info_span!(
+                target: "player_lib::profile",
+                "library.sqlite.wait_for_lock",
+                operation = "watcher_index"
+            )
+            .entered();
+            conn.lock().unwrap()
+        };
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -2289,7 +2464,16 @@ fn handle_fs_events_batch(
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let c = conn.lock().unwrap();
+        let c = {
+            #[cfg(feature = "tracy")]
+            let _span = tracing::info_span!(
+                target: "player_lib::profile",
+                "library.sqlite.wait_for_lock",
+                operation = "watcher_remove"
+            )
+            .entered();
+            conn.lock().unwrap()
+        };
         let removed = if is_cue_extension(&ext) {
             match delete_tracks_by_cue_path(&c, data_dir, &rel) {
                 Ok(removed) => removed,
@@ -3553,6 +3737,48 @@ pub fn unmark_duplicates(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn embedded_cover_ignores_sidecar_when_cached_file_exists() {
+        let sidecar = SidecarCoverCandidate {
+            abs_path: PathBuf::from("/music/cover.jpg"),
+            rel_path: "music/cover.jpg".to_owned(),
+            modified_secs: 42,
+            mime: "image/jpeg".to_owned(),
+        };
+
+        assert!(sidecar_cover_state_matches(None, 0, true, Some(&sidecar)));
+        assert!(!sidecar_cover_state_matches(None, 0, false, Some(&sidecar)));
+        assert!(sidecar_cover_state_matches(
+            Some("music/cover.jpg"),
+            42,
+            true,
+            Some(&sidecar)
+        ));
+        assert!(!sidecar_cover_state_matches(
+            Some("music/cover.jpg"),
+            41,
+            true,
+            Some(&sidecar)
+        ));
+    }
+
+    #[test]
+    fn streaming_hash_matches_blake3_hash() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("player-hash-{suffix}.bin"));
+        let data: Vec<u8> = (0..(700 * 1024)).map(|index| (index % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+
+        let expected = blake3::hash(&data).to_hex().to_string();
+        let actual = hash_file(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(actual.as_deref(), Some(expected.as_str()));
+    }
 
     #[test]
     fn parse_cue_sheet_decodes_windows_1251() {

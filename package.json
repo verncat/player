@@ -10,6 +10,7 @@
     "version": "pnpm version:sync",
     "version:sync": "node ./scripts/sync-version.mjs",
     "tauri": "pnpm version:sync && tauri",
+    "tauri:tracy": "pnpm version:sync && tauri dev --release --features tracy",
     "android:build": "pnpm tauri android build",
     "android:sign": "source ~/keys/player-keystore.env && BT=$ANDROID_HOME/build-tools/35.0.0 && $BT/zipalign -f -p 4 src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk /tmp/app-aligned.apk && $BT/apksigner sign --ks $KEYSTORE_PATH --ks-key-alias $KEYSTORE_ALIAS --ks-pass pass:$KEYSTORE_PASS --key-pass pass:$KEYSTORE_PASS --out src-tauri/gen/android/app/build/outputs/apk/universal/release/app-signed.apk /tmp/app-aligned.apk && echo 'Signed: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-signed.apk'",
     "android:deploy": "ADB_SERIAL=${ANDROID_SERIAL:-$(sh ./scripts/resolve-adb-serial.sh)} && pnpm android:sign && { adb -s \"$ADB_SERIAL\" uninstall dev.verncat.player || true; adb -s \"$ADB_SERIAL\" install src-tauri/gen/android/app/build/outputs/apk/universal/release/app-signed.apk; }",

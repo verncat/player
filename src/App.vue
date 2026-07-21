@@ -32,6 +32,9 @@ import {
   trackTagsText,
 } from "./utils/tracks";
 import { hashToColors, rarityClass, rarityVars } from "./utils/rarity";
+import AppSidebar from "./components/AppSidebar.vue";
+import AppTopbar from "./components/AppTopbar.vue";
+import PlayerBar from "./components/PlayerBar.vue";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 import ResponsivePopup from "./components/ResponsivePopup.vue";
 
@@ -4566,130 +4569,36 @@ onUnmounted(() => {
     <Transition name="nav-overlay">
       <div v-if="showMobileNav" class="mobile-nav-overlay" @click="showMobileNav = false" />
     </Transition>
-    <!-- Sidebar -->
-    <aside class="sidebar" :class="{ 'sidebar-open': showMobileNav }">
-      <div class="sidebar-mobile-header">
-        <button class="icon-btn sidebar-close-btn" @click="showMobileNav = false" aria-label="Close menu">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
-      </div>
-      <!-- <div class="brand">
-        <svg viewBox="0 0 24 24" fill="#1db954" width="32" height="32">
-          <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.622.622 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.622.622 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.622.622 0 0 1 .207.857zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.453-1.492c3.632-1.102 8.147-.568 11.233 1.329a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 1 1-.543-1.793c3.541-1.073 9.43-.865 13.152 1.337a.937.937 0 0 1-.992 1.613z"/>
-        </svg>
-        <span class="brand-name">Player</span>
-      </div> -->
-
-      <nav>
-        <a class="nav-item" :class="{ active: activeNav === 'home' }" @click.prevent="activeNav = 'home'; showMobileNav = false" href="#">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
-          Home
-        </a>
-        <a class="nav-item" :class="{ active: activeNav === 'search' }" @click.prevent="activeNav = 'search'; showMobileNav = false" href="#">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-          Search
-        </a>
-        <a class="nav-item" :class="{ active: activeNav === 'library' }" @click.prevent="activeNav = 'library'; showMobileNav = false" href="#">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
-          Your Library
-        </a>
-        <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="activeNav = 'playlists'; playlistView = null; playlistTab = 'regular'; showMobileNav = false" href="#">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
-          Playlists
-        </a>
-        <a class="nav-item" :class="{ active: activeNav === 'playlists' && playlistTab === 'smart' }" @click.prevent="activeNav = 'playlists'; playlistTab = 'smart'; playlistView = null; editingSP = null; smartView = null; showMobileNav = false" href="#">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
-          Flexible Playlists
-        </a>
-      </nav>
-
-      <div class="sidebar-divider" />
-
-      <nav>
-        <!-- <a class="nav-item" href="#">
-          <span class="icon-box create">+</span>
-          Create Playlist
-        </a>
-        <a class="nav-item" href="#">
-          <span class="icon-box liked">
-            <svg viewBox="0 0 24 24" fill="white" width="14" height="14"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-          </span>
-          Liked Songs
-        </a> -->
-        <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="activeNav = 'discovery'; showMobileNav = false" href="#">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
-          Devices
-          <span v-if="syncActive" class="nav-sync-spinner" aria-label="Sync in progress" />
-          <span v-else-if="peers.length" class="peer-badge">{{ peers.length }}</span>
-        </a>
-        <a class="nav-item" href="#" @click.prevent="openDataDir(); showMobileNav = false">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-          Open Data Folder
-        </a>
-        <a class="nav-item" href="#" @click.prevent="doReindex(); showMobileNav = false">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-          Reindex
-        </a>
-        <a class="nav-item" href="#" @click.prevent="startIdentify(); showMobileNav = false">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
-          Identify
-        </a>
-        <a class="nav-item" :class="{ active: activeNav === 'dedup' }" href="#" @click.prevent="activeNav = 'dedup'; showMobileNav = false; openDedup()">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 4H5v16h14V8zm-1 13H7v-2h7zm0-4H7v-2h7zm-3-4H7V7h4zM3 2v18H1V2zm18 0h2v18h-2z"/></svg>
-          Duplicates
-        </a>
-        <a class="nav-item" :class="{ active: activeNav === 'about' }" href="#" @click.prevent="activeNav = 'about'; showMobileNav = false">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M11 7h2V5h-2v2zm0 12h2v-8h-2v8zm1-17C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
-          About
-        </a>
-      </nav>
-    </aside>
+    <AppSidebar
+      :active-nav="activeNav"
+      :playlist-tab="playlistTab"
+      :open="showMobileNav"
+      :sync-active="syncActive"
+      :peers-count="peers.length"
+      @close="showMobileNav = false"
+      @navigate-home="activeNav = 'home'; showMobileNav = false"
+      @navigate-search="activeNav = 'search'; showMobileNav = false"
+      @navigate-library="activeNav = 'library'; showMobileNav = false"
+      @navigate-playlists="activeNav = 'playlists'; playlistView = null; playlistTab = 'regular'; showMobileNav = false"
+      @navigate-smart-playlists="activeNav = 'playlists'; playlistTab = 'smart'; playlistView = null; editingSP = null; smartView = null; showMobileNav = false"
+      @navigate-discovery="activeNav = 'discovery'; showMobileNav = false"
+      @open-data-dir="openDataDir(); showMobileNav = false"
+      @reindex="doReindex(); showMobileNav = false"
+      @identify="startIdentify(); showMobileNav = false"
+      @open-dedup="activeNav = 'dedup'; showMobileNav = false; openDedup()"
+      @navigate-about="activeNav = 'about'; showMobileNav = false"
+    />
 
     <!-- Main -->
     <main class="main">
-      <header class="topbar">
-        <button class="burger-btn" @click="showMobileNav = true" aria-label="Menu">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
-        </button>
-        <div class="nav-arrows">
-          <button class="arrow-btn" :disabled="!canNavBack" @click="navBack">&lsaquo;</button>
-          <button class="arrow-btn" :disabled="!canNavForward" @click="navForward">&rsaquo;</button>
-        </div>
-        <button
-          class="duplicates-toggle"
-          :class="{ active: showDuplicateTracks }"
-          @click="showDuplicateTracks = !showDuplicateTracks"
-        >
-          {{ showDuplicateTracks ? 'Hide duplicates' : 'Show duplicates' }}
-        </button>
-        <!-- <div class="user-menu-wrapper">
-          <button class="user-btn" @click.stop="showUserMenu = !showUserMenu">
-            <span class="avatar">e</span>
-            <span>user</span>
-            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"
-              :style="{ transform: showUserMenu ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }">
-              <path d="M7 10l5 5 5-5z"/>
-            </svg>
-          </button>
-          <Transition name="dropdown">
-            <div v-if="showUserMenu" class="dropdown">
-              <a href="#">Account
-                <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-              </a>
-              <a href="#">Profile</a>
-              <a href="#">Support
-                <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-              </a>
-              <a href="#">Download
-                <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-              </a>
-              <a href="#">Settings</a>
-              <div class="dropdown-sep" />
-              <a href="#">Log out</a>
-            </div>
-          </Transition>
-        </div> -->
-      </header>
+      <AppTopbar
+        v-model:show-duplicate-tracks="showDuplicateTracks"
+        :can-nav-back="canNavBack"
+        :can-nav-forward="canNavForward"
+        @open-menu="showMobileNav = true"
+        @nav-back="navBack"
+        @nav-forward="navForward"
+      />
 
       <div ref="contentRef" class="content" @scroll.passive="maybeLoadMoreSoulseekResults">
         <!-- Home view -->
@@ -6328,175 +6237,47 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
-    <footer class="player">
-      <!-- Left: track info -->
-      <div class="player-left" @click="nowPlaying && (showDetail = true)" style="cursor: pointer;">
-        <div class="thumb" :style="{
-          ...(nowPlaying && covers[nowPlaying.id]
-            ? { backgroundImage: `url(${covers[nowPlaying.id]})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-            : { background: `linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})` }),
-          transform: `scale(${beatScale})`,
-          transformOrigin: 'center center',
-          willChange: 'transform',
-        }" />
-        <div class="track-meta">
-          <div class="track-name"><span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span></div>
-          <div class="track-artist">{{ currentTrack.artist }}</div>
-        </div>
-        <button class="icon-btn" :class="{ green: isLiked }" @click="isLiked = !isLiked">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-        </button>
-      </div>
-
-      <!-- Center: controls -->
-      <div class="player-center">
-        <div class="ctrl-row" :style="{ transform: `scale(${beatScale})`, transformOrigin: 'center', willChange: 'transform' }">
-          <button class="icon-btn" :class="{ green: isShuffled, dot: isShuffled }" @click="isShuffled = !isShuffled" title="Shuffle">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
-          </button>
-          <button class="icon-btn" title="Previous" @click="playPrev">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
-          </button>
-          <button class="play-btn" @click="togglePlay">
-            <svg v-if="!isPlaying" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
-            <svg v-else viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-          </button>
-          <button class="icon-btn" title="Next" @click="playNext">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-          </button>
-          <button class="icon-btn" :class="{ green: repeatMode > 0, dot: repeatMode > 0 }" @click="repeatMode = (repeatMode + 1) % 3" title="Repeat">
-            <svg v-if="repeatMode < 2" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-            <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2v-5h-1l-2 1v1h1.5v3H13z"/></svg>
-          </button>
-        </div>
-        <div class="progress-row">
-          <span class="time">{{ formatTime(currentTime) }}</span>
-          <div class="bar" @click="seek">
-            <div
-              v-if="showSoulseekPreviewBuffer"
-              class="bar-buffer"
-              :style="`width:${soulseekPreviewBufferPercent}%`"
-            />
-            <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
-              <div class="bar-thumb" />
-            </div>
-          </div>
-          <span class="time">{{ formatTime(duration) }}</span>
-        </div>
-      </div>
-
-      <!-- Right: extras -->
-      <div class="player-right">
-        <ResponsivePopup
-          :open="showQueueMenu"
-          wrapper-class="queue-menu-wrapper"
-          panel-class="queue-dropdown"
-          @close="showQueueMenu = false"
-        >
-          <template #trigger>
-            <button class="icon-btn" title="Queue" @click.stop="toggleQueueMenu">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
-            </button>
-          </template>
-              <div class="dropdown-header">Queue · {{ queueSource === 'recent' ? 'Recently played' : 'Library' }}</div>
-              <div class="queue-now" v-if="nowPlaying">
-                <span class="queue-now-label">Now playing</span>
-                <div class="queue-item active">
-                  <div class="queue-item-cover" :style="covers[nowPlaying.id]
-                    ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
-                    : `background: linear-gradient(135deg, ${hashToColors(nowPlaying.file_hash)[0]}, ${hashToColors(nowPlaying.file_hash)[1]})`" />
-                  <div class="queue-item-info">
-                    <span class="queue-item-title">{{ nowPlaying.title || nowPlaying.path }}</span>
-                    <span class="queue-item-artist">{{ nowPlaying.artist || 'Unknown' }}</span>
-                  </div>
-                  <span class="queue-item-dur">{{ formatDuration(nowPlaying.duration_secs) }}</span>
-                </div>
-              </div>
-              <div class="queue-list" v-if="queue.length">
-                <span class="queue-next-label">Next up</span>
-                <div
-                  v-for="(track, i) in queue"
-                  :key="i"
-                  class="queue-item"
-                  @click="jumpToQueueItem(i)"
-                >
-                  <div class="queue-item-cover" :style="covers[track.id]
-                    ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                    : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`" />
-                  <div class="queue-item-info">
-                    <span class="queue-item-title">{{ track.title || track.path }}</span>
-                    <span class="queue-item-artist">{{ track.artist || 'Unknown' }}</span>
-                  </div>
-                  <span class="queue-item-dur">{{ formatDuration(track.duration_secs) }}</span>
-                </div>
-              </div>
-              <div v-else class="queue-empty">Queue is empty</div>
-        </ResponsivePopup>
-        <ResponsivePopup
-          :open="showDeviceMenu"
-          wrapper-class="device-menu-wrapper"
-          panel-class="device-dropdown"
-          @close="showDeviceMenu = false"
-        >
-          <template #trigger>
-            <button class="icon-btn" title="Output device" @click.stop="toggleDeviceMenu">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM12 20c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm5-12H7V5h10v3z"/></svg>
-            </button>
-          </template>
-              <div class="dropdown-header">Output device</div>
-              <div class="device-list">
-                <div
-                  v-for="dev in outputDevices"
-                  :key="dev.name"
-                  class="device-item device-item-local"
-                  @click="pickLocalDevice(dev.name, undefined, true)"
-                >
-                  <div class="device-item-main">
-                    <span class="device-check">{{ !remoteOutputPeer && dev.name === currentDevice ? '✓' : '' }}</span>
-                    <span class="device-name">{{ dev.name }}</span>
-                    <select
-                      v-if="!remoteOutputPeer && dev.name === currentDevice && dev.sample_rates.length"
-                      class="device-sample-rate"
-                      :value="currentSampleRate ?? ''"
-                      @click.stop
-                      @change="pickLocalSampleRate(dev, $event)"
-                    >
-                      <option value="">{{ nativeSampleRateLabel() }}</option>
-                      <option v-for="rate in dev.sample_rates" :key="rate" :value="rate">
-                        {{ formatSampleRate(rate) }}
-                      </option>
-                    </select>
-                  </div>
-                </div>
-                <div v-if="remoteOutputDevices.length" class="device-section-label">Player devices</div>
-                <a
-                  v-for="peer in remoteOutputDevices"
-                  :key="`${peer.host}:${peer.port}`"
-                  href="#"
-                  class="device-item"
-                  @click.prevent="pickRemoteDevice(peer)"
-                >
-                  <span class="device-check">{{ isRemoteOutputPeer(peer) ? '✓' : '' }}</span>
-                  <span class="device-name">{{ peerLabel(peer) }}</span>
-                </a>
-              </div>
-              <div v-if="deviceMenuError" class="device-error">{{ deviceMenuError }}</div>
-        </ResponsivePopup>
-        <div class="vol-wrap">
-          <button class="icon-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-              <path v-if="volume > 0" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-              <path v-else d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-            </svg>
-          </button>
-          <div class="bar vol" @click="setVolume">
-            <div class="bar-fill" :style="`width:${volume}%`">
-              <div class="bar-thumb" />
-            </div>
-          </div>
-        </div>
-      </div>
-    </footer>
+    <PlayerBar
+      v-model:is-liked="isLiked"
+      v-model:is-shuffled="isShuffled"
+      v-model:repeat-mode="repeatMode"
+      v-model:show-queue-menu="showQueueMenu"
+      v-model:show-device-menu="showDeviceMenu"
+      :now-playing="nowPlaying"
+      :current-track="currentTrack"
+      :covers="covers"
+      :beat-scale="beatScale"
+      :is-playing="isPlaying"
+      :current-time="currentTime"
+      :duration="duration"
+      :show-soulseek-preview-buffer="showSoulseekPreviewBuffer"
+      :soulseek-preview-buffer-percent="soulseekPreviewBufferPercent"
+      :display-progress-percent="displayProgressPercent"
+      :queue-source="queueSource"
+      :queue="queue"
+      :output-devices="outputDevices"
+      :remote-output-peer="remoteOutputPeer"
+      :current-device="currentDevice"
+      :current-sample-rate="currentSampleRate"
+      :remote-output-devices="remoteOutputDevices"
+      :device-menu-error="deviceMenuError"
+      :volume="volume"
+      :native-sample-rate-label="nativeSampleRateLabel()"
+      :peer-label="peerLabel"
+      :is-remote-output-peer="isRemoteOutputPeer"
+      @open-detail="showDetail = true"
+      @play-prev="playPrev"
+      @play-next="playNext"
+      @toggle-play="togglePlay"
+      @seek="seek"
+      @toggle-queue-menu="toggleQueueMenu"
+      @toggle-device-menu="toggleDeviceMenu"
+      @jump-to-queue-item="jumpToQueueItem"
+      @pick-local-device="pickLocalDevice"
+      @pick-local-sample-rate="pickLocalSampleRate"
+      @pick-remote-device="pickRemoteDevice"
+      @set-volume="setVolume"
+    />
   </div>
 
   <!-- Player detail overlay — teleported to body to escape footer stacking context -->
@@ -6620,6 +6401,7 @@ onUnmounted(() => {
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; overflow: hidden; }
 body { background: #000; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+button, input, select, textarea { font: inherit; }
 a, button, [role="button"] {
   -webkit-tap-highlight-color: transparent;
   outline: none;
@@ -6671,18 +6453,6 @@ a, button, [role="button"] {
   --fs-detail-time: 12px;
 }
 
-/* ── Sidebar ── */
-.sidebar {
-  grid-row: 1 / 2;
-  background: #000;
-  padding: 20px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow-y: auto;
-}
-.sidebar::-webkit-scrollbar { display: none; }
-
 .brand {
   display: flex;
   align-items: center;
@@ -6692,46 +6462,6 @@ a, button, [role="button"] {
   cursor: pointer;
 }
 .brand-name { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 9px 12px;
-  border-radius: 6px;
-  color: #b3b3b3;
-  text-decoration: none;
-  font-size: var(--fs-nav);
-  font-weight: 600;
-  cursor: pointer;
-  transition: color .12s;
-  user-select: none;
-  position: relative;
-}
-.nav-item:hover { color: #fff; }
-.nav-item.active { color: #fff; }
-
-.peer-badge {
-  margin-left: auto;
-  background: #1db954;
-  color: #000;
-  font-size: var(--fs-eyebrow); font-weight: 700;
-  width: 18px; height: 18px;
-  border-radius: 9px;
-  display: flex; align-items: center; justify-content: center;
-  padding: 0;
-}
-.nav-sync-spinner {
-  box-sizing: border-box;
-  margin-left: auto;
-  width: 18px;
-  height: 18px;
-  border: 2px solid #555;
-  border-top-color: #1db954;
-  border-radius: 50%;
-  animation: spin 0.75s linear infinite;
-  flex-shrink: 0;
-}
 
 .discovery-header {
   align-items: flex-end;
@@ -7040,18 +6770,6 @@ a, button, [role="button"] {
 .sync-done { color: #1db954; }
 .sync-error { color: #e9283e; }
 
-.icon-box {
-  width: 26px; height: 26px;
-  border-radius: 3px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px; font-weight: 800;
-  flex-shrink: 0;
-}
-.icon-box.create { background: #b3b3b3; color: #000; }
-.icon-box.liked  { background: linear-gradient(135deg, #450af5, #c4efd9); }
-
-.sidebar-divider { height: 1px; background: #282828; margin: 8px 12px; }
-
 /* ── Main area ── */
 .main {
   grid-row: 1 / 2;
@@ -7059,50 +6777,6 @@ a, button, [role="button"] {
   flex-direction: column;
   overflow: hidden;
   background: linear-gradient(180deg, #4a2d8a 0%, #1f1b3a 30%, #121212 58%);
-}
-
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
-  padding-top: calc(16px + env(safe-area-inset-top));
-  flex-shrink: 0;
-}
-
-.nav-arrows { display: flex; gap: 8px; }
-.arrow-btn {
-  width: 32px; height: 32px;
-  border-radius: 50%;
-  background: rgba(0,0,0,.45);
-  border: none; color: #fff;
-  font-size: 22px; line-height: 1;
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-}
-.arrow-btn:hover { background: rgba(0,0,0,.7); }
-
-.duplicates-toggle {
-  border: 1px solid #4a4a4a;
-  background: rgba(20, 20, 20, 0.75);
-  color: #d9dee8;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  padding: 7px 12px;
-  border-radius: 999px;
-  cursor: pointer;
-  transition: background .15s, border-color .15s, color .15s;
-}
-
-.duplicates-toggle:hover {
-  background: rgba(36, 36, 36, 0.92);
-}
-
-.duplicates-toggle.active {
-  background: rgba(29, 185, 84, 0.16);
-  border-color: rgba(29, 185, 84, 0.7);
-  color: #8cf7b0;
 }
 
 .user-menu-wrapper { position: relative; }
@@ -7221,37 +6895,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ── Player bar ── */
-.player {
-  grid-column: 1 / 3; grid-row: 2 / 3;
-  background: #181818;
-  border-top: 1px solid #282828;
-  display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
-  align-items: center;
-  padding: 0 16px;
-  overflow: visible;
-  position: relative;
-  z-index: 100;
-}
-
-.player-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.thumb { width: 56px; height: 56px; border-radius: 4px; flex-shrink: 0; }
-.track-meta { min-width: 0; }
-.track-name {
-  font-size: var(--fs-player-title); font-weight: 600;
-  overflow: hidden;
-  mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 5%, black 85%, transparent 100%);
-}
-.track-artist { font-size: var(--fs-player-meta); color: #a7a7a7; margin-top: 3px; }
-
-.player-center {
-  display: flex; flex-direction: column; align-items: center;
-  gap: 6px; padding: 14px 0;
-}
-.ctrl-row { display: flex; align-items: center; gap: 16px; }
-
 .icon-btn {
   background: none; border: none;
   color: #b3b3b3; cursor: pointer; padding: 4px;
@@ -7269,55 +6912,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   width: 4px; height: 4px; border-radius: 50%;
   background: #1db954;
 }
-
-.play-btn {
-  width: 36px; height: 36px; border-radius: 50%;
-  background: #fff; border: none; color: #000;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer;
-  transition: transform .1s, background .1s;
-}
-.play-btn:hover { transform: scale(1.06); background: #f0f0f0; }
-
-.progress-row { display: flex; align-items: center; gap: 8px; width: 100%; }
-.time { font-size: var(--fs-body-sm); color: #a7a7a7; min-width: 34px; text-align: center; }
-
-.bar {
-  flex: 1; height: 4px;
-  background: #535353; border-radius: 2px;
-  cursor: pointer; position: relative;
-}
-.bar:hover .bar-fill { background: #1db954; }
-.bar:hover .bar-thumb { opacity: 1; }
-
-.bar-fill {
-  height: 100%; background: #fff;
-  border-radius: 2px; position: relative;
-  transition: background .1s;
-}
-.bar-buffer {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  height: 2px;
-  transform: translateY(-50%);
-  background: rgba(255, 255, 255, 0.22);
-  border-radius: 999px;
-  pointer-events: none;
-}
-.bar-thumb {
-  position: absolute; right: -6px; top: 50%;
-  transform: translateY(-50%);
-  width: 12px; height: 12px; border-radius: 50%;
-  background: #fff; opacity: 0; transition: opacity .1s;
-}
-
-.player-right {
-  display: flex; align-items: center;
-  justify-content: flex-end; gap: 6px;
-}
-.vol-wrap { display: flex; align-items: center; gap: 6px; width: 130px; }
-.bar.vol { flex: 1; }
 
 /* ── Library view ── */
 .library-header {
@@ -7978,15 +7572,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .nav-overlay-enter-active, .nav-overlay-leave-active { transition: opacity .25s; }
 .nav-overlay-enter-from, .nav-overlay-leave-to { opacity: 0; }
 
-/* ── Device popup ── */
-.device-menu-wrapper { position: relative; }
-.device-dropdown {
-  position: absolute;
-  top: auto;
-  bottom: calc(100% + 12px);
-  right: 0;
-  min-width: 220px;
-}
 .dropdown-header {
   padding: 10px 16px 6px;
   font-size: var(--fs-dropdown-label);
@@ -7995,157 +7580,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   text-transform: uppercase;
   letter-spacing: .04em;
 }
-.device-list {
-  max-height: 240px;
-  overflow-y: auto;
-}
-.device-section-label {
-  padding: 10px 16px 6px;
-  color: #8b8b8b;
-  font-size: var(--fs-eyebrow);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-}
-.device-list::-webkit-scrollbar { width: 6px; }
-.device-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
-.device-list::-webkit-scrollbar-track { background: transparent; }
-.device-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  color: #fff;
-  text-decoration: none;
-  font-size: var(--fs-dropdown-item);
-  cursor: pointer;
-}
-.device-item:hover { background: #3e3e3e; }
-.device-item-local {
-  gap: 10px;
-}
-.device-item-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-}
-.device-check {
-  width: 18px;
-  text-align: center;
-  color: #1db954;
-  font-size: var(--fs-dropdown-item);
-  flex-shrink: 0;
-}
-.device-name {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-.device-sample-rate {
-  width: 178px;
-  flex: 0 0 178px;
-  min-height: 30px;
-  padding: 5px 32px 5px 12px;
-  border: 1px solid #535353;
-  border-radius: 20px;
-  background-color: transparent;
-  color: #a7a7a7;
-  font-size: var(--fs-control);
-  font-weight: 600;
-  line-height: 1.2;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  background-size: 12px 12px;
-  outline: none;
-  transition: border-color .15s, color .15s, background-color .15s;
-}
-.device-sample-rate:hover,
-.device-sample-rate:focus {
-  border-color: #fff;
-  color: #fff;
-}
-.device-sample-rate option {
-  background: #282828;
-  color: #fff;
-}
-.device-error {
-  padding: 0 16px 12px;
-  color: #e9283e;
-  font-size: var(--fs-body-sm);
-}
-
-/* ── Queue popup ── */
-.queue-menu-wrapper { position: relative; }
-.queue-dropdown {
-  position: absolute;
-  top: auto;
-  bottom: calc(100% + 12px);
-  right: 0;
-  min-width: 300px;
-  max-width: 360px;
-}
-.queue-now-label, .queue-next-label {
-  display: block;
-  padding: 8px 16px 4px;
-  font-size: var(--fs-eyebrow);
-  font-weight: 700;
-  color: #a7a7a7;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-}
-.queue-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 16px;
-  cursor: pointer;
-  transition: background .1s;
-}
-.queue-item:hover { background: #3e3e3e; }
-.queue-item.active { background: #333; cursor: default; }
-.queue-item-cover {
-  width: 36px; height: 36px;
-  border-radius: 3px;
-  flex-shrink: 0;
-}
-.queue-item-info {
-  flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 2px;
-}
-.queue-item-title {
-  font-size: var(--fs-queue-title); font-weight: 600; color: #fff;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.queue-item.active .queue-item-title { color: #1db954; }
-.queue-item-artist {
-  font-size: var(--fs-queue-meta); color: #a7a7a7;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.queue-item-dur {
-  font-size: var(--fs-queue-dur); color: #a7a7a7; flex-shrink: 0;
-}
-.queue-list {
-  max-height: 260px;
-  overflow-y: auto;
-}
-.queue-list::-webkit-scrollbar { width: 6px; }
-.queue-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
-.queue-list::-webkit-scrollbar-track { background: transparent; }
-.queue-empty {
-  padding: 16px;
-  color: #a7a7a7;
-  font-size: var(--fs-body-md);
-  text-align: center;
-}
-
 /* ── Rarity animations ── */
 .rarity-animated { position: relative; overflow: hidden; }
 .rarity-animated::before {
@@ -8464,11 +7898,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
 /* Hidden on desktop; appears above footer on mobile/tablet */
 .mobile-seek-wrap { display: none; }
-
-/* ── Burger & mobile nav overlay (hidden on desktop) ── */
-.burger-btn { display: none; }
 .mobile-nav-overlay { display: none; }
-.sidebar-mobile-header { display: none; }
 
 /* ── Responsive: tablets and small screens ── */
 @media (max-width: 768px) {
@@ -8511,20 +7941,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     --fs-detail-time: 11px;
   }
 
-  /* Burger button */
-  .burger-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: none;
-    border: none;
-    color: #fff;
-    cursor: pointer;
-    padding: 6px;
-    margin-right: 8px;
-    flex-shrink: 0;
-  }
-
   /* Dark overlay */
   .mobile-nav-overlay {
     display: block;
@@ -8534,78 +7950,10 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     z-index: 399;
   }
 
-  /* Sidebar becomes a slide-in drawer */
-  .sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    width: 260px;
-    z-index: 400;
-    flex-direction: column;
-    padding: 0 0 24px;
-    padding-top: env(safe-area-inset-top);
-    gap: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    border-bottom: none;
-    border-right: 1px solid #282828;
-    background: #121212;
-    transform: translateX(-100%);
-    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .sidebar.sidebar-open {
-    transform: translateX(0);
-  }
-
-  /* Close button row at top of drawer */
-  .sidebar-mobile-header {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    padding: 12px 12px 4px;
-    flex-shrink: 0;
-  }
-  .sidebar-close-btn {
-    color: #b3b3b3;
-    padding: 8px;
-  }
-
-  .sidebar nav {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px 8px;
-    width: 100%;
-  }
-  .sidebar .sidebar-divider { display: block; }
-  .nav-item {
-    gap: 12px;
-    padding: 12px 14px;
-    font-size: var(--fs-nav);
-    white-space: nowrap;
-    flex-shrink: 0;
-    border-radius: 6px;
-  }
-  .nav-item svg { width: 20px; height: 20px; }
-
   /* Main spans the full grid now that sidebar is out of flow */
   .main { grid-row: 1 / 2; grid-column: 1; }
 
   .content { padding: 0 14px 24px; }
-
-  .topbar {
-    padding: 10px 14px;
-    padding-top: calc(10px + env(safe-area-inset-top));
-    gap: 8px;
-  }
-
-  .duplicates-toggle {
-    margin-left: auto;
-    font-size: 11px;
-    padding: 6px 10px;
-    white-space: nowrap;
-  }
 
   .card-list {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
@@ -8631,48 +7979,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .edit-btn { opacity: 1; }
   .track-inline-action { display: none !important; }
 
-  .player {
-    grid-column: 1;
-    grid-row: 2 / 3;
-    display: flex;
-    flex-direction: column;
-    padding: 0 10px env(safe-area-inset-bottom);
-    justify-content: center;
-    gap: 8px;
-    overflow: hidden;
-    min-width: 0;
-  }
-  .player-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    justify-content: flex-start;
-    order: -1;
-    min-width: 0;
-    margin-top: 10px;
-    padding: 0 15px;
-    width: calc(100%);
-  }
-  .player-right { display: none; }
-  .player-left .thumb { width: 40px; height: 40px; }
-  .player-left .track-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
-  .track-name { font-size: var(--fs-player-title); font-weight: 600; color: #fff; }
-  .track-artist { font-size: var(--fs-player-meta); color: #a7a7a7; }
-  .player-center {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 0;
-    align-items: stretch;
-    order: 0;
-  }
-  .ctrl-row { gap: 8px; justify-content: center; }
   .icon-btn { padding: 6px; }
-  .play-btn { width: 40px; height: 40px; }
-  .progress-row .time { display: none; }
-  .player-right .vol-wrap { display: none; }
-  .progress-row { display: none; }
-  .bar { flex: 1; }
 
   .mobile-seek-wrap {
     display: block;
@@ -8735,8 +8042,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
   .modal { width: 95vw; }
   .identify-modal { width: 95vw; }
-  .queue-dropdown { min-width: 260px; max-width: 92vw; }
-  .device-dropdown { min-width: 200px; }
 }
 
 /* ── Responsive: phones ── */
@@ -8778,9 +8083,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     --fs-detail-time: 10px;
   }
 
-  .nav-item svg { width: 18px; height: 18px; }
-  .nav-item { padding: 10px 12px; font-size: var(--fs-nav); }
-
   .card-list { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
 
   .track-title { font-size: var(--fs-track-title); }
@@ -8797,19 +8099,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     white-space: normal;
   }
   .track-dur { display: none; }
-
-  .player {
-    grid-template-columns: 1fr auto 1fr;
-    padding: 0 8px;
-    padding-bottom: env(safe-area-inset-top);
-    /* height: 64px; */
-  }
-  .player-left { width: 100%; }
-  .player-left .thumb { width: 40px; height: 40px; }
-  /* .player-left .track-meta { flex-grow: unset; } */
-  .ctrl-row { gap: 8px; }
-
-  .player-right .device-menu-wrapper { display: none; }
 
   .mobile-seek-wrap {
     display: block;

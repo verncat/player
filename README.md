@@ -193,6 +193,20 @@ pnpm tauri dev
 pnpm tauri dev -- -- --demo
 ```
 
+### Profile library indexing with Tracy
+
+Run the optimized, instrumented desktop build, then connect the Tracy Profiler
+UI to `127.0.0.1`:
+
+```bash
+pnpm tauri:tracy
+```
+
+The `tracy` Cargo feature is disabled by default. Its client accepts local
+connections only and starts collecting on demand. Trigger **Reindex** in the app
+to capture directory walking, database lock waits, metadata and cover reads,
+file hashing, SQLite writes, CUE indexing, stale cleanup, and watcher batches.
+
 ### Build desktop app
 
 ```bash

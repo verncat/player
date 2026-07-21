@@ -14,6 +14,10 @@ edition = "2021"
 name = "player_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+tracy = ["dep:tracing-tracy"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -44,3 +48,4 @@ whoami = "1"
 soulseek_rs = { package = "soulseek-rs-lib", path = "vendor/soulseek-rs-lib", features = ["tracing"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-tracy = { version = "0.11.4", optional = true, default-features = false, features = ["enable", "ondemand", "only-localhost"] }
