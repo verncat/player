@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import ResponsivePopup from "./ResponsivePopup.vue";
 import type { AudioDevice, Track } from "../types";
 import { formatDuration, formatSampleRate, formatTime } from "../utils/format";
@@ -20,7 +21,7 @@ interface Peer {
   playback?: any;
 }
 
-defineProps<{
+const props = defineProps<{
   nowPlaying: Track | null;
   currentTrack: CurrentTrackSummary;
   covers: Record<number, string | null>;
@@ -69,10 +70,363 @@ const emit = defineEmits<{
   pickRemoteDevice: [peer: Peer];
   setVolume: [event: MouseEvent];
 }>();
+
+const ZIPPY_TOGGLE_COUNT = 5;
+const ZIPPY_TOGGLE_WINDOW_MS = 2_000;
+const ZIPPY_INTRO_MS = 5_400;
+const ZIPPY_FALLING_MS = 600;
+const ZIPPY_PAUSE_STEP_MS = 2_000;
+const ZIPPY_CLICK_ANIMATION_MS = 600;
+const ZIPPY_PEEK_SRC = "/zippi-sprites/zippi_peek_up_optimized.webp";
+const ZIPPY_HANDS_SRC = "/zippi-sprites/zippi_hands_up_optimized.webp";
+const ZIPPY_UP_SRC = "/zippi-sprites/zippi_up_optimized.webp";
+const ZIPPY_LEFT_SRC = "/zippi-sprites/zippi_left_optimized.webp";
+const ZIPPY_FALLING_SRC = "/zippi-sprites/zippi_falling_optimized.webp";
+const ZIPPY_BORING_SRC = "/zippi-sprites/zippi_boring_optimized.webp";
+const ZIPPY_BORING_POINTS_SRC = "/zippi-sprites/zippi_boring_points_down_optimized.webp";
+const ZIPPY_BORING_CLICK_SRC = "/zippi-sprites/zippi_boring_click_down_optimized.webp";
+
+interface ZippySprite {
+  key: string;
+  src: string;
+  position: {
+    top: string;
+    right: string;
+    bottom: string;
+    left: string;
+    transform: string;
+  };
+  imageTransform: string;
+  motion?: "falling";
+}
+
+const ZIPPY_DEFAULT_POSITION = {
+  top: "auto",
+  right: "auto",
+  bottom: "calc(var(--player-footer-height) - 10px)",
+  left: "50%",
+  transform: "translateX(-50%)",
+};
+const ZIPPY_HANDS: ZippySprite = {
+  key: "hands-up",
+  src: ZIPPY_HANDS_SRC,
+  position: ZIPPY_DEFAULT_POSITION,
+  imageTransform: "translateY(15%)",
+};
+const ZIPPY_BORING: ZippySprite = {
+  key: "boring",
+  src: ZIPPY_BORING_SRC,
+  position: ZIPPY_DEFAULT_POSITION,
+  imageTransform: "translateY(10%)",
+};
+const ZIPPY_BORING_POINTS: ZippySprite = {
+  key: "boring-points-down",
+  src: ZIPPY_BORING_POINTS_SRC,
+  position: ZIPPY_DEFAULT_POSITION,
+  imageTransform: "translateY(10%)",
+};
+const ZIPPY_BORING_CLICK: ZippySprite = {
+  key: "boring-click-down",
+  src: ZIPPY_BORING_CLICK_SRC,
+  position: ZIPPY_DEFAULT_POSITION,
+  imageTransform: "translateY(23%)",
+};
+const ZIPPY_SPRITES: ZippySprite[] = [
+  ZIPPY_HANDS,
+  {
+    key: "peek-up",
+    src: ZIPPY_PEEK_SRC,
+    position: ZIPPY_DEFAULT_POSITION,
+    imageTransform: "translateY(15%)",
+  },
+  {
+    key: "up",
+    src: ZIPPY_UP_SRC,
+    position: {
+      top: "0",
+      right: "auto",
+      bottom: "auto",
+      left: "50%",
+      transform: "translateX(-50%) translateY(-40%)",
+    },
+    imageTransform: "none",
+  },
+  {
+    key: "left",
+    src: ZIPPY_LEFT_SRC,
+    position: {
+      top: "50%",
+      right: "0",
+      bottom: "auto",
+      left: "auto",
+      transform: "translateY(-50%) translateX(30%)",
+    },
+    imageTransform: "none",
+  },
+  {
+    key: "left-mirrored",
+    src: ZIPPY_LEFT_SRC,
+    position: {
+      top: "50%",
+      right: "auto",
+      bottom: "auto",
+      left: "0",
+      transform: "translateY(-50%) translateX(-30%)",
+    },
+    imageTransform: "scaleX(-1)",
+  },
+  {
+    key: "falling",
+    src: ZIPPY_FALLING_SRC,
+    position: {
+      top: "0",
+      right: "auto",
+      bottom: "auto",
+      left: "50%",
+      transform: "translateX(-50%) translateY(-40%)",
+    },
+    imageTransform: "none",
+    motion: "falling",
+  },
+];
+
+const zippyVisible = ref(false);
+const zippyIntroActive = ref(false);
+const zippyAnimationRun = ref(0);
+const activeZippySprite = ref<ZippySprite>(ZIPPY_HANDS);
+const zippyPausePhase = ref<"idle" | "boring" | "points" | "click">("idle");
+const playToggleTimestamps: number[] = [];
+const zippyPreloadImages: HTMLImageElement[] = [];
+let zippyIntroTimer: ReturnType<typeof setTimeout> | undefined;
+let zippyPausePointsTimer: ReturnType<typeof setTimeout> | undefined;
+let zippyPauseClickTimer: ReturnType<typeof setTimeout> | undefined;
+let zippyClickResetTimer: ReturnType<typeof setTimeout> | undefined;
+let previousBeatScale = 1;
+let zippyMotionLockedUntil = 0;
+
+const displayedZippySprite = computed(() => {
+  if (zippyPausePhase.value === "points") return ZIPPY_BORING_POINTS;
+  if (zippyPausePhase.value === "click") return ZIPPY_BORING_CLICK;
+  if (zippyPausePhase.value === "boring" || !props.isPlaying) return ZIPPY_BORING;
+  return activeZippySprite.value;
+});
+const zippyOverFooter = computed(() => (
+  zippyPausePhase.value === "boring"
+  || zippyPausePhase.value === "points"
+  || zippyPausePhase.value === "click"
+));
+
+const zippyBeatStyle = computed(() => {
+  const beatScale = props.isPlaying ? props.beatScale : 1;
+  const beatDelta = Math.max(0, beatScale - 1);
+  const sprite = displayedZippySprite.value;
+  const position = sprite.position;
+  return {
+    top: position.top,
+    right: position.right,
+    bottom: position.bottom,
+    left: position.left,
+    transform: sprite.motion === "falling"
+      ? position.transform
+      : `${position.transform} translate3d(0, ${(-60 * beatDelta).toFixed(2)}px, 0) scale(${beatScale})`,
+  };
+});
+
+function pickNextZippySprite() {
+  const candidates = ZIPPY_SPRITES.filter(
+    sprite => sprite.key !== activeZippySprite.value.key,
+  );
+  const nextSprite = candidates[Math.floor(Math.random() * candidates.length)] ?? ZIPPY_HANDS;
+  activeZippySprite.value = nextSprite;
+  if (nextSprite.motion === "falling") {
+    zippyMotionLockedUntil = performance.now() + ZIPPY_FALLING_MS;
+  }
+}
+
+function clearZippyPauseTimers(includeClickReset = true) {
+  if (zippyPausePointsTimer !== undefined) clearTimeout(zippyPausePointsTimer);
+  if (zippyPauseClickTimer !== undefined) clearTimeout(zippyPauseClickTimer);
+  if (includeClickReset && zippyClickResetTimer !== undefined) clearTimeout(zippyClickResetTimer);
+  zippyPausePointsTimer = undefined;
+  zippyPauseClickTimer = undefined;
+  if (includeClickReset) zippyClickResetTimer = undefined;
+}
+
+function startZippyPauseSequence() {
+  clearZippyPauseTimers();
+  if (zippyIntroTimer !== undefined) clearTimeout(zippyIntroTimer);
+  zippyIntroTimer = undefined;
+  zippyIntroActive.value = false;
+  zippyPausePhase.value = "boring";
+
+  zippyPausePointsTimer = setTimeout(() => {
+    zippyPausePointsTimer = undefined;
+    if (!zippyVisible.value || props.isPlaying) return;
+    zippyPausePhase.value = "points";
+
+    zippyPauseClickTimer = setTimeout(() => {
+      zippyPauseClickTimer = undefined;
+      if (!zippyVisible.value || props.isPlaying) return;
+      zippyPausePhase.value = "click";
+      emit("togglePlay");
+
+      zippyClickResetTimer = setTimeout(() => {
+        zippyClickResetTimer = undefined;
+        zippyPausePhase.value = props.isPlaying ? "idle" : "boring";
+      }, ZIPPY_CLICK_ANIMATION_MS);
+    }, ZIPPY_PAUSE_STEP_MS);
+  }, ZIPPY_PAUSE_STEP_MS);
+}
+
+function enableZippyMode() {
+  zippyAnimationRun.value += 1;
+  zippyVisible.value = true;
+  zippyIntroActive.value = true;
+  zippyPausePhase.value = "idle";
+  activeZippySprite.value = ZIPPY_HANDS;
+  zippyMotionLockedUntil = 0;
+  if (zippyIntroTimer !== undefined) clearTimeout(zippyIntroTimer);
+  zippyIntroTimer = setTimeout(() => {
+    zippyIntroActive.value = false;
+    zippyIntroTimer = undefined;
+  }, ZIPPY_INTRO_MS);
+}
+
+function disableZippyMode() {
+  zippyVisible.value = false;
+  zippyIntroActive.value = false;
+  zippyPausePhase.value = "idle";
+  zippyMotionLockedUntil = 0;
+  clearZippyPauseTimers();
+  if (zippyIntroTimer !== undefined) clearTimeout(zippyIntroTimer);
+  zippyIntroTimer = undefined;
+}
+
+function toggleZippyMode() {
+  if (zippyVisible.value) disableZippyMode();
+  else enableZippyMode();
+}
+
+function handlePlayToggle() {
+  const now = performance.now();
+  playToggleTimestamps.push(now);
+  while (
+    playToggleTimestamps.length > 0
+    && playToggleTimestamps[0] < now - ZIPPY_TOGGLE_WINDOW_MS
+  ) {
+    playToggleTimestamps.shift();
+  }
+
+  if (playToggleTimestamps.length >= ZIPPY_TOGGLE_COUNT) {
+    playToggleTimestamps.length = 0;
+    toggleZippyMode();
+  }
+
+  emit("togglePlay");
+}
+
+onMounted(() => {
+  for (const sprite of [
+    ...ZIPPY_SPRITES,
+    ZIPPY_BORING,
+    ZIPPY_BORING_POINTS,
+    ZIPPY_BORING_CLICK,
+  ]) {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = sprite.src;
+    zippyPreloadImages.push(image);
+  }
+});
+
+watch(() => props.beatScale, (beatScale) => {
+  const isNewBeat = beatScale > 1.025 && beatScale - previousBeatScale > 0.015;
+  if (
+    isNewBeat
+    && props.isPlaying
+    && zippyVisible.value
+    && !zippyIntroActive.value
+    && performance.now() >= zippyMotionLockedUntil
+  ) {
+    pickNextZippySprite();
+  }
+  previousBeatScale = beatScale;
+});
+
+watch(() => props.isPlaying, (isPlaying) => {
+  if (!isPlaying) {
+    if (activeZippySprite.value.motion === "falling") {
+      activeZippySprite.value = ZIPPY_HANDS;
+      zippyMotionLockedUntil = 0;
+    }
+    if (zippyVisible.value) startZippyPauseSequence();
+    return;
+  }
+
+  clearZippyPauseTimers(false);
+  if (zippyPausePhase.value !== "click") zippyPausePhase.value = "idle";
+});
+
+onUnmounted(() => {
+  if (zippyIntroTimer !== undefined) clearTimeout(zippyIntroTimer);
+  clearZippyPauseTimers();
+  zippyPreloadImages.length = 0;
+});
 </script>
 
 <template>
-  <footer class="player">
+  <div class="player-shell" :class="{ 'zippy-active': zippyVisible }">
+    <div
+      v-if="zippyVisible && zippyIntroActive && props.isPlaying && zippyPausePhase === 'idle'"
+      :key="zippyAnimationRun"
+      class="zippy-stage"
+      aria-hidden="true"
+    >
+      <img
+        class="zippy-sprite zippy-peek"
+        :src="ZIPPY_PEEK_SRC"
+        alt=""
+        draggable="false"
+      />
+      <img
+        class="zippy-sprite zippy-hands"
+        :src="ZIPPY_HANDS_SRC"
+        alt=""
+        draggable="false"
+      />
+    </div>
+
+    <div
+      v-if="zippyVisible && (!zippyIntroActive || !props.isPlaying || zippyPausePhase !== 'idle')"
+      class="zippy-viewport-stage"
+      :class="{ 'zippy-over-footer': zippyOverFooter }"
+      aria-hidden="true"
+    >
+      <Transition name="zippy-swap">
+        <div
+          :key="displayedZippySprite.key"
+          class="zippy-beat"
+          :class="{
+            'zippy-falling': displayedZippySprite.motion === 'falling',
+            'zippy-click-beat': zippyPausePhase === 'click',
+          }"
+          :style="zippyBeatStyle"
+        >
+          <img
+            class="zippy-viewport-sprite"
+            :src="displayedZippySprite.src"
+            :style="{
+              transform: displayedZippySprite.imageTransform,
+              '--zippy-image-transform': displayedZippySprite.imageTransform,
+            }"
+            alt=""
+            draggable="false"
+          />
+        </div>
+      </Transition>
+    </div>
+
+    <footer class="player">
     <div class="player-left" @click="nowPlaying && emit('openDetail')" style="cursor: pointer;">
       <div class="thumb" :style="{
         ...(nowPlaying && covers[nowPlaying.id]
@@ -99,7 +453,7 @@ const emit = defineEmits<{
         <button class="icon-btn" title="Previous" @click="emit('playPrev')">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
         </button>
-        <button class="play-btn" @click="emit('togglePlay')">
+        <button class="play-btn" @click="handlePlayToggle">
           <svg v-if="!isPlaying" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
           <svg v-else viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
         </button>
@@ -235,13 +589,23 @@ const emit = defineEmits<{
         </div>
       </div>
     </div>
-  </footer>
+    </footer>
+  </div>
 </template>
 
 <style scoped>
-.player {
+.player-shell {
+  --player-footer-height: 90px;
+  --zippy-size: 400px;
   grid-column: 1 / 3;
   grid-row: 2 / 3;
+  position: relative;
+  z-index: 100;
+  overflow: visible;
+  isolation: isolate;
+}
+
+.player {
   background: #181818;
   border-top: 1px solid #282828;
   display: grid;
@@ -250,7 +614,221 @@ const emit = defineEmits<{
   padding: 0 16px;
   overflow: visible;
   position: relative;
-  z-index: 100;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+}
+
+.zippy-stage {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% - 10px);
+  width: var(--zippy-size);
+  height: var(--zippy-size);
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateX(-50%);
+  z-index: 0;
+  contain: layout paint;
+}
+
+.zippy-sprite {
+  position: absolute;
+  left: 0;
+  bottom: -15%;
+  width: 100%;
+  height: auto;
+  user-select: none;
+  transform-origin: 50% 100%;
+  will-change: transform, opacity;
+  filter:
+    drop-shadow(0 8px 12px rgba(0, 0, 0, .48))
+    drop-shadow(0 0 12px rgba(74, 226, 221, .13));
+}
+
+.zippy-viewport-stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.zippy-viewport-stage.zippy-over-footer {
+  z-index: 2;
+}
+
+.zippy-beat {
+  position: absolute;
+  width: var(--zippy-size);
+  height: var(--zippy-size);
+  transform-origin: 50% 100%;
+  will-change: transform;
+}
+
+.zippy-falling {
+  animation: zippy-fall .6s linear both;
+  transform-origin: 50% 50%;
+}
+
+.zippy-click-beat .zippy-viewport-sprite {
+  animation: zippy-click-beat .6s linear both;
+}
+
+@keyframes zippy-click-beat {
+  0% {
+    transform: var(--zippy-image-transform) translateY(-6px) scale(1.1);
+  }
+  20% {
+    transform: var(--zippy-image-transform) translateY(-2.4px) scale(1.04);
+  }
+  50% {
+    transform: var(--zippy-image-transform) translateY(-.6px) scale(1.01);
+  }
+  100% {
+    transform: var(--zippy-image-transform) scale(1);
+  }
+}
+
+@keyframes zippy-fall {
+  0% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-40%) rotate(-2deg);
+  }
+  10% {
+    transform: translateX(calc(-50% - 8px)) translateY(calc(1vh - 40.6%)) rotate(3deg);
+  }
+  20% {
+    transform: translateX(calc(-50% + 10px)) translateY(calc(4vh - 42.4%)) rotate(-4deg);
+  }
+  30% {
+    transform: translateX(calc(-50% - 12px)) translateY(calc(9vh - 45.4%)) rotate(5deg);
+  }
+  40% {
+    transform: translateX(calc(-50% + 13px)) translateY(calc(16vh - 49.6%)) rotate(-5deg);
+  }
+  50% {
+    transform: translateX(calc(-50% - 14px)) translateY(calc(25vh - 55%)) rotate(6deg);
+  }
+  60% {
+    transform: translateX(calc(-50% + 14px)) translateY(calc(36vh - 61.6%)) rotate(-6deg);
+  }
+  70% {
+    transform: translateX(calc(-50% - 13px)) translateY(calc(49vh - 69.4%)) rotate(5deg);
+  }
+  80% {
+    transform: translateX(calc(-50% + 11px)) translateY(calc(64vh - 78.4%)) rotate(-4deg);
+  }
+  90% {
+    opacity: 1;
+    transform: translateX(calc(-50% - 7px)) translateY(calc(81vh - 88.6%)) rotate(3deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(calc(100vh - 100%)) rotate(0);
+  }
+}
+
+.zippy-viewport-sprite {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: auto;
+  opacity: 1;
+  user-select: none;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+  filter:
+    drop-shadow(0 8px 12px rgba(0, 0, 0, .48))
+    drop-shadow(0 0 12px rgba(74, 226, 221, .13));
+}
+
+.zippy-swap-enter-active,
+.zippy-swap-leave-active {
+  transition: opacity .14s ease, filter .14s ease;
+}
+
+.zippy-swap-enter-from {
+  opacity: 0;
+  filter:
+    brightness(1.7)
+    saturate(1.35)
+    drop-shadow(0 8px 12px rgba(0, 0, 0, .48));
+}
+
+.zippy-swap-leave-to {
+  opacity: 0;
+  filter:
+    brightness(1.25)
+    saturate(1.2)
+    drop-shadow(0 8px 12px rgba(0, 0, 0, .48));
+}
+
+.player-left,
+.player-center,
+.player-right {
+  position: relative;
+  z-index: 1;
+}
+
+.zippy-peek {
+  animation: zippy-peek-sequence 2.25s both;
+}
+
+.zippy-hands {
+  animation: zippy-hands-sequence 3.8s 1.45s both;
+}
+
+@keyframes zippy-peek-sequence {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 105%, 0) rotate(-4deg) scale(.94);
+    animation-timing-function: cubic-bezier(.16, 1.28, .32, 1);
+  }
+  8% { opacity: 1; }
+  34% {
+    opacity: 1;
+    transform: translate3d(0, -3%, 0) rotate(2deg) scale(1.025);
+    animation-timing-function: cubic-bezier(.4, 0, .2, 1);
+  }
+  46% { transform: translate3d(0, 0, 0) rotate(-.7deg) scale(1); }
+  58% { transform: translate3d(0, -1.5%, 0) rotate(.8deg) scale(1.005); }
+  70% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0) scale(1);
+    animation-timing-function: cubic-bezier(.55, .02, .72, .42);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 108%, 0) rotate(4deg) scale(.96);
+  }
+}
+
+@keyframes zippy-hands-sequence {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 110%, 0) rotate(0) scale(.9);
+    animation-timing-function: cubic-bezier(.12, 1.22, .3, 1);
+  }
+  6% { opacity: 1; }
+  24% {
+    opacity: 1;
+    transform: translate3d(0, -3%, 0) rotate(-2deg) scale(1.035);
+    animation-timing-function: cubic-bezier(.38, 0, .2, 1);
+  }
+  34% { transform: translate3d(0, 0, 0) rotate(1deg) scale(1); }
+  45% { transform: translate3d(0, -1.4%, 0) rotate(-1.1deg) scale(1.008); }
+  56% { transform: translate3d(0, 0, 0) rotate(.7deg) scale(1); }
+  67% { transform: translate3d(0, -.9%, 0) rotate(-.5deg) scale(1.004); }
+  79% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0) scale(1);
+    animation-timing-function: cubic-bezier(.58, .02, .76, .4);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 112%, 0) rotate(-3deg) scale(.96);
+  }
 }
 
 .player-left {
@@ -609,9 +1187,13 @@ const emit = defineEmits<{
 }
 
 @media (max-width: 768px) {
-  .player {
+  .player-shell {
+    --player-footer-height: calc(130px + env(safe-area-inset-bottom));
+    --zippy-size: clamp(150px, 43vw, 190px);
     grid-column: 1;
     grid-row: 2 / 3;
+  }
+  .player {
     display: flex;
     flex-direction: column;
     padding: 0 10px env(safe-area-inset-bottom);
@@ -681,6 +1263,25 @@ const emit = defineEmits<{
   :global(.device-dropdown) {
     min-width: 200px;
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zippy-peek {
+    animation: zippy-peek-reduced 2.25s both;
+  }
+  .zippy-hands {
+    animation: zippy-hands-reduced 3.8s 1.45s both;
+  }
+}
+
+@keyframes zippy-peek-reduced {
+  0%, 100% { opacity: 0; transform: translateY(100%); }
+  18%, 72% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes zippy-hands-reduced {
+  0%, 100% { opacity: 0; transform: translateY(100%); }
+  18%, 78% { opacity: 1; transform: translateY(0); }
 }
 
 @media (max-width: 480px) {
