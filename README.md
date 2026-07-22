@@ -1,28 +1,21 @@
 # Player
+<p>
+  <img
+    align="right"
+    width="300"
+    src="public/zippi-sprites/zippi-introduce.webp"
+    alt="Zippi"
+  />
 
-<table>
-	<tr>
-		<td style="max-width:300px;">
-			<span style="color:#8b5cf6;"><b>Player</b></span> <span style="color:#ec4899;">is</span>
-<span style="color:#f97316;">a</span>
-<span style="color:#ef4444;">local-first</span>
-<span style="color:#eab308;">music</span>
-<span style="color:#22c55e;">player</span>
-<span style="color:#14b8a6;">built</span>
-<span style="color:#06b6d4;">with</span>
-<span style="color:#3b82f6;">Vue</span>
-<span style="color:#6366f1;">3,</span>
-<span style="color:#a855f7;">TypeScript,</span>
-<span style="color:#d946ef;">Tauri</span>
-<span style="color:#f43f5e;">2,</span>
-<span style="color:#84cc16;">and</span>
-<span style="color:#10b981;">Rust.</span>
-		</td>
-		<td>
-			<img style="width:100%;max-width:300px;min-width:100px;" src="public/zippi-sprites/zippi-introduce.webp" />
-		</td>
-	</tr>
-</table>
+  <br><br><br>
+
+  <p style="max-width:300px;"><b>Player</b> is a local-first music player built with
+  Vue 3, TypeScript, Tauri 2, and Rust.</P>
+
+  <br><br><br>
+</p>
+
+<br clear="right">
 
 It is designed for people who keep a real music library on **disk** and want **fast local playback**, **metadata editing**, **playlists**, cross-device **sync on a local network**, and a native-feeling app on both desktop and Android.
 
