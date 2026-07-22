@@ -21,6 +21,30 @@ It is designed for people who keep a real music library on **disk** and want **f
 
 This project is not a cloud streaming service! The filesystem is the source of truth, the app database is a fast local index, and sync is optimized for peer-to-peer usage inside your own network.
 
+## Download
+
+<p align="center">
+  <a href="https://github.com/verncat/player/releases/latest/download/player-macos-universal.dmg">
+    <img alt="Download Player for macOS" src="https://img.shields.io/badge/macOS-Universal-111827?style=for-the-badge&amp;logo=apple&amp;logoColor=white" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/verncat/player/releases/latest/download/player-windows-x64-setup.exe">
+    <img alt="Download Player for Windows" src="https://img.shields.io/badge/Windows-x64-0078D4?style=for-the-badge&amp;logo=windows11&amp;logoColor=white" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/verncat/player/releases/latest/download/player-linux-x86_64.AppImage">
+    <img alt="Download Player for Linux" src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=for-the-badge&amp;logo=linux&amp;logoColor=111827" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/verncat/player/releases/latest/download/player-android-universal.apk">
+    <img alt="Download Player for Android" src="https://img.shields.io/badge/Android-Universal-3DDC84?style=for-the-badge&amp;logo=android&amp;logoColor=white" />
+  </a>
+</p>
+
+<p align="center">
+  <sub>Direct downloads from the latest GitHub release · <a href="https://github.com/verncat/player/releases/latest">release notes and all packages</a></sub>
+</p>
+
 ## Overview
 
 Player currently focuses on six core jobs:
