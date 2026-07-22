@@ -1,10 +1,32 @@
 # Player
 
-Player is a local-first music player built with Vue 3, TypeScript, Tauri 2, and Rust.
+<table>
+	<tr>
+		<td>
+			<span style="color:#8b5cf6;"><b>Player</b></span> <span style="color:#ec4899;">is</span>
+<span style="color:#f97316;">a</span>
+<span style="color:#ef4444;">local-first</span>
+<span style="color:#eab308;">music</span>
+<span style="color:#22c55e;">player</span>
+<span style="color:#14b8a6;">built</span>
+<span style="color:#06b6d4;">with</span>
+<span style="color:#3b82f6;">Vue</span>
+<span style="color:#6366f1;">3,</span>
+<span style="color:#a855f7;">TypeScript,</span>
+<span style="color:#d946ef;">Tauri</span>
+<span style="color:#f43f5e;">2,</span>
+<span style="color:#84cc16;">and</span>
+<span style="color:#10b981;">Rust.</span>
+		</td>
+		<td>
+			<img style="width:100%;max-width:300px;min-width:100px;" src="public/zippi-sprites/zippi-introduce.webp" />
+		</td>
+	</tr>
+</table>
 
-It is designed for people who keep a real music library on disk and want fast local playback, metadata editing, playlists, cross-device sync on a local network, and a native-feeling app on both desktop and Android.
+It is designed for people who keep a real music library on **disk** and want **fast local playback**, **metadata editing**, **playlists**, cross-device **sync on a local network**, and a native-feeling app on both desktop and Android.
 
-This project is not a cloud streaming service. The filesystem is the source of truth, the app database is a fast local index, and sync is optimized for peer-to-peer usage inside your own network.
+This project is not a cloud streaming service! The filesystem is the source of truth, the app database is a fast local index, and sync is optimized for peer-to-peer usage inside your own network.
 
 ## Overview
 
