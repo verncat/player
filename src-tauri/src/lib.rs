@@ -124,8 +124,14 @@ pub fn run() {
     init_tracing();
     let demo_mode = demo::is_demo_mode_enabled();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+
+    builder
         .setup(move |app| {
             use tauri::Manager;
             #[cfg(target_os = "android")]

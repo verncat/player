@@ -24,6 +24,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "android": {
       "minSdkVersion": 26
     },
@@ -34,5 +35,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQxQzNCNTVGQTkwQjBEMkIKUldRckRRdXBYN1hEUWFiTlhFTG1Fcmk3WmwvT29HYXRpZytaVjBiS3hOb1RRZDVvaU9XSWtwSnIK",
+      "endpoints": [
+        "https://github.com/verncat/player/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

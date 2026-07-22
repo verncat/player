@@ -3,6 +3,8 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { marked } from "marked";
 import {
   TRACK_RARITY_OPTIONS,
@@ -331,6 +333,7 @@ interface AboutChangelogEntry {
 
 interface AboutInfo {
   current_version: string;
+  platform: string;
   build_commit: string | null;
   release_repo: string | null;
   changelog: AboutChangelogEntry[];
@@ -358,6 +361,13 @@ const aboutUpdateError = ref('');
 const aboutUpdating = ref(false);
 const aboutUpdateDone = ref('');
 const aboutUpdateProgress = ref<number | null>(null);
+const aboutDesktopUpdateReady = ref(false);
+let pendingDesktopUpdate: Update | null = null;
+
+const supportsTauriUpdater = computed(() => (
+  aboutInfo.value !== null
+  && ['linux', 'macos', 'windows'].includes(aboutInfo.value.platform)
+));
 
 // ── Playlists ──────────────────────────────────────────────────────────────
 interface Playlist {
@@ -4016,10 +4026,53 @@ async function checkAboutUpdates() {
   await loadAbout();
   aboutCheckingUpdates.value = true;
   aboutUpdateError.value = '';
+  aboutUpdateDone.value = '';
+  aboutDesktopUpdateReady.value = false;
 
   try {
-    aboutUpdateStatus.value = await invoke<AboutUpdateStatus>('about_check_updates');
+    if (supportsTauriUpdater.value) {
+      if (pendingDesktopUpdate) {
+        await pendingDesktopUpdate.close();
+        pendingDesktopUpdate = null;
+      }
+
+      const update = await check({ timeout: 10_000 });
+      pendingDesktopUpdate = update;
+      aboutDesktopUpdateReady.value = update !== null;
+
+      const currentVersion = aboutInfo.value?.current_version ?? update?.currentVersion ?? '';
+      const repo = aboutInfo.value?.release_repo;
+      aboutUpdateStatus.value = update
+        ? {
+            current_version: update.currentVersion,
+            latest_version: update.version,
+            has_update: true,
+            release_url: repo
+              ? `https://github.com/${repo}/releases/tag/v${update.version}`
+              : null,
+            release_notes: update.body ?? null,
+            asset_url: null,
+            checked_repo: repo ?? null,
+            message: `Update available: ${update.version}`,
+          }
+        : {
+            current_version: currentVersion,
+            latest_version: currentVersion,
+            has_update: false,
+            release_url: null,
+            release_notes: null,
+            asset_url: null,
+            checked_repo: repo ?? null,
+            message: 'You already have the latest release.',
+          };
+    } else {
+      aboutUpdateStatus.value = await invoke<AboutUpdateStatus>('about_check_updates');
+    }
   } catch (error) {
+    if (pendingDesktopUpdate) {
+      await pendingDesktopUpdate.close().catch(() => {});
+      pendingDesktopUpdate = null;
+    }
     aboutUpdateStatus.value = null;
     aboutUpdateError.value = String(error ?? 'Failed to check updates');
   } finally {
@@ -4039,6 +4092,48 @@ async function openAboutDownloadLink() {
 }
 
 async function doAboutUpdate() {
+  if (supportsTauriUpdater.value) {
+    const update = pendingDesktopUpdate;
+    if (!update) {
+      aboutUpdateError.value = 'Update metadata expired. Check for updates again.';
+      return;
+    }
+
+    aboutUpdating.value = true;
+    aboutUpdateDone.value = '';
+    aboutUpdateError.value = '';
+    aboutUpdateProgress.value = 0;
+    let downloaded = 0;
+    let total: number | undefined;
+
+    try {
+      await update.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          total = event.data.contentLength;
+          aboutUpdateProgress.value = 0;
+        } else if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength;
+          aboutUpdateProgress.value = total
+            ? Math.min(100, Math.round((downloaded / total) * 100))
+            : null;
+        } else {
+          aboutUpdateProgress.value = 100;
+        }
+      }, { timeout: 5 * 60_000 });
+
+      pendingDesktopUpdate = null;
+      aboutDesktopUpdateReady.value = false;
+      aboutUpdateDone.value = 'Update installed. Restarting…';
+      await relaunch();
+    } catch (error) {
+      aboutUpdateError.value = String(error ?? 'Update failed');
+    } finally {
+      aboutUpdating.value = false;
+      aboutUpdateProgress.value = null;
+    }
+    return;
+  }
+
   const assetUrl = aboutUpdateStatus.value?.asset_url;
   if (!assetUrl) {
     await openAboutDownloadLink();
@@ -4561,6 +4656,10 @@ onUnmounted(() => {
   stopAmbient();
   stopSpectrumPolling();
   stopTicker();
+  if (pendingDesktopUpdate) {
+    void pendingDesktopUpdate.close();
+    pendingDesktopUpdate = null;
+  }
 });
 </script>
 
@@ -5883,7 +5982,7 @@ onUnmounted(() => {
                     <span class="about-update-dl-label">
                       {{ aboutUpdating
                           ? (aboutUpdateProgress !== null ? `${aboutUpdateProgress}%` : 'Downloading…')
-                          : (aboutUpdateStatus.asset_url ? 'Update now' : 'View release') }}
+                          : (aboutDesktopUpdateReady || aboutUpdateStatus.asset_url ? 'Update now' : 'View release') }}
                     </span>
                   </button>
                   <a
@@ -5906,7 +6005,8 @@ onUnmounted(() => {
                 <div class="about-update-banner">
                   <span class="about-update-available-text">Update available to v{{ aboutUpdateStatus.latest_version }}</span>
                   <div v-if="aboutUpdateDone" class="about-update-done">
-                    Downloaded to <code>{{ aboutUpdateDone }}</code>
+                    <template v-if="supportsTauriUpdater">{{ aboutUpdateDone }}</template>
+                    <template v-else>Downloaded to <code>{{ aboutUpdateDone }}</code></template>
                   </div>
                   <div v-if="aboutUpdateError" class="about-update-inline about-update-inline-error">{{ aboutUpdateError }}</div>
                   <template v-if="aboutUpdateStatus.release_notes">

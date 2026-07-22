@@ -15,6 +15,7 @@ include!(concat!(env!("OUT_DIR"), "/about_build.rs"));
 #[derive(serde::Serialize)]
 pub struct AboutInfo {
     pub current_version: String,
+    pub platform: String,
     pub build_commit: Option<String>,
     pub release_repo: Option<String>,
     pub changelog: Vec<AboutChangelogEntry>,
@@ -58,6 +59,7 @@ struct GithubRelease {
 pub fn about_info() -> AboutInfo {
     AboutInfo {
         current_version: env!("CARGO_PKG_VERSION").to_string(),
+        platform: std::env::consts::OS.to_string(),
         build_commit: BUILD_GIT_COMMIT.map(str::to_string),
         release_repo: BUILD_GITHUB_REPOSITORY.map(str::to_string),
         changelog: BUILD_CHANGELOG

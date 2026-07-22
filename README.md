@@ -129,6 +129,32 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 - Rich now-playing surface with Three.js/WebGL rendering.
 - About screen with version info, update checks, and embedded changelog.
 
+## Desktop updates
+
+Windows, macOS, and Linux releases use the signed Tauri Updater flow. Release builds publish
+platform updater bundles, their `.sig` files, and a generated `latest.json` manifest to GitHub
+Releases. Android keeps the release-page/APK fallback because the official Tauri updater does
+not install mobile packages.
+
+The updater public key is committed in `src-tauri/tauri.conf.json`. Keep the matching private
+key outside the repository and back it up: losing it prevents shipping updates to existing
+installations.
+
+Before running the release workflow, configure this GitHub Actions secret:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < /path/to/player-updater.key
+```
+
+The current key has no password. If it is replaced with an encrypted key, also configure
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. For a signed local bundle, run:
+
+```bash
+TAURI_SIGNING_PRIVATE_KEY=/path/to/player-updater.key \
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
+pnpm tauri build
+```
+
 ## Tech Stack
 
 - Frontend: Vue 3, TypeScript, Vite.

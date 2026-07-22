@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "version": "pnpm version:sync",
     "version:sync": "node ./scripts/sync-version.mjs",
+    "updater:manifest": "node ./scripts/generate-updater-manifest.mjs",
     "tauri": "pnpm version:sync && tauri",
     "tauri:tracy": "pnpm version:sync && tauri dev --release --features tracy",
     "android:build": "pnpm tauri android build",
@@ -19,6 +20,8 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "marked": "^18.0.3",
     "three": "^0.184.0",
     "vue": "^3.5.13"

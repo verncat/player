@@ -20,6 +20,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +79,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install macOS universal Rust targets
+        if: matrix.name == 'macos'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
       - name: Cache Rust artifacts
         uses: swatinem/rust-cache@v2
         with:
@@ -85,10 +91,25 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify updater signing key
+        shell: bash
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "Missing TAURI_SIGNING_PRIVATE_KEY GitHub Actions secret." >&2
+            exit 1
+          fi
+
       - name: Build Tauri desktop bundles
+        if: matrix.name != 'macos'
         env:
           CI: 'true'
         run: pnpm tauri build
+
+      - name: Build Tauri universal macOS bundles
+        if: matrix.name == 'macos'
+        env:
+          CI: 'true'
+        run: pnpm tauri build --target universal-apple-darwin
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v7
@@ -105,6 +126,9 @@ jobs:
             src-tauri/target/release/bundle/**/*.rpm
             src-tauri/target/release/bundle/**/*.sig
             src-tauri/target/release/bundle/**/*.zip
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.sig
 
   build-android:
     name: Build Android
@@ -251,6 +275,8 @@ jobs:
           submodules: false
           sparse-checkout: |
             .github
+            package.json
+            scripts
 
       - name: Download release artifacts
         uses: actions/download-artifact@v8
@@ -268,6 +294,13 @@ jobs:
           github-api-url: ${{ github.api_url }}
           repository: ${{ github.repository }}
           tag-name: ${{ env.RELEASE_TAG }}
+
+      - name: Generate Tauri updater manifest
+        env:
+          UPDATER_ARTIFACTS_DIR: release-artifacts
+          UPDATER_MANIFEST_PATH: release-artifacts/latest.json
+          RELEASE_NOTES_PATH: ${{ steps.release_notes.outputs.notes_path }}
+        run: node scripts/generate-updater-manifest.mjs
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
