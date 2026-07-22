@@ -6003,12 +6003,14 @@ onUnmounted(() => {
               <!-- Update available section -->
               <template v-if="aboutUpdateStatus?.has_update">
                 <div class="about-update-banner">
-                  <span class="about-update-available-text">Update available to v{{ aboutUpdateStatus.latest_version }}</span>
-                  <div v-if="aboutUpdateDone" class="about-update-done">
-                    <template v-if="supportsTauriUpdater">{{ aboutUpdateDone }}</template>
-                    <template v-else>Downloaded to <code>{{ aboutUpdateDone }}</code></template>
+                  <div class="about-update-intro">
+                    <img
+                      class="about-update-zippy"
+                      src="/zippi-sprites/zippi-introduce.webp"
+                      alt=""
+                      aria-hidden="true"
+                    />
                   </div>
-                  <div v-if="aboutUpdateError" class="about-update-inline about-update-inline-error">{{ aboutUpdateError }}</div>
                   <template v-if="aboutUpdateStatus.release_notes">
                     <h3 class="about-whats-new-title">What's new</h3>
                     <div class="about-release-notes" v-html="marked(aboutUpdateStatus.release_notes)" />
@@ -7095,12 +7097,58 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .about-update-banner {
   margin-bottom: 24px;
 }
+.about-update-intro {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(130px, 24vw, 240px);
+  align-items: center;
+  min-height: 190px;
+  padding: 18px 22px;
+  max-width: 500px;
+  /* overflow: hidden; */
+}
+.about-update-intro-copy {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+.about-update-zippy {
+  position: absolute;
+  right: clamp(-26px, -2vw, -10px);
+  bottom: -42px;
+  width: clamp(170px, 28vw, 280px);
+  max-height: 300px;
+  object-fit: contain;
+  object-position: right bottom;
+  pointer-events: none;
+  filter: drop-shadow(0 18px 24px rgba(0, 0, 0, 0.3));
+  transform-origin: center bottom;
+  animation:
+    about-zippy-introduce 650ms cubic-bezier(.18, .86, .28, 1.18) both,
+    about-zippy-float 3.2s ease-in-out 650ms infinite;
+}
 .about-update-available-text {
   display: block;
-  font-size: var(--fs-body-md);
-  font-weight: 500;
-  color: #7a9e89;
-  margin-bottom: 2px;
+  max-width: 18ch;
+  font-size: clamp(20px, 3vw, 30px);
+  font-weight: 800;
+  line-height: 1.12;
+  color: #eafff4;
+  text-wrap: balance;
+}
+@keyframes about-zippy-introduce {
+  from {
+    opacity: 0;
+    transform: translate3d(36px, 28px, 0) rotate(3deg) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0) scale(1);
+  }
+}
+@keyframes about-zippy-float {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  50% { transform: translateY(-5px) rotate(-0.8deg); }
 }
 .about-update-banner-actions {
   display: flex;
@@ -7185,6 +7233,29 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .about-update-done code {
   word-break: break-all;
   opacity: 0.85;
+}
+@media (max-width: 560px) {
+  .about-update-intro {
+    grid-template-columns: minmax(0, 1fr) 112px;
+    min-height: 158px;
+    padding: 16px;
+  }
+
+  .about-update-zippy {
+    right: -32px;
+    bottom: -30px;
+    width: 190px;
+    max-height: 220px;
+  }
+
+  .about-update-available-text {
+    font-size: 20px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .about-update-zippy {
+    animation: none;
+  }
 }
 .search-empty-copy {
   color: #a7a7a7;
