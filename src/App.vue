@@ -6388,13 +6388,12 @@ onUnmounted(() => {
             <div class="detail-backdrop-image" :style="detailBackdropImageStyle" />
             <div class="detail-backdrop-wash" :style="detailBackdropWashStyle" />
           </div>
-          <div class="detail-sheet" :style="cardDragging ? { overflow: 'visible' } : {}">
+          <div class="detail-sheet">
             <!-- drag handle -->
             <div class="detail-handle" @click="showDetail = false" />
             <!-- cover 3D card -->
             <div class="detail-cover-wrap"
               :style="{
-                ...(cardDragging ? { zIndex: 200, position: 'relative' } : {}),
                 transform: `scale(${beatScale})`,
                 transformOrigin: 'center center',
                 willChange: 'transform',
@@ -8252,8 +8251,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   width: 100%;
   max-width: 480px;
   max-height: 95vh;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: visible;
   background: linear-gradient(180deg, rgba(10,12,18,.8), rgba(10,12,18,.94));
   backdrop-filter: blur(10px) saturate(1.05);
   border-radius: 20px 20px 0 0;
@@ -8278,6 +8276,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
 .detail-cover-wrap {
   position: relative;
+  z-index: 200;
   aspect-ratio: 1 / 1;
   flex-shrink: 0;
   width: min(28vh, 260px, 80vw);

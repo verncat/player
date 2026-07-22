@@ -19,6 +19,18 @@ const props = defineProps<{
 const hostRef = ref<HTMLDivElement | null>(null);
 const failedRef = ref(false);
 
+const ZIPPY_FRAME_URLS = [
+  '/zippi-sprites/zippi_sit_chill0000_optimized.webp',
+  '/zippi-sprites/zippi_sit_chill0001_optimized.webp',
+  '/zippi-sprites/zippi_sit_chill0002_optimized.webp',
+] as const;
+const ZIPPY_FRAME_SEQUENCE = [0, 1, 2, 1] as const;
+const ZIPPY_FRAME_DURATION_MS = 240;
+const ZIPPY_SPRITE_SIZE = 1.36;
+const ZIPPY_OFFSET_Y_RATIO = 0.8;
+const DETAIL_CAMERA_Y = 0.5;
+const DETAIL_CAMERA_Z = 6.7;
+
 const fallbackStyle = computed(() => {
   if (props.coverUrl) {
     return {
@@ -90,16 +102,20 @@ let coverGroup: THREE.Group | null = null;
 let coverBodyMesh: THREE.Mesh | null = null;
 let coverArtMesh: THREE.Mesh | null = null;
 let sheenMesh: THREE.Mesh | null = null;
+let zippyMesh: THREE.Mesh | null = null;
 
 let coverBodyMaterial: THREE.MeshStandardMaterial | null = null;
 let coverArtMaterial: THREE.MeshPhysicalMaterial | null = null;
 let sheenMaterial: THREE.ShaderMaterial | null = null;
+let zippyMaterial: THREE.MeshBasicMaterial | null = null;
 
 let colorWashLight: THREE.PointLight | null = null;
 let rimLight: THREE.PointLight | null = null;
 
 let coverTexture: THREE.Texture | null = null;
 let coverMaskTexture: THREE.Texture | null = null;
+let zippyTextures: THREE.Texture[] = [];
+let currentZippyFrame = -1;
 
 const qualityProfile = (() => {
   const coarsePointer = typeof window !== 'undefined'
@@ -235,6 +251,40 @@ async function loadCoverTexture(url: string) {
   });
 }
 
+async function loadZippyTextures() {
+  const results = await Promise.allSettled(
+    ZIPPY_FRAME_URLS.map((url) => loadCoverTexture(url)),
+  );
+  const loaded = results.flatMap((result) => (
+    result.status === 'fulfilled' ? [result.value] : []
+  ));
+
+  if (disposed || loaded.length !== ZIPPY_FRAME_URLS.length) {
+    loaded.forEach((texture) => texture.dispose());
+    return;
+  }
+
+  loaded.forEach((texture) => {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = Math.min(
+      renderer?.capabilities.getMaxAnisotropy() ?? 1,
+      qualityProfile.maxAnisotropy,
+    );
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+  });
+
+  zippyTextures.forEach((texture) => texture.dispose());
+  zippyTextures = loaded;
+  currentZippyFrame = 0;
+
+  if (zippyMaterial && zippyMesh) {
+    zippyMaterial.map = zippyTextures[0];
+    zippyMaterial.needsUpdate = true;
+    zippyMesh.visible = true;
+  }
+}
+
 async function updateTextures() {
   const version = ++textureLoadVersion;
   let nextCoverTexture: THREE.Texture | null = null;
@@ -274,7 +324,9 @@ function buildScene() {
   scene = new THREE.Scene();
 
   camera = new THREE.PerspectiveCamera(26, 1, 0.1, 100);
-  camera.position.set(0, 0.08, 5.0);
+  // Frame the cover and the elevated Zippy plane together, including the
+  // maximum 1.1x beat scale, so transparent sprite pixels are not clipped.
+  camera.position.set(0, DETAIL_CAMERA_Y, DETAIL_CAMERA_Z);
 
   renderer = new THREE.WebGLRenderer({
     antialias: qualityProfile.antialias,
@@ -364,6 +416,26 @@ function buildScene() {
   sheenMesh.position.z = 0.064;
   coverGroup.add(sheenMesh);
 
+  zippyMaterial = new THREE.MeshBasicMaterial({
+    color: '#ffffff',
+    transparent: true,
+    alphaTest: 0.01,
+    depthTest: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  const zippyGeometry = new THREE.PlaneGeometry(ZIPPY_SPRITE_SIZE, ZIPPY_SPRITE_SIZE);
+  zippyMesh = new THREE.Mesh(zippyGeometry, zippyMaterial);
+  zippyMesh.position.set(
+    0,
+    ZIPPY_SPRITE_SIZE * ZIPPY_OFFSET_Y_RATIO,
+    0.078,
+  );
+  zippyMesh.renderOrder = 3;
+  zippyMesh.visible = false;
+  coverGroup.add(zippyMesh);
+
   applyScenePalette();
   setRendererSize();
 }
@@ -415,6 +487,16 @@ function animate(now: number) {
     sheenMaterial.uniforms.uRarityColor.value.set(props.rarityColor);
   }
 
+  if (zippyMaterial && zippyTextures.length === ZIPPY_FRAME_URLS.length) {
+    const sequenceIndex = Math.floor(now / ZIPPY_FRAME_DURATION_MS)
+      % ZIPPY_FRAME_SEQUENCE.length;
+    const frameIndex = ZIPPY_FRAME_SEQUENCE[sequenceIndex];
+    if (frameIndex !== currentZippyFrame) {
+      currentZippyFrame = frameIndex;
+      zippyMaterial.map = zippyTextures[frameIndex];
+    }
+  }
+
   renderer.render(scene, camera);
   animationFrame = requestAnimationFrame(animate);
 }
@@ -449,16 +531,21 @@ function cleanup() {
   coverBodyMesh = null;
   coverArtMesh = null;
   sheenMesh = null;
+  zippyMesh = null;
   coverBodyMaterial = null;
   coverArtMaterial = null;
   sheenMaterial = null;
+  zippyMaterial = null;
   colorWashLight = null;
   rimLight = null;
 
   disposeTexture(coverTexture);
   disposeTexture(coverMaskTexture);
+  zippyTextures.forEach((texture) => texture.dispose());
   coverTexture = null;
   coverMaskTexture = null;
+  zippyTextures = [];
+  currentZippyFrame = -1;
 }
 
 onMounted(async () => {
@@ -466,6 +553,7 @@ onMounted(async () => {
     buildScene();
     resizeObserver = new ResizeObserver(() => setRendererSize());
     if (hostRef.value) resizeObserver.observe(hostRef.value);
+    void loadZippyTextures();
     await updateTextures();
     animationFrame = requestAnimationFrame(animate);
   } catch {
@@ -498,6 +586,7 @@ onUnmounted(() => cleanup());
   inset: 0;
   z-index: 2;
   overflow: visible;
+  top: -100px;
 }
 
 .webgl-album-renderer :deep(canvas) {
