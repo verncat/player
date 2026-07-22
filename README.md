@@ -2,7 +2,7 @@
 
 <table>
 	<tr>
-		<td>
+		<td style="max-width:300px;">
 			<span style="color:#8b5cf6;"><b>Player</b></span> <span style="color:#ec4899;">is</span>
 <span style="color:#f97316;">a</span>
 <span style="color:#ef4444;">local-first</span>
