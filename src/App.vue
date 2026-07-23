@@ -97,7 +97,7 @@ function navForward() {
 }
 const libraryTracks = ref<Track[]>([]);
 const showDuplicateTracks = ref(false);
-const libraryLoading = ref(false);
+const libraryLoading = ref(true);
 const libraryQuery = ref("");
 const searchQuery = ref("");
 const editingTrack = ref<Track | null>(null);
@@ -2667,6 +2667,18 @@ function syncPeer(peer: Peer) {
   invoke('sync_with_peer', { peerHost: peer.host, peerName: peer.name, peerAddresses: peer.addresses, peerPort: peer.port }).catch(() => {});
 }
 
+async function startOnboardingSync() {
+  activeNav.value = 'discovery';
+  showMobileNav.value = false;
+
+  if (!syncEnabled.value) {
+    await toggleSync();
+    return;
+  }
+
+  peers.value.forEach((peer) => syncPeer(peer));
+}
+
 function percent(value: number, total: number) {
   if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
   return Math.max(0, Math.min(100, (value / total) * 100));
@@ -4704,10 +4716,47 @@ onUnmounted(() => {
         <template v-if="activeNav === 'home'">
           <section>
             <div class="section-head">
-              <h2>Recently played</h2>
+              <h2>{{ !libraryLoading && libraryTracks.length === 0 ? 'Get started' : 'Recently played' }}</h2>
               <a class="show-all" href="#" @click.prevent="activeNav = 'history'; loadHistory()">Show all</a>
             </div>
-            <div v-if="visibleRecentTracks.length === 0 && filterDuplicateTracks(libraryTracks).length === 0" class="library-empty">No tracks yet.</div>
+            <div v-if="libraryLoading" class="library-empty">Loading…</div>
+            <div
+              v-else-if="visibleRecentTracks.length === 0 && filterDuplicateTracks(libraryTracks).length === 0"
+              class="card-list recent-onboarding-list"
+              v-horizontal-scroll
+            >
+              <button type="button" class="card onboarding-music-card" @click="startOnboardingSync">
+                <div class="cover onboarding-action-cover onboarding-sync-cover">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9z" />
+                    <path d="M9 17l3 3 3-3a4.237 4.237 0 0 0-6 0z" />
+                    <path d="M5 13l2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z" />
+                  </svg>
+                  <span class="hover-play">
+                    <span class="green-circle onboarding-card-go" aria-hidden="true">→</span>
+                  </span>
+                </div>
+                <div class="card-title">Sync</div>
+                <div class="card-artist">From another device</div>
+              </button>
+
+              <button type="button" class="card onboarding-music-card" @click="openDataDir">
+                <div class="cover onboarding-action-cover onboarding-upload-cover">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+                  </svg>
+                  <span class="hover-play">
+                    <span class="green-circle onboarding-card-go" aria-hidden="true">→</span>
+                  </span>
+                </div>
+                <div class="card-title">Upload</div>
+                <div class="card-artist">From a folder on disk</div>
+              </button>
+
+              <div class="recent-onboarding-guide" aria-hidden="true">
+                <img class="recent-onboarding-zippy" src="/zippi-sprites/zippi-introduce.webp" alt="" />
+              </div>
+            </div>
             <div v-else class="card-list" v-horizontal-scroll>
               <div v-for="(track, idx) in (visibleRecentTracks.length ? visibleRecentTracks : filterDuplicateTracks(libraryTracks).slice(0, 12))" :key="track.id + '-' + idx"
                 class="card" :class="rarityClass(track.rarity)" :style="rarityVars(track.rarity)"
@@ -4813,7 +4862,7 @@ onUnmounted(() => {
             <div v-if="item.tracks.length > item.previewTracks.length" class="library-empty home-playlist-more">… and {{ item.tracks.length - item.previewTracks.length }} more</div>
           </section>
 
-          <section>
+          <section v-if="libraryTracks.length > 0">
             <div class="section-head">
               <h2>Made For You</h2>
               <a class="show-all" href="#">Show all</a>
@@ -6964,6 +7013,95 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .card:hover { background: #282828 !important; }
 .card.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
 .card:hover .hover-play { opacity: 1; transform: translateY(0); }
+
+.recent-onboarding-list {
+  align-items: flex-start;
+  min-height: 236px;
+}
+.onboarding-music-card {
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.onboarding-music-card:focus-visible {
+  outline: 2px solid #8ff9df;
+  outline-offset: -2px;
+}
+.onboarding-action-cover {
+  display: grid;
+  place-items: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.onboarding-sync-cover {
+  background: linear-gradient(145deg, #36c9b4, #176c7c 58%, #222449);
+}
+.onboarding-upload-cover {
+  background: linear-gradient(145deg, #9b6be7, #5a3b9c 56%, #26233f);
+}
+.onboarding-action-cover > svg {
+  width: 56px;
+  height: 56px;
+  color: rgba(255, 255, 255, 0.94);
+  filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.24));
+}
+.onboarding-card-go {
+  color: #000;
+  font-size: 22px;
+  font-weight: 800;
+}
+.recent-onboarding-guide {
+  position: relative;
+  width: 190px;
+  height: 236px;
+  flex: 0 0 190px;
+  pointer-events: none;
+}
+.recent-onboarding-zippy {
+  position: absolute;
+  left: -54px;
+  bottom: -42px;
+  width: 230px;
+  max-width: none;
+  filter: drop-shadow(0 18px 24px rgba(0, 0, 0, 0.3));
+  transform-origin: center bottom;
+  animation:
+    recent-zippy-enter 650ms cubic-bezier(.18, .86, .28, 1.16) both,
+    recent-zippy-float 3.6s ease-in-out 650ms infinite;
+}
+@keyframes recent-zippy-enter {
+  from { opacity: 0; transform: translate3d(34px, 24px, 0) rotate(3deg) scale(0.92); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) rotate(0) scale(1); }
+}
+@keyframes recent-zippy-float {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  50% { transform: translateY(-5px) rotate(-0.7deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recent-onboarding-zippy {
+    animation: none;
+  }
+}
+@media (max-width: 620px) {
+  .recent-onboarding-list {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+  .onboarding-music-card {
+    width: calc((100% - 16px) / 2);
+    min-width: 0;
+  }
+  .recent-onboarding-guide {
+    width: 100%;
+    height: 250px;
+    flex: 0 0 100%;
+  }
+  .recent-onboarding-zippy {
+    right: 4%;
+    bottom: -38px;
+    left: auto;
+  }
+}
 
 .cover {
   width: 100%; aspect-ratio: 1;
