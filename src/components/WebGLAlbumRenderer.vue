@@ -23,8 +23,9 @@ const ZIPPY_FRAME_URLS = [
   '/zippi-sprites/zippi_sit_chill0000_optimized.webp',
   '/zippi-sprites/zippi_sit_chill0001_optimized.webp',
   '/zippi-sprites/zippi_sit_chill0002_optimized.webp',
+  '/zippi-sprites/zippi_sit_chill0003_optimized.webp',
 ] as const;
-const ZIPPY_FRAME_SEQUENCE = [0, 1, 2, 1] as const;
+const ZIPPY_FRAME_SEQUENCE = [0, 1, 2, 3] as const;
 const ZIPPY_FRAME_DURATION_MS = 240;
 const ZIPPY_SPRITE_SIZE = 1.36;
 const ZIPPY_OFFSET_Y_RATIO = 0.8;
