@@ -1888,11 +1888,11 @@ struct CueTrack {
     index01_secs: Option<f64>,
 }
 
-fn is_cue_extension(ext: &str) -> bool {
+pub(crate) fn is_cue_extension(ext: &str) -> bool {
     CUE_EXTENSIONS.contains(&ext)
 }
 
-fn is_audio_extension(ext: &str) -> bool {
+pub(crate) fn is_audio_extension(ext: &str) -> bool {
     AUDIO_EXTENSIONS.contains(&ext)
 }
 

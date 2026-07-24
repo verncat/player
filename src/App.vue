@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
@@ -1334,6 +1335,8 @@ interface PeerPlayback {
   album?: string | null;
   position?: number;
   duration?: number;
+  volume?: number | null;
+  beat_seq?: number | null;
 }
 
 interface RemoteDeviceStatus {
@@ -1354,6 +1357,8 @@ interface Peer {
 }
 const peers = ref<Peer[]>([]);
 const remoteOutputPeer = ref<Peer | null>(null);
+const remoteControlled = ref(false);
+let lastRemoteBeatSeq = 0;
 
 interface SyncProgress {
   peer: string;
@@ -1399,6 +1404,7 @@ const libraryDataDir = ref<string | null>(null);
 let soulseekSearchSeq = 0;
 let unlistenSoulseekDownload: (() => void) | null = null;
 let unlistenSoulseekPreview: (() => void) | null = null;
+let unlistenDragDrop: (() => void) | null = null;
 const SOULSEEK_RESULTS_PAGE_SIZE = 120;
 const SOULSEEK_SCROLL_LOAD_THRESHOLD = 180;
 const SOULSEEK_PREVIEW_MIN_BUFFER_BYTES = 384 * 1024;
@@ -3375,6 +3381,7 @@ function trackForHash(hash?: string | null) {
 }
 
 async function playTrackLocally(track: Track, autoplay: boolean, position = 0) {
+  remoteControlled.value = false; // local action takes control back
   if (track.soulseek_preview) {
     await invoke('soulseek_play_preview', {
       request: {
@@ -3479,6 +3486,15 @@ function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
   if ((playback?.duration ?? 0) > 0) {
     duration.value = Math.floor(playback?.duration ?? 0);
   }
+  if (playback?.volume != null) {
+    volume.value = Math.round(playback.volume * 100);
+  }
+  if (playback?.beat_seq != null && playback.beat_seq !== lastRemoteBeatSeq) {
+    lastRemoteBeatSeq = playback.beat_seq;
+    if (playback.state === 'playing') {
+      startBeatAnimation(0);
+    }
+  }
   return {
     playing: isPlaying.value,
     finished: playback?.state === 'ended',
@@ -3537,6 +3553,7 @@ function stopTicker() {
 }
 
 async function handleFinishedPlayback(expectedSequence = playbackTransitionSequence) {
+  if (remoteControlled.value) return; // queue advancement is owned by the controlling device
   if (expectedSequence !== playbackTransitionSequence || handlingFinishedPlayback) return;
   handlingFinishedPlayback = true;
   try {
@@ -3666,7 +3683,11 @@ async function seek(e: MouseEvent) {
 function setVolume(e: MouseEvent) {
   const el = e.currentTarget as HTMLElement;
   volume.value = Math.round(Math.max(0, Math.min(1, (e.clientX - el.getBoundingClientRect().left) / el.offsetWidth)) * 100);
-  invoke('playback_set_volume', { value: volume.value / 100 });
+  if (remoteOutputPeer.value) {
+    invoke('remote_playback_volume', { ...remotePeerArgs(remoteOutputPeer.value), value: volume.value / 100 });
+  } else {
+    invoke('playback_set_volume', { value: volume.value / 100 });
+  }
 }
 
 async function toggleDeviceMenu() {
@@ -4342,6 +4363,21 @@ onMounted(() => {
     })
     .catch(() => {});
   ensureLibraryDataDir().catch(() => {});
+  void getCurrentWebviewWindow()
+    .onDragDropEvent((event) => {
+      if (event.payload.type !== 'drop' || event.payload.paths.length === 0) return;
+      invoke<{ imported: number; skipped: number }>('import_dropped_files', {
+        paths: event.payload.paths,
+      }).catch((error) => {
+        console.error('Failed to import dropped files:', error);
+      });
+    })
+    .then((unlisten) => {
+      unlistenDragDrop = unlisten;
+    })
+    .catch((error) => {
+      console.error('Failed to register drag-drop listener:', error);
+    });
   listen<SoulseekDownloadEvent>('soulseek-download', (e) => {
     const payload = e.payload;
     const key = soulseekResultKey(payload.username, payload.filename);
@@ -4487,6 +4523,36 @@ onMounted(() => {
   // Rust emits this when decode thread reaches EOF — works even when JS timers are throttled (Android background)
   listen('playback-finished', async () => {
     await handleFinishedPlayback(playbackTransitionSequence);
+  });
+
+  // Another device took control of this one: mirror its playback state in the UI
+  listen<PeerPlayback | null>('remote-playback', (e) => {
+    const p = e.payload;
+    if (!p || p.state === 'stopped') {
+      remoteControlled.value = false;
+      isPlaying.value = false;
+      stopTicker();
+      return;
+    }
+    remoteControlled.value = true;
+    const track = trackForHash(p.hash);
+    if (track && nowPlaying.value?.id !== track.id) {
+      nowPlaying.value = track;
+      void refreshTrackCover(track.id);
+    }
+    isPlaying.value = p.state === 'playing';
+    currentTime.value = Math.floor(p.position ?? 0);
+    if ((p.duration ?? 0) > 0) {
+      duration.value = Math.floor(p.duration ?? 0);
+    }
+    if (p.volume != null) {
+      volume.value = Math.round(p.volume * 100);
+    }
+    if (p.state === 'playing') {
+      startTicker();
+    } else {
+      stopTicker();
+    }
   });
   
   listen('library-changed', () => {
@@ -4658,6 +4724,7 @@ onUnmounted(() => {
   clearInitialAppDataTimer();
   if (unlistenSoulseekDownload) unlistenSoulseekDownload();
   if (unlistenSoulseekPreview) unlistenSoulseekPreview();
+  if (unlistenDragDrop) unlistenDragDrop();
   if (beatRafId !== null) cancelAnimationFrame(beatRafId);
   for (const timeoutId of scheduledBeatTimeoutIds) {
     clearTimeout(timeoutId);

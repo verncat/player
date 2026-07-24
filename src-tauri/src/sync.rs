@@ -69,6 +69,13 @@ pub struct RemotePlaybackInfo {
     pub album: Option<String>,
     pub position: f64,
     pub duration: f64,
+    pub volume: f32,
+    pub beat_seq: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RemotePlaybackVolumeRequest {
+    pub value: f32,
 }
 
 /// `/status` response payload for lightweight peer polling.
@@ -1042,19 +1049,22 @@ fn handle_request(
         serve_status(request, &conn, &data_dir, &playback);
     } else if url == "/control/play-hash" {
         let playback = app.state::<crate::playback::PlaybackState>();
-        serve_control_play_hash(request, &conn, &data_dir, &playback);
+        serve_control_play_hash(request, &conn, &data_dir, &playback, &app);
     } else if url == "/control/pause" {
         let playback = app.state::<crate::playback::PlaybackState>();
-        serve_control_pause(request, &playback);
+        serve_control_pause(request, &conn, &data_dir, &playback, &app);
     } else if url == "/control/resume" {
         let playback = app.state::<crate::playback::PlaybackState>();
-        serve_control_resume(request, &playback);
+        serve_control_resume(request, &conn, &data_dir, &playback, &app);
     } else if url == "/control/stop" {
         let playback = app.state::<crate::playback::PlaybackState>();
-        serve_control_stop(request, &playback);
+        serve_control_stop(request, &conn, &data_dir, &playback, &app);
     } else if url == "/control/seek" {
         let playback = app.state::<crate::playback::PlaybackState>();
-        serve_control_seek(request, &playback);
+        serve_control_seek(request, &conn, &data_dir, &playback, &app);
+    } else if url == "/control/volume" {
+        let playback = app.state::<crate::playback::PlaybackState>();
+        serve_control_volume(request, &conn, &data_dir, &playback, &app);
     } else if url == "/tracks" {
         serve_tracks(request, &conn, &data_dir);
     } else if url == "/sync-data" {
@@ -1191,7 +1201,24 @@ fn current_playback_info(
         album,
         position: playback.position_secs(),
         duration: playback.duration_secs(),
+        volume: playback.volume(),
+        beat_seq: playback.beat_seq(),
     })
+}
+
+/// Emits the current playback state to this device's own frontend so the UI
+/// can reflect remote-control commands arriving over `/control/*`.
+fn emit_remote_playback(
+    app: &AppHandle,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+) {
+    let info = {
+        let c = conn.lock().unwrap();
+        current_playback_info(&c, data_dir, playback)
+    };
+    let _ = app.emit("remote-playback", info);
 }
 
 fn serve_status(
@@ -1229,6 +1256,7 @@ fn serve_control_play_hash(
     conn: &Arc<Mutex<Connection>>,
     data_dir: &Path,
     playback: &crate::playback::PlaybackState,
+    app: &AppHandle,
 ) {
     let payload = match read_json_request::<RemotePlaybackTransferRequest>(&mut request) {
         Ok(payload) => payload,
@@ -1261,25 +1289,53 @@ fn serve_control_play_hash(
     if !payload.autoplay {
         playback.pause();
     }
+    emit_remote_playback(app, conn, data_dir, playback);
     respond_status(request, 204);
 }
 
-fn serve_control_pause(request: tiny_http::Request, playback: &crate::playback::PlaybackState) {
+fn serve_control_pause(
+    request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+    app: &AppHandle,
+) {
     playback.pause();
+    emit_remote_playback(app, conn, data_dir, playback);
     respond_status(request, 204);
 }
 
-fn serve_control_resume(request: tiny_http::Request, playback: &crate::playback::PlaybackState) {
+fn serve_control_resume(
+    request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+    app: &AppHandle,
+) {
     playback.resume();
+    emit_remote_playback(app, conn, data_dir, playback);
     respond_status(request, 204);
 }
 
-fn serve_control_stop(request: tiny_http::Request, playback: &crate::playback::PlaybackState) {
+fn serve_control_stop(
+    request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+    app: &AppHandle,
+) {
     playback.stop();
+    emit_remote_playback(app, conn, data_dir, playback);
     respond_status(request, 204);
 }
 
-fn serve_control_seek(mut request: tiny_http::Request, playback: &crate::playback::PlaybackState) {
+fn serve_control_seek(
+    mut request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+    app: &AppHandle,
+) {
     let payload = match read_json_request::<RemotePlaybackSeekRequest>(&mut request) {
         Ok(payload) => payload,
         Err(e) => {
@@ -1288,6 +1344,26 @@ fn serve_control_seek(mut request: tiny_http::Request, playback: &crate::playbac
         }
     };
     playback.seek(payload.position.max(0.0));
+    emit_remote_playback(app, conn, data_dir, playback);
+    respond_status(request, 204);
+}
+
+fn serve_control_volume(
+    mut request: tiny_http::Request,
+    conn: &Arc<Mutex<Connection>>,
+    data_dir: &Path,
+    playback: &crate::playback::PlaybackState,
+    app: &AppHandle,
+) {
+    let payload = match read_json_request::<RemotePlaybackVolumeRequest>(&mut request) {
+        Ok(payload) => payload,
+        Err(e) => {
+            respond_error(request, 400, &format!("invalid request: {e}"));
+            return;
+        }
+    };
+    playback.set_volume(payload.value);
+    emit_remote_playback(app, conn, data_dir, playback);
     respond_status(request, 204);
 }
 
@@ -2647,5 +2723,20 @@ pub fn remote_playback_seek(
         &base_urls,
         "/control/seek",
         &RemotePlaybackSeekRequest { position },
+    )
+}
+
+#[tauri::command]
+pub fn remote_playback_volume(
+    peer_host: String,
+    peer_addresses: Vec<String>,
+    peer_port: Option<u16>,
+    value: f32,
+) -> Result<(), String> {
+    let base_urls = peer_base_urls(&peer_host, &peer_addresses, peer_port.unwrap_or(SYNC_PORT));
+    remote_control_post(
+        &base_urls,
+        "/control/volume",
+        &RemotePlaybackVolumeRequest { value },
     )
 }

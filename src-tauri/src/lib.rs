@@ -3,6 +3,7 @@ pub mod audio;
 pub mod demo;
 pub mod discovery;
 pub mod identify;
+pub mod import;
 pub mod library;
 pub mod playback;
 pub mod soulseek;
@@ -216,6 +217,7 @@ pub fn run() {
             library::apply_dedup,
             library::unmark_duplicates,
             library::mark_track_as_duplicate,
+            import::import_dropped_files,
             library::get_device_emoji,
             library::set_device_emoji,
             library::get_device_settings,
@@ -258,6 +260,7 @@ pub fn run() {
             sync::remote_playback_resume,
             sync::remote_playback_stop,
             sync::remote_playback_seek,
+            sync::remote_playback_volume,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

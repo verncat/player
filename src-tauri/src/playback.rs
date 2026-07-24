@@ -361,6 +361,8 @@ struct Shared {
     source_sample_rate: AtomicU64,
     /// volume 0.0–1.0 stored as u32 (val × 10000)
     volume: AtomicU64,
+    /// Monotonic beat counter, incremented on every detected beat.
+    beat_seq: AtomicU64,
     /// Finished naturally (not stopped by user)
     finished: AtomicBool,
     /// Currently loaded file path (for display/debug)
@@ -398,6 +400,7 @@ impl PlaybackState {
                 duration_ms: AtomicU64::new(0),
                 source_sample_rate: AtomicU64::new(0),
                 volume: AtomicU64::new(7000), // 0.7
+                beat_seq: AtomicU64::new(0),
                 finished: AtomicBool::new(false),
                 current_file: Mutex::new(None),
                 current_source: Mutex::new(None),
@@ -560,6 +563,10 @@ impl PlaybackState {
 
     pub fn volume(&self) -> f32 {
         self.inner.volume.load(Ordering::Relaxed) as f32 / 10000.0
+    }
+
+    pub fn beat_seq(&self) -> u64 {
+        self.inner.beat_seq.load(Ordering::Relaxed)
     }
 
     pub fn position_secs(&self) -> f64 {
@@ -949,6 +956,7 @@ fn check_beat(shared: &Shared, beat: &mut BeatState, mono: f32, sample_rate: u32
         let now = now_ms();
         if now >= beat.last_beat_ms + BEAT_COOLDOWN_MS {
             beat.last_beat_ms = now;
+            shared.beat_seq.fetch_add(1, Ordering::Relaxed);
             let queued_samples = shared.ring.lock().unwrap().available();
             let queued_frames = queued_samples as f64 / channels.max(1) as f64;
             let queued_ms = queued_frames * 1000.0 / sample_rate.max(1) as f64;
