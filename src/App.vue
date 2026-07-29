@@ -100,7 +100,16 @@ const libraryTracks = ref<Track[]>([]);
 const showDuplicateTracks = ref(false);
 const libraryLoading = ref(true);
 const libraryQuery = ref("");
+const libraryTotal = ref(0);
+const libraryOffset = ref(0);
+const libraryHasMore = ref(false);
+const libraryPageSize = ref(12);
 const searchQuery = ref("");
+const localSearchTracks = ref<Track[]>([]);
+const localSearchTotal = ref(0);
+const localSearchOffset = ref(0);
+const localSearchHasMore = ref(false);
+const localSearchLoading = ref(false);
 const editingTrack = ref<Track | null>(null);
 const editForm = ref({
   title: '',
@@ -116,6 +125,18 @@ const editForm = ref({
   rarity: '',
 });
 const covers = ref<Record<number, string | null>>({});
+
+interface TrackPage {
+  tracks: Track[];
+  total: number;
+  offset: number;
+  has_more: boolean;
+}
+
+const HOME_TRACK_PAGE_SIZE = 12;
+const LIBRARY_TRACK_PAGE_SIZE = 50;
+const MAX_CACHED_COVERS = 100;
+const MAX_CONCURRENT_COVER_LOADS = 3;
 
 function filterDuplicateTracks(tracks: Track[]) {
   return showDuplicateTracks.value ? tracks : tracks.filter((track) => !track.is_duplicate);
@@ -1323,6 +1344,12 @@ watch(showDuplicateTracks, async (show) => {
     const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: playlistView.value.id }));
     playlistView.value = { ...playlistView.value, tracks };
   }
+
+  await loadLibraryPage({
+    offset: 0,
+    limit: activeNav.value === 'library' ? LIBRARY_TRACK_PAGE_SIZE : HOME_TRACK_PAGE_SIZE,
+  });
+  if (searchQuery.value.trim()) await loadLocalSearchPage(0);
 });
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -2281,6 +2308,21 @@ async function runTrackReplaceSearch() {
 
 function handleSearchInput() {
   const trimmed = searchQuery.value.trim();
+  if (localSearchTimer) clearTimeout(localSearchTimer);
+  if (!trimmed) {
+    localSearchTracks.value = [];
+    localSearchTotal.value = 0;
+    localSearchOffset.value = 0;
+    localSearchHasMore.value = false;
+    localSearchLoading.value = false;
+  } else {
+    localSearchLoading.value = true;
+    localSearchTimer = setTimeout(() => {
+      localSearchTimer = null;
+      void loadLocalSearchPage(0);
+    }, 250);
+  }
+
   if (!trimmed) {
     resetSoulseekSearchState();
     return;
@@ -2787,6 +2829,14 @@ const currentTrack = computed<{ title: string; artist: string; colors: [string, 
       title: nowPlaying.value.title || nowPlaying.value.path,
       artist: nowPlaying.value.artist || 'Unknown',
       colors: hashToColors(nowPlaying.value.file_hash),
+    };
+  }
+  const rp = remoteOutputPeer.value?.playback;
+  if (rp && (rp.title || rp.hash)) {
+    return {
+      title: rp.title || 'Unknown',
+      artist: rp.artist || 'Unknown',
+      colors: hashToColors(rp.hash ?? null),
     };
   }
   return { title: 'No track', artist: '', colors: ['#282828', '#181818'] };
@@ -3854,27 +3904,6 @@ function onKeyDown(e: KeyboardEvent) {
   }
 }
 
-function trackMatchesQuery(track: Track, query: string) {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-
-  const values = [
-    track.title,
-    track.artist,
-    track.album,
-    track.genre,
-    trackTagsText(track),
-    track.rarity,
-    track.path,
-    track.track_number != null ? String(track.track_number) : null,
-    track.duration_secs != null ? String(track.duration_secs) : null,
-    String(track.play_count),
-    track.year != null ? String(track.year) : null,
-  ];
-
-  return values.some((value) => value?.toLowerCase().includes(q));
-}
-
 function countUniqueArtists(tracks: Track[]) {
   return new Set(
     tracks
@@ -3892,17 +3921,12 @@ function countUniqueAlbums(tracks: Track[]) {
 }
 
 const filteredTracks = computed(() => {
-  const visibleTracks = filterDuplicateTracks(libraryTracks.value);
-  const q = libraryQuery.value.trim();
-  if (!q) return visibleTracks;
-  return visibleTracks.filter((track) => trackMatchesQuery(track, q));
+  // Filtering is performed by SQLite before the page crosses the Tauri bridge.
+  return libraryTracks.value;
 });
 
 const searchResults = computed(() => {
-  const visibleTracks = filterDuplicateTracks(libraryTracks.value);
-  const q = searchQuery.value.trim();
-  if (!q) return [];
-  return visibleTracks.filter((track) => trackMatchesQuery(track, q));
+  return localSearchTracks.value;
 });
 
 const visibleRecentTracks = computed(() => filterDuplicateTracks(recentTracks.value));
@@ -3927,6 +3951,19 @@ const trackReplaceQueryDirty = computed(() => {
   return !!trimmed && trimmed !== trackReplaceSubmittedQuery.value;
 });
 const canRunTrackReplaceSearch = computed(() => !!soulseekReady.value && !!trackReplaceDialog.value?.query.trim() && !trackReplaceLoading.value);
+const libraryPageLabel = computed(() => {
+  if (libraryTotal.value === 0 || libraryTracks.value.length === 0) return '0 tracks';
+  const first = libraryOffset.value + 1;
+  const last = libraryOffset.value + libraryTracks.value.length;
+  return `${first}–${last} of ${libraryTotal.value}`;
+});
+const localSearchPageLabel = computed(() => {
+  if (localSearchTotal.value === 0 || localSearchTracks.value.length === 0) return '0 tracks';
+  const first = localSearchOffset.value + 1;
+  const last = localSearchOffset.value + localSearchTracks.value.length;
+  return `${first}–${last} of ${localSearchTotal.value}`;
+});
+const libraryPageLoading = computed(() => libraryLoading.value || localSearchLoading.value);
 
 const groupedByArtist = computed(() => {
   const map = new Map<string, Track[]>();
@@ -3945,38 +3982,108 @@ const libraryFlatList = computed<Track[]>(() => {
   return flat.length ? flat : libraryTracks.value;
 });
 
+let libraryFilterTimer: ReturnType<typeof setTimeout> | null = null;
+let localSearchTimer: ReturnType<typeof setTimeout> | null = null;
+let libraryPageRequest = 0;
+let localSearchRequest = 0;
+
+watch(libraryQuery, () => {
+  if (libraryFilterTimer) clearTimeout(libraryFilterTimer);
+  libraryFilterTimer = setTimeout(() => {
+    void loadLibraryPage({ offset: 0, limit: LIBRARY_TRACK_PAGE_SIZE });
+  }, 250);
+});
+
 async function loadLibrary() {
+  return loadLibraryPage({
+    offset: 0,
+    limit: activeNav.value === 'library' ? LIBRARY_TRACK_PAGE_SIZE : HOME_TRACK_PAGE_SIZE,
+  });
+}
+
+async function loadLibraryPage({
+  offset = 0,
+  limit = LIBRARY_TRACK_PAGE_SIZE,
+}: { offset?: number; limit?: number } = {}) {
+  const request = ++libraryPageRequest;
+  const query = activeNav.value === 'library' ? libraryQuery.value.trim() : '';
   libraryLoading.value = true;
   try {
-    libraryTracks.value = await invoke<Track[]>('get_all_tracks');
-    fetchCovers(libraryTracks.value);
+    const page = await invoke<TrackPage>('get_tracks_page', {
+      query: query || null,
+      limit,
+      offset,
+      includeDuplicates: showDuplicateTracks.value,
+    });
+    if (request !== libraryPageRequest) return;
+    libraryTracks.value = page.tracks;
+    libraryTotal.value = page.total;
+    libraryOffset.value = page.offset;
+    libraryHasMore.value = page.has_more;
+    libraryPageSize.value = limit;
   } catch (e) {
-    console.error('Failed to load library:', e);
+    if (request === libraryPageRequest) console.error('Failed to load library:', e);
   } finally {
-    libraryLoading.value = false;
+    if (request === libraryPageRequest) libraryLoading.value = false;
   }
 }
 
-let startupLibraryRetryCount = 0;
-let startupLibraryRetryTimer: ReturnType<typeof setTimeout> | null = null;
-let initialAppDataTimer: ReturnType<typeof setTimeout> | null = null;
+async function loadLocalSearchPage(offset = 0) {
+  const query = searchQuery.value.trim();
+  if (!query) {
+    localSearchTracks.value = [];
+    localSearchTotal.value = 0;
+    localSearchOffset.value = 0;
+    localSearchHasMore.value = false;
+    return;
+  }
 
-function clearStartupLibraryRetry() {
-  if (startupLibraryRetryTimer) {
-    clearTimeout(startupLibraryRetryTimer);
-    startupLibraryRetryTimer = null;
+  const request = ++localSearchRequest;
+  localSearchLoading.value = true;
+  try {
+    const page = await invoke<TrackPage>('get_tracks_page', {
+      query,
+      limit: LIBRARY_TRACK_PAGE_SIZE,
+      offset,
+      includeDuplicates: showDuplicateTracks.value,
+    });
+    // Ignore a response for a query the user has already replaced.
+    if (request !== localSearchRequest || query !== searchQuery.value.trim()) return;
+    localSearchTracks.value = page.tracks;
+    localSearchTotal.value = page.total;
+    localSearchOffset.value = page.offset;
+    localSearchHasMore.value = page.has_more;
+  } catch (error) {
+    console.error('Failed to search local library:', error);
+  } finally {
+    if (request === localSearchRequest && query === searchQuery.value.trim()) localSearchLoading.value = false;
   }
 }
 
-function clearInitialAppDataTimer() {
-  if (initialAppDataTimer) {
-    clearTimeout(initialAppDataTimer);
-    initialAppDataTimer = null;
-  }
+function previousLibraryPage() {
+  void loadLibraryPage({
+    offset: Math.max(0, libraryOffset.value - libraryPageSize.value),
+    limit: libraryPageSize.value,
+  });
+}
+
+function nextLibraryPage() {
+  if (!libraryHasMore.value) return;
+  void loadLibraryPage({
+    offset: libraryOffset.value + libraryTracks.value.length,
+    limit: libraryPageSize.value,
+  });
+}
+
+function previousLocalSearchPage() {
+  void loadLocalSearchPage(Math.max(0, localSearchOffset.value - LIBRARY_TRACK_PAGE_SIZE));
+}
+
+function nextLocalSearchPage() {
+  if (localSearchHasMore.value) void loadLocalSearchPage(localSearchOffset.value + localSearchTracks.value.length);
 }
 
 function scheduleInitialAppDataLoad() {
-  clearInitialAppDataTimer();
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       void loadAppData('mount');
@@ -3984,10 +4091,6 @@ function scheduleInitialAppDataLoad() {
       setTimeout(() => { void checkAboutUpdates(); }, 3000);
     });
   });
-  initialAppDataTimer = setTimeout(() => {
-    initialAppDataTimer = null;
-    void loadAppData('retry');
-  }, 1200);
 }
 
 function onWindowFocus() {
@@ -4000,7 +4103,7 @@ function onDocumentVisibilityChange() {
   }
 }
 
-async function loadAppData(reason: 'mount' | 'resume' | 'sync' | 'retry' = 'mount') {
+async function loadAppData(reason: 'mount' | 'resume' | 'sync' = 'mount') {
   const shouldLoadLibrary = reason !== 'resume' || libraryTracks.value.length === 0;
   await Promise.allSettled([
     shouldLoadLibrary ? loadLibrary() : Promise.resolve(),
@@ -4009,19 +4112,6 @@ async function loadAppData(reason: 'mount' | 'resume' | 'sync' | 'retry' = 'moun
     loadSmartPlaylists(),
   ]);
 
-  if (reason !== 'sync' && startupLibraryRetryCount < 2 && libraryTracks.value.length === 0 && playlists.value.length === 0 && smartPlaylists.value.length === 0) {
-    clearStartupLibraryRetry();
-    startupLibraryRetryCount += 1;
-    const delayMs = startupLibraryRetryCount === 1 ? 900 : 2200;
-    startupLibraryRetryTimer = setTimeout(() => {
-      startupLibraryRetryTimer = null;
-      void loadAppData('retry');
-    }, delayMs);
-    return;
-  }
-
-  startupLibraryRetryCount = 0;
-  clearStartupLibraryRetry();
 }
 
 async function loadRecent() {
@@ -4204,14 +4294,75 @@ function formatHistoryDate(ts: number): string {
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ', ' + time;
 }
 
-async function fetchCovers(tracks: Track[]) {
-  for (const t of tracks) {
-    if (covers.value[t.id] !== undefined) continue;
-    invoke<string | null>('get_track_cover', { id: t.id }).then(url => {
-      covers.value[t.id] = url;
-    });
+const coverLoadQueue: Track[] = [];
+const queuedCoverIds = new Set<number>();
+const coverLastUsed = new Map<number, number>();
+let activeCoverLoads = 0;
+
+function trimCoverCache() {
+  while (coverLastUsed.size > MAX_CACHED_COVERS) {
+    const oldest = coverLastUsed.keys().next().value as number | undefined;
+    if (oldest === undefined) return;
+    coverLastUsed.delete(oldest);
+    delete covers.value[oldest];
   }
 }
+
+function pumpCoverQueue() {
+  while (activeCoverLoads < MAX_CONCURRENT_COVER_LOADS && coverLoadQueue.length) {
+    const track = coverLoadQueue.shift()!;
+    queuedCoverIds.delete(track.id);
+    activeCoverLoads += 1;
+    invoke<string | null>('get_track_cover', { id: track.id })
+      .then((url) => {
+        covers.value[track.id] = url;
+        coverLastUsed.delete(track.id);
+        coverLastUsed.set(track.id, Date.now());
+        trimCoverCache();
+      })
+      .catch(() => {
+        // Cache a negative result too, otherwise rows without covers retry on
+        // every rerender.
+        covers.value[track.id] = null;
+      })
+      .finally(() => {
+        activeCoverLoads -= 1;
+        pumpCoverQueue();
+      });
+  }
+}
+
+async function fetchCovers(tracks: Track[]) {
+  for (const track of tracks) {
+    if (covers.value[track.id] !== undefined || queuedCoverIds.has(track.id)) continue;
+    queuedCoverIds.add(track.id);
+    coverLoadQueue.push(track);
+  }
+  pumpCoverQueue();
+}
+
+const lazyCoverObservers = new WeakMap<HTMLElement, IntersectionObserver>();
+const vLazyCover = {
+  mounted(el: HTMLElement, binding: { value: Track }) {
+    const track = binding.value;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      lazyCoverObservers.delete(el);
+      void fetchCovers([track]);
+    }, {
+      root: contentRef.value,
+      // Start a little before the row is on screen to avoid visible pop-in.
+      rootMargin: '240px 0px',
+    });
+    lazyCoverObservers.set(el, observer);
+    observer.observe(el);
+  },
+  unmounted(el: HTMLElement) {
+    lazyCoverObservers.get(el)?.disconnect();
+    lazyCoverObservers.delete(el);
+  },
+};
 
 function openEditor(track: Track) {
   editForm.value = {
@@ -4346,6 +4497,9 @@ function identifyStatusIcon(status: string) {
 watch(activeNav, (nav) => {
   if (nav === 'about') {
     void loadAbout();
+  }
+  if (nav === 'library' && libraryPageSize.value !== LIBRARY_TRACK_PAGE_SIZE) {
+    void loadLibraryPage({ offset: 0, limit: LIBRARY_TRACK_PAGE_SIZE });
   }
 });
 
@@ -4557,6 +4711,9 @@ onMounted(() => {
   
   listen('library-changed', () => {
     covers.value = {};
+    coverLastUsed.clear();
+    coverLoadQueue.length = 0;
+    queuedCoverIds.clear();
     void loadAppData('sync');
   });
   listen<number>('beat', (e) => {
@@ -4720,8 +4877,8 @@ onUnmounted(() => {
   delete (window as any)._playbackFinished;
   clearTrackLongPress();
   clearHomePinnedLongPress();
-  clearStartupLibraryRetry();
-  clearInitialAppDataTimer();
+  if (libraryFilterTimer) clearTimeout(libraryFilterTimer);
+  if (localSearchTimer) clearTimeout(localSearchTimer);
   if (unlistenSoulseekDownload) unlistenSoulseekDownload();
   if (unlistenSoulseekPreview) unlistenSoulseekPreview();
   if (unlistenDragDrop) unlistenDragDrop();
@@ -4783,12 +4940,12 @@ onUnmounted(() => {
         <template v-if="activeNav === 'home'">
           <section>
             <div class="section-head">
-              <h2>{{ !libraryLoading && libraryTracks.length === 0 ? 'Get started' : 'Recently played' }}</h2>
+              <h2>{{ !libraryLoading && libraryTotal === 0 ? 'Get started' : 'Recently played' }}</h2>
               <a class="show-all" href="#" @click.prevent="activeNav = 'history'; loadHistory()">Show all</a>
             </div>
             <div v-if="libraryLoading" class="library-empty">Loading…</div>
             <div
-              v-else-if="visibleRecentTracks.length === 0 && filterDuplicateTracks(libraryTracks).length === 0"
+              v-else-if="visibleRecentTracks.length === 0 && libraryTotal === 0"
               class="card-list recent-onboarding-list"
               v-horizontal-scroll
             >
@@ -4833,7 +4990,7 @@ onUnmounted(() => {
                 @touchmove.passive="moveTrackRowLongPress"
                 @touchend="endTrackRowLongPress"
                 @touchcancel="endTrackRowLongPress">
-                <div class="cover" :style="covers[track.id]
+                <div v-lazy-cover="track" class="cover" :style="covers[track.id]
                   ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                   : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`">
                   <div class="hover-play">
@@ -4929,7 +5086,7 @@ onUnmounted(() => {
             <div v-if="item.tracks.length > item.previewTracks.length" class="library-empty home-playlist-more">… and {{ item.tracks.length - item.previewTracks.length }} more</div>
           </section>
 
-          <section v-if="libraryTracks.length > 0">
+          <section v-if="libraryTotal > 0">
             <div class="section-head">
               <h2>Made For You</h2>
               <a class="show-all" href="#">Show all</a>
@@ -4963,6 +5120,14 @@ onUnmounted(() => {
               />
             </div>
 
+            <div v-if="!libraryLoading" class="library-page-controls">
+              <span>{{ libraryPageLabel }}</span>
+              <div>
+                <button class="icon-btn text-action-btn" :disabled="libraryOffset === 0" @click="previousLibraryPage">← Previous</button>
+                <button class="icon-btn text-action-btn" :disabled="!libraryHasMore" @click="nextLibraryPage">Next →</button>
+              </div>
+            </div>
+
             <div v-if="libraryLoading" class="library-empty">Loading…</div>
             <div v-else-if="filteredTracks.length === 0" class="library-empty">
               No tracks found. Add music to the data directory and it will appear here.
@@ -4983,7 +5148,7 @@ onUnmounted(() => {
                   @touchend="endTrackRowLongPress"
                   @touchcancel="endTrackRowLongPress"
                 >
-                  <div class="track-cover-sm" :style="covers[track.id]
+                  <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
                     ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                     : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                   />
@@ -5020,6 +5185,11 @@ onUnmounted(() => {
                   <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                 </div>
               </div>
+            </div>
+
+            <div v-if="!libraryLoading && libraryTracks.length" class="library-page-controls library-page-controls-bottom">
+              <button class="icon-btn text-action-btn" :disabled="libraryOffset === 0" @click="previousLibraryPage">← Previous</button>
+              <button class="icon-btn text-action-btn" :disabled="!libraryHasMore" @click="nextLibraryPage">Next →</button>
             </div>
           </section>
         </template>
@@ -5062,7 +5232,7 @@ onUnmounted(() => {
                     @touchend="endTrackRowLongPress"
                     @touchcancel="endTrackRowLongPress"
                   >
-                    <div class="track-cover-sm" :style="covers[track.id]
+                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                       : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                     />
@@ -5093,9 +5263,9 @@ onUnmounted(() => {
 
               <template v-else>
                 <div class="search-summary">
-                  <span><strong>{{ searchResults.length }}</strong> local tracks</span>
-                  <span><strong>{{ searchArtistCount }}</strong> artists</span>
-                  <span><strong>{{ searchAlbumCount }}</strong> albums</span>
+                  <span><strong>{{ localSearchTotal }}</strong> local tracks</span>
+                  <span><strong>{{ searchArtistCount }}</strong> artists on this page</span>
+                  <span><strong>{{ searchAlbumCount }}</strong> albums on this page</span>
                   <span v-if="soulseekReady"><strong>{{ searchSoulseekCountLabel }}</strong> Soulseek tracks</span>
                 </div>
 
@@ -5103,7 +5273,9 @@ onUnmounted(() => {
                   <h2>Local Library</h2>
                 </div>
 
-                <div v-if="searchResults.length === 0" class="library-empty search-inline-empty">
+                <div v-if="localSearchLoading" class="library-empty search-inline-empty">Searching local library…</div>
+
+                <div v-else-if="searchResults.length === 0" class="library-empty search-inline-empty">
                   Nothing in your library for "{{ searchQuery }}".
                 </div>
 
@@ -5121,7 +5293,7 @@ onUnmounted(() => {
                     @touchend="endTrackRowLongPress"
                     @touchcancel="endTrackRowLongPress"
                   >
-                    <div class="track-cover-sm" :style="covers[track.id]
+                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                       : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                     />
@@ -5146,6 +5318,13 @@ onUnmounted(() => {
                       <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
                     </button>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
+                  </div>
+                </div>
+                <div v-if="searchResults.length" class="library-page-controls library-page-controls-bottom">
+                  <span>{{ localSearchPageLabel }}</span>
+                  <div>
+                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage">← Previous</button>
+                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next →</button>
                   </div>
                 </div>
               </template>
@@ -6318,9 +6497,18 @@ onUnmounted(() => {
     </Transition>
 
     <!-- Index progress pill (clickable to open log) -->
-    <div class="activity-dock" :class="{ 'activity-active': indexRunning }">
-      <button type="button" class="identify-mini activity-mini" :class="{ 'index-done': indexDone }" @click="indexLogOpen = true">
-        <template v-if="indexRunning">
+    <div class="activity-dock" :class="{ 'activity-active': indexRunning || libraryPageLoading }">
+      <button
+        type="button"
+        class="identify-mini activity-mini"
+        :class="{ 'index-done': indexDone }"
+        :aria-label="libraryPageLoading ? 'Loading library' : 'Open activity log'"
+        @click="indexLogOpen = true"
+      >
+        <template v-if="libraryPageLoading">
+          <div class="identify-mini-spinner" />
+        </template>
+        <template v-else-if="indexRunning">
           <div v-if="!indexDone" class="identify-mini-spinner" />
           <svg v-else viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
           <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
@@ -7224,6 +7412,17 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 16px; gap: 16px;
 }
+.library-page-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -4px 0 12px;
+  color: #a7a7a7;
+  font-size: 13px;
+}
+.library-page-controls > div { display: flex; gap: 6px; }
+.library-page-controls-bottom { margin: 18px 0 0; justify-content: center; }
 .library-search {
   background: #282828; border: none; border-radius: 4px;
   color: #fff; font-size: var(--fs-input); padding: 8px 12px;
