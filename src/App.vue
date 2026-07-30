@@ -399,6 +399,7 @@ const supportsTauriUpdater = computed(() => (
   aboutInfo.value !== null
   && ['linux', 'macos', 'windows'].includes(aboutInfo.value.platform)
 ));
+const hasAvailableUpdate = computed(() => aboutUpdateStatus.value?.has_update === true);
 
 // ── Playlists ──────────────────────────────────────────────────────────────
 interface Playlist {
@@ -5041,6 +5042,7 @@ onUnmounted(() => {
       :open="showMobileNav"
       :sync-active="syncActive"
       :peers-count="peers.length"
+      :update-available="hasAvailableUpdate"
       @close="showMobileNav = false"
       @navigate-home="activeNav = 'home'; showMobileNav = false"
       @navigate-search="activeNav = 'search'; showMobileNav = false"

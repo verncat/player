@@ -5,6 +5,7 @@ defineProps<{
   open: boolean;
   syncActive: boolean;
   peersCount: number;
+  updateAvailable: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -82,6 +83,7 @@ const emit = defineEmits<{
       <a class="nav-item" :class="{ active: activeNav === 'about' }" href="#" @click.prevent="emit('navigateAbout')">
         <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M11 7h2V5h-2v2zm0 12h2v-8h-2v8zm1-17C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
         About
+        <span v-if="updateAvailable" class="peer-badge" aria-label="Update available">+</span>
       </a>
     </nav>
   </aside>
