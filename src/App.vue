@@ -104,6 +104,7 @@ const libraryTotal = ref(0);
 const libraryOffset = ref(0);
 const libraryHasMore = ref(false);
 const libraryPageSize = ref(12);
+const libraryLoadingMore = ref(false);
 const searchQuery = ref("");
 const localSearchTracks = ref<Track[]>([]);
 const localSearchTotal = ref(0);
@@ -401,7 +402,15 @@ interface Playlist {
   pinned_at: number | null;
 }
 const playlists = ref<Playlist[]>([]);
-const playlistView = ref<{ id: number; name: string; tracks: Track[] } | null>(null);
+interface PlaylistView {
+  id: number;
+  name: string;
+  tracks: Track[];
+  total: number;
+  hasMore: boolean;
+  loadingMore: boolean;
+}
+const playlistView = ref<PlaylistView | null>(null);
 const showNewPlaylistInput = ref(false);
 const newPlaylistName = ref('');
 const homePinnedRegularTracks = ref<Record<number, Track[]>>({});
@@ -468,16 +477,48 @@ async function loadHomePinnedRegularTracks() {
 }
 
 async function openPlaylist(pl: Playlist) {
-  const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: pl.id }));
-  playlistView.value = { id: pl.id, name: pl.name, tracks };
+  await loadPlaylistPage(pl.id, pl.name);
+}
+
+async function loadPlaylistPage(playlistId: number, name: string, append = false) {
+  const current = playlistView.value;
+  const offset = append && current?.id === playlistId ? current.tracks.length : 0;
+  if (append && current) current.loadingMore = true;
+  try {
+    const page = await invoke<TrackPage>('get_playlist_tracks_page', {
+      playlistId,
+      limit: LIBRARY_TRACK_PAGE_SIZE,
+      offset,
+      includeDuplicates: showDuplicateTracks.value,
+    });
+    const tracks = append && current?.id === playlistId
+      ? [...current.tracks, ...page.tracks]
+      : page.tracks;
+    playlistView.value = {
+      id: playlistId,
+      name,
+      tracks,
+      total: page.total,
+      hasMore: page.has_more,
+      loadingMore: false,
+    };
+  } catch (error) {
+    if (current?.id === playlistId) current.loadingMore = false;
+    console.error('Failed to load playlist:', error);
+  }
+}
+
+function loadMorePlaylistTracks() {
+  const view = playlistView.value;
+  if (!view || !view.hasMore || view.loadingMore) return;
+  void loadPlaylistPage(view.id, view.name, true);
 }
 
 async function addTrackToPlaylist(playlistId: number, trackId: number) {
   await invoke('add_track_to_playlist', { playlistId, trackId });
   await loadPlaylists();
   if (playlistView.value?.id === playlistId) {
-    const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId }));
-    playlistView.value = { ...playlistView.value, tracks };
+    await loadPlaylistPage(playlistId, playlistView.value.name);
   }
   addToPlaylistMenu.value = null;
 }
@@ -1341,8 +1382,7 @@ watch(showDuplicateTracks, async (show) => {
   });
 
   if (playlistView.value) {
-    const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: playlistView.value.id }));
-    playlistView.value = { ...playlistView.value, tracks };
+    await loadPlaylistPage(playlistView.value.id, playlistView.value.name);
   }
 
   await loadLibraryPage({
@@ -2231,12 +2271,23 @@ function loadMoreTrackReplaceResults() {
 }
 
 function maybeLoadMoreSoulseekResults() {
-  if (activeNav.value !== 'search' && activeNav.value !== 'track-replace') {
+  const content = contentRef.value;
+  if (!content) return;
+
+  const distanceToBottom = content.scrollHeight - (content.scrollTop + content.clientHeight);
+  if (distanceToBottom > SOULSEEK_SCROLL_LOAD_THRESHOLD) return;
+
+  if (activeNav.value === 'library') {
+    loadMoreLibraryTracks();
     return;
   }
 
-  const content = contentRef.value;
-  if (!content) return;
+  if (activeNav.value === 'playlists' && playlistTab.value === 'regular' && playlistView.value) {
+    loadMorePlaylistTracks();
+    return;
+  }
+
+  if (activeNav.value !== 'search' && activeNav.value !== 'track-replace') return;
 
   if (activeNav.value === 'search') {
     if (
@@ -2256,9 +2307,6 @@ function maybeLoadMoreSoulseekResults() {
   ) {
     return;
   }
-
-  const distanceToBottom = content.scrollHeight - (content.scrollTop + content.clientHeight);
-  if (distanceToBottom > SOULSEEK_SCROLL_LOAD_THRESHOLD) return;
 
   if (activeNav.value === 'search') {
     loadMoreSoulseekResults();
@@ -3951,12 +3999,6 @@ const trackReplaceQueryDirty = computed(() => {
   return !!trimmed && trimmed !== trackReplaceSubmittedQuery.value;
 });
 const canRunTrackReplaceSearch = computed(() => !!soulseekReady.value && !!trackReplaceDialog.value?.query.trim() && !trackReplaceLoading.value);
-const libraryPageLabel = computed(() => {
-  if (libraryTotal.value === 0 || libraryTracks.value.length === 0) return '0 tracks';
-  const first = libraryOffset.value + 1;
-  const last = libraryOffset.value + libraryTracks.value.length;
-  return `${first}–${last} of ${libraryTotal.value}`;
-});
 const localSearchPageLabel = computed(() => {
   if (localSearchTotal.value === 0 || localSearchTracks.value.length === 0) return '0 tracks';
   const first = localSearchOffset.value + 1;
@@ -4004,10 +4046,12 @@ async function loadLibrary() {
 async function loadLibraryPage({
   offset = 0,
   limit = LIBRARY_TRACK_PAGE_SIZE,
-}: { offset?: number; limit?: number } = {}) {
+  append = false,
+}: { offset?: number; limit?: number; append?: boolean } = {}) {
   const request = ++libraryPageRequest;
   const query = activeNav.value === 'library' ? libraryQuery.value.trim() : '';
-  libraryLoading.value = true;
+  if (append) libraryLoadingMore.value = true;
+  else libraryLoading.value = true;
   try {
     const page = await invoke<TrackPage>('get_tracks_page', {
       query: query || null,
@@ -4016,15 +4060,20 @@ async function loadLibraryPage({
       includeDuplicates: showDuplicateTracks.value,
     });
     if (request !== libraryPageRequest) return;
-    libraryTracks.value = page.tracks;
+    libraryTracks.value = append
+      ? [...libraryTracks.value, ...page.tracks]
+      : page.tracks;
     libraryTotal.value = page.total;
-    libraryOffset.value = page.offset;
+    if (!append) libraryOffset.value = page.offset;
     libraryHasMore.value = page.has_more;
     libraryPageSize.value = limit;
   } catch (e) {
     if (request === libraryPageRequest) console.error('Failed to load library:', e);
   } finally {
-    if (request === libraryPageRequest) libraryLoading.value = false;
+    if (request === libraryPageRequest) {
+      libraryLoading.value = false;
+      libraryLoadingMore.value = false;
+    }
   }
 }
 
@@ -4060,18 +4109,12 @@ async function loadLocalSearchPage(offset = 0) {
   }
 }
 
-function previousLibraryPage() {
-  void loadLibraryPage({
-    offset: Math.max(0, libraryOffset.value - libraryPageSize.value),
-    limit: libraryPageSize.value,
-  });
-}
-
-function nextLibraryPage() {
-  if (!libraryHasMore.value) return;
+function loadMoreLibraryTracks() {
+  if (!libraryHasMore.value || libraryLoading.value || libraryLoadingMore.value) return;
   void loadLibraryPage({
     offset: libraryOffset.value + libraryTracks.value.length,
     limit: libraryPageSize.value,
+    append: true,
   });
 }
 
@@ -4403,8 +4446,7 @@ async function saveTrack() {
   await loadLibrary();
   await loadRecent();
   if (activePlaylistId !== null && playlistView.value?.id === activePlaylistId) {
-    const tracks = filterDuplicateTracks(await invoke<Track[]>('get_playlist_tracks', { playlistId: activePlaylistId }));
-    playlistView.value = { ...playlistView.value, tracks };
+    await loadPlaylistPage(activePlaylistId, playlistView.value.name);
   }
   if (nowPlaying.value?.id === activeTrack.id) {
     const refreshedTrack = libraryTracks.value.find((track) => track.id === activeTrack.id);
@@ -5120,14 +5162,6 @@ onUnmounted(() => {
               />
             </div>
 
-            <div v-if="!libraryLoading" class="library-page-controls">
-              <span>{{ libraryPageLabel }}</span>
-              <div>
-                <button class="icon-btn text-action-btn" :disabled="libraryOffset === 0" @click="previousLibraryPage">← Previous</button>
-                <button class="icon-btn text-action-btn" :disabled="!libraryHasMore" @click="nextLibraryPage">Next →</button>
-              </div>
-            </div>
-
             <div v-if="libraryLoading" class="library-empty">Loading…</div>
             <div v-else-if="filteredTracks.length === 0" class="library-empty">
               No tracks found. Add music to the data directory and it will appear here.
@@ -5187,10 +5221,7 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div v-if="!libraryLoading && libraryTracks.length" class="library-page-controls library-page-controls-bottom">
-              <button class="icon-btn text-action-btn" :disabled="libraryOffset === 0" @click="previousLibraryPage">← Previous</button>
-              <button class="icon-btn text-action-btn" :disabled="!libraryHasMore" @click="nextLibraryPage">Next →</button>
-            </div>
+            <div v-if="libraryLoadingMore" class="library-empty library-load-more"><div class="identify-mini-spinner" /></div>
           </section>
         </template>
 
@@ -5732,7 +5763,7 @@ onUnmounted(() => {
                     @touchend="endTrackRowLongPress"
                     @touchcancel="endTrackRowLongPress"
                   >
-                    <div class="track-cover-sm" :style="covers[track.id]
+                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                       : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                     />
@@ -5755,6 +5786,7 @@ onUnmounted(() => {
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                   </div>
                 </div>
+                <div v-if="playlistView.loadingMore" class="library-empty library-load-more"><div class="identify-mini-spinner" /></div>
               </template>
               <!-- Playlist list -->
               <template v-else>
@@ -7423,6 +7455,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 .library-page-controls > div { display: flex; gap: 6px; }
 .library-page-controls-bottom { margin: 18px 0 0; justify-content: center; }
+.library-load-more { display: flex; justify-content: center; padding: 18px 0; }
 .library-search {
   background: #282828; border: none; border-radius: 4px;
   color: #fff; font-size: var(--fs-input); padding: 8px 12px;
