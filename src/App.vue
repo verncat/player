@@ -31,8 +31,6 @@ import {
   normalizeTrackTagsInput,
   parseTrackDateInput,
   trackDateInputValue,
-  trackTagsList,
-  trackTagsText,
 } from "./utils/tracks";
 import { hashToColors, rarityClass, rarityVars } from "./utils/rarity";
 import AppSidebar from "./components/AppSidebar.vue";
@@ -100,6 +98,9 @@ const libraryTracks = ref<Track[]>([]);
 const showDuplicateTracks = ref(false);
 const libraryLoading = ref(true);
 const libraryQuery = ref("");
+// The query that produced the currently retained pages. Playback can continue
+// after navigating away from Library, so it must not depend on activeNav.
+const libraryLoadedQuery = ref("");
 const libraryTotal = ref(0);
 const libraryOffset = ref(0);
 const libraryHasMore = ref(false);
@@ -335,10 +336,17 @@ let suppressLocalIndexLogUntil = 0;
 
 /* ── Queue state ── */
 type QueueSource = 'recent' | 'library' | 'playlist' | 'soulseek';
+type QueuedPagedSource =
+  | { kind: 'library'; query: string; includeDuplicates: boolean; hasMore: boolean }
+  | { kind: 'regular-playlist'; playlistId: number; name: string; includeDuplicates: boolean; hasMore: boolean }
+  | { kind: 'smart-playlist'; playlist: SmartPlaylist; includeDuplicates: boolean; hasMore: boolean };
 const queueSource = ref<QueueSource>('library');
 const queueSourceIndex = ref(0);       // index into source list of the LAST item pushed
+const queueLibraryTracks = ref<Track[]>([]);
 const queuePlaylistTracks = ref<Track[]>([]); // tracks for 'playlist' source
 const queueSoulseekTracks = ref<Track[]>([]);
+const queuedPagedSource = ref<QueuedPagedSource | null>(null);
+const queuedPageLoading = ref(false);
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
 const recentTracks = ref<Track[]>([]);
@@ -654,12 +662,42 @@ function shouldSuppressTrackRowClick() {
 
 function playLibraryTrack(index: number) {
   if (index < 0 || shouldSuppressTrackRowClick()) return;
+  queueLibraryTracks.value = [...libraryFlatList.value];
+  queuedPagedSource.value = {
+    kind: 'library',
+    query: libraryLoadedQuery.value,
+    includeDuplicates: showDuplicateTracks.value,
+    hasMore: libraryHasMore.value,
+  };
   playTrackFrom('library', index);
 }
 
 function playPlaylistTrack(tracks: Track[], index: number) {
   if (index < 0 || shouldSuppressTrackRowClick()) return;
   playFromPlaylist(tracks, index);
+}
+
+function playRegularPlaylistTrack(index: number) {
+  const view = playlistView.value;
+  if (!view || index < 0 || shouldSuppressTrackRowClick()) return;
+  playFromPlaylist(view.tracks, index, {
+    kind: 'regular-playlist',
+    playlistId: view.id,
+    name: view.name,
+    includeDuplicates: showDuplicateTracks.value,
+    hasMore: view.hasMore,
+  });
+}
+
+function playSmartPlaylistTrack(index: number) {
+  const playlist = smartView.value;
+  if (!playlist || index < 0 || shouldSuppressTrackRowClick()) return;
+  playFromPlaylist(smartViewTracks.value, index, {
+    kind: 'smart-playlist',
+    playlist,
+    includeDuplicates: showDuplicateTracks.value,
+    hasMore: smartViewHasMore.value,
+  });
 }
 
 async function playRecentCard(index: number) {
@@ -869,14 +907,102 @@ const SP_SORT_FIELD_OPTIONS: Array<{ value: SPSortField; label: string }> = [
 ];
 
 const SP_SORT_FIELD_SET = new Set<SPSortField>(SP_SORT_FIELD_OPTIONS.map((option) => option.value));
-const smartPlaylistSortCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-
 const smartPlaylists = ref<SmartPlaylist[]>([]);
 const smartView = ref<SmartPlaylist | null>(null);
 const editingSP = ref<SmartPlaylist | null>(null);
+const smartViewTracks = ref<Track[]>([]);
+const smartViewTotal = ref(0);
+const smartViewHasMore = ref(false);
+const smartViewLoading = ref(false);
+const smartViewLoadingMore = ref(false);
+const editingSPTracks = ref<Track[]>([]);
+const editingSPTotal = ref(0);
+const editingSPLoading = ref(false);
+const smartPlaylistPreviews = ref<Record<string, TrackPage>>({});
+const smartPlaylistValues = ref<Partial<Record<SPField, string[]>>>({});
 const showNewSPInput = ref(false);
 const newSPName = ref('');
 const playlistTab = ref<'regular' | 'smart'>('regular');
+let smartViewRequest = 0;
+let editingSPRequest = 0;
+let editingSPTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function getSmartPlaylistPage(sp: SmartPlaylist, limit: number, offset = 0) {
+  return invoke<TrackPage>('get_smart_playlist_tracks_page', {
+    rulesJson: JSON.stringify(sp.rules),
+    matchMode: sp.match,
+    limit,
+    offset,
+    includeDuplicates: showDuplicateTracks.value,
+  });
+}
+
+async function loadSmartViewPage(sp: SmartPlaylist, append = false) {
+  const request = ++smartViewRequest;
+  const offset = append ? smartViewTracks.value.length : 0;
+  if (append) smartViewLoadingMore.value = true;
+  else smartViewLoading.value = true;
+  try {
+    const page = await getSmartPlaylistPage(sp, LIBRARY_TRACK_PAGE_SIZE, offset);
+    if (request !== smartViewRequest || smartView.value?.id !== sp.id) return;
+    smartViewTracks.value = append ? [...smartViewTracks.value, ...page.tracks] : page.tracks;
+    smartViewTotal.value = page.total;
+    smartViewHasMore.value = page.has_more;
+  } catch (error) {
+    if (request === smartViewRequest) console.error('Failed to load flexible playlist:', error);
+  } finally {
+    if (request === smartViewRequest) {
+      smartViewLoading.value = false;
+      smartViewLoadingMore.value = false;
+    }
+  }
+}
+
+function loadMoreSmartViewTracks() {
+  const sp = smartView.value;
+  if (!sp || !smartViewHasMore.value || smartViewLoading.value || smartViewLoadingMore.value) return;
+  void loadSmartViewPage(sp, true);
+}
+
+async function loadEditingSmartPreview(sp: SmartPlaylist) {
+  const request = ++editingSPRequest;
+  editingSPLoading.value = true;
+  try {
+    const page = await getSmartPlaylistPage(sp, 50);
+    if (request !== editingSPRequest || editingSP.value?.id !== sp.id) return;
+    editingSPTracks.value = page.tracks;
+    editingSPTotal.value = page.total;
+  } catch (error) {
+    if (request === editingSPRequest) console.error('Failed to preview flexible playlist:', error);
+  } finally {
+    if (request === editingSPRequest) editingSPLoading.value = false;
+  }
+}
+
+async function loadSmartPlaylistPreviews() {
+  if (!smartPlaylists.value.length) {
+    smartPlaylistPreviews.value = {};
+    return;
+  }
+  const pages = await Promise.all(smartPlaylists.value.map(async (sp) => [sp.id, await getSmartPlaylistPage(sp, 4)] as const));
+  smartPlaylistPreviews.value = Object.fromEntries(pages);
+}
+
+async function loadSmartPlaylistValues(field: SPField) {
+  if (field !== 'artist' && field !== 'album' && field !== 'genre'
+    && field !== 'tags' && field !== 'rarity' && field !== 'extension') return;
+  if (smartPlaylistValues.value[field]) return;
+  try {
+    const values = await invoke<string[]>('get_smart_playlist_values', { field });
+    smartPlaylistValues.value = { ...smartPlaylistValues.value, [field]: values };
+  } catch (error) {
+    console.error('Failed to load flexible playlist values:', error);
+  }
+}
+
+function loadSmartPlaylistValuesForRules(sp: SmartPlaylist) {
+  for (const rule of sp.rules) void loadSmartPlaylistValues(rule.field);
+}
 
 async function loadSmartPlaylists() {
   try {
@@ -906,6 +1032,7 @@ async function loadSmartPlaylists() {
       pinned: !!r.pinned,
       pinned_at: r.pinned_at ?? null,
     }));
+    await loadSmartPlaylistPreviews();
   } catch { smartPlaylists.value = []; }
 }
 async function createSmartPlaylist() {
@@ -923,6 +1050,7 @@ async function createSmartPlaylist() {
 async function deleteSmartPlaylist(id: string) {
   await invoke('delete_smart_playlist', { id });
   smartPlaylists.value = smartPlaylists.value.filter(sp => sp.id !== id);
+  delete smartPlaylistPreviews.value[id];
   if (editingSP.value?.id === id) editingSP.value = null;
   if (smartView.value?.id === id) smartView.value = null;
 }
@@ -950,8 +1078,36 @@ function saveSP() {
         name: savedName,
       };
     }
+    void loadSmartPlaylistPreviews();
   });
 }
+
+watch(smartView, (sp) => {
+  if (!sp) {
+    smartViewRequest++;
+    smartViewTracks.value = [];
+    smartViewTotal.value = 0;
+    smartViewHasMore.value = false;
+    return;
+  }
+  void loadSmartViewPage(sp);
+});
+
+watch(editingSP, (sp) => {
+  if (editingSPTimer) clearTimeout(editingSPTimer);
+  if (!sp) {
+    editingSPRequest++;
+    editingSPTracks.value = [];
+    editingSPTotal.value = 0;
+    editingSPLoading.value = false;
+    return;
+  }
+  loadSmartPlaylistValuesForRules(sp);
+  // Rule controls update on every keystroke. Debouncing avoids a SQLite query
+  // for each character while keeping the preview current.
+  editingSPTimer = setTimeout(() => void loadEditingSmartPreview(sp), 200);
+}, { deep: true });
+
 function addSPRule() {
   if (!editingSP.value) return;
   editingSP.value.rules.push({ id: crypto.randomUUID(), field: 'any', op: 'contains', value: '' });
@@ -981,16 +1137,7 @@ function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool'
   return 'text';
 }
 function spUniqueValues(field: SPField): string[] {
-  const set = new Set<string>();
-  for (const t of libraryTracks.value) {
-    if (field === 'genre' && t.genre) set.add(t.genre);
-    else if (field === 'tags') for (const tag of trackTagsList(t)) set.add(tag);
-    else if (field === 'rarity' && t.rarity) set.add(t.rarity);
-    else if (field === 'extension') { const e = t.path.split('.').pop()?.toLowerCase(); if (e) set.add(e); }
-    else if (field === 'artist' && t.artist) set.add(t.artist);
-    else if (field === 'album' && t.album) set.add(t.album);
-  }
-  return [...set].sort((left, right) => smartPlaylistSortCollator.compare(left, right));
+  return smartPlaylistValues.value[field] ?? [];
 }
 function spToggleValue(rule: SPRule, v: string) {
   const sel: string[] = JSON.parse(rule.value || '[]');
@@ -1013,196 +1160,6 @@ function normalizeSPSortField(value: string): SPSortField {
 
 function normalizeSPSortOp(value: string): SPSortOp {
   return value === 'sort_desc' ? 'sort_desc' : 'sort_asc';
-}
-
-function smartPlaylistSortRules(sp: SmartPlaylist): Array<{ field: SPSortField; op: SPSortOp }> {
-  return sp.rules.flatMap((rule) => {
-    if (rule.field !== 'sort') return [];
-    return [{
-      field: normalizeSPSortField(rule.value),
-      op: normalizeSPSortOp(rule.op),
-    }];
-  });
-}
-
-function compareOptionalText(left: string | null | undefined, right: string | null | undefined, descending = false) {
-  const leftText = left?.trim() ?? '';
-  const rightText = right?.trim() ?? '';
-  if (!leftText && !rightText) return 0;
-  if (!leftText) return 1;
-  if (!rightText) return -1;
-  const comparison = smartPlaylistSortCollator.compare(leftText, rightText);
-  return descending ? -comparison : comparison;
-}
-
-function compareOptionalNumber(left: number | null | undefined, right: number | null | undefined, descending = false) {
-  if (left == null && right == null) return 0;
-  if (left == null) return 1;
-  if (right == null) return -1;
-  const comparison = left - right;
-  return descending ? -comparison : comparison;
-}
-
-function trackSortExtension(track: Track) {
-  return track.path.split('.').pop()?.toLowerCase() || '';
-}
-
-function compareTracksForSortField(left: Track, right: Track, field: SPSortField, descending = false) {
-  switch (field) {
-    case 'title':
-      return compareOptionalText(left.title || left.path, right.title || right.path, descending);
-    case 'artist':
-      return compareOptionalText(left.artist, right.artist, descending);
-    case 'album':
-      return compareOptionalText(left.album, right.album, descending);
-    case 'genre':
-      return compareOptionalText(left.genre, right.genre, descending);
-    case 'tags':
-      return compareOptionalText(trackTagsText(left), trackTagsText(right), descending);
-    case 'rarity':
-      return compareOptionalText(left.rarity, right.rarity, descending);
-    case 'path':
-      return compareOptionalText(left.path, right.path, descending);
-    case 'extension':
-      return compareOptionalText(trackSortExtension(left), trackSortExtension(right), descending);
-    case 'track_number':
-      return compareOptionalNumber(left.track_number, right.track_number, descending);
-    case 'duration_secs':
-      return compareOptionalNumber(left.duration_secs, right.duration_secs, descending);
-    case 'year':
-      return compareOptionalNumber(left.year, right.year, descending);
-    case 'play_count':
-      return compareOptionalNumber(left.play_count, right.play_count, descending);
-    case 'is_liked':
-      return compareOptionalNumber(left.is_liked ? 1 : 0, right.is_liked ? 1 : 0, descending);
-    case 'date_added':
-      return compareOptionalNumber(left.date_added, right.date_added, descending);
-  }
-}
-
-function matchesRule(track: Track, rule: SPRule): boolean {
-  switch (rule.field) {
-    case 'any': {
-      const q = rule.value.toLowerCase();
-      const values = [
-        track.title,
-        track.artist,
-        track.album,
-        track.genre,
-        trackTagsText(track),
-        track.rarity,
-        track.path,
-        track.track_number != null ? String(track.track_number) : null,
-        track.duration_secs != null ? String(track.duration_secs) : null,
-        track.year != null ? String(track.year) : null,
-        String(track.play_count),
-      ];
-      return !q || values.some((value) => value?.toLowerCase().includes(q));
-    }
-    case 'title': return !rule.value || !!track.title?.toLowerCase().includes(rule.value.toLowerCase());
-    case 'artist': {
-      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.artist ?? ''); }
-      return !rule.value || !!track.artist?.toLowerCase().includes(rule.value.toLowerCase());
-    }
-    case 'album': {
-      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.album ?? ''); }
-      return !rule.value || !!track.album?.toLowerCase().includes(rule.value.toLowerCase());
-    }
-    case 'genre': {
-      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.genre ?? ''); }
-      return !rule.value || !!track.genre?.toLowerCase().includes(rule.value.toLowerCase());
-    }
-    case 'tags': {
-      const tags = trackTagsList(track);
-      if (rule.op === 'in') {
-        const s: string[] = JSON.parse(rule.value || '[]');
-        return s.length === 0 || s.some((tag) => tags.includes(tag));
-      }
-      return !rule.value || trackTagsText(track).toLowerCase().includes(rule.value.toLowerCase());
-    }
-    case 'rarity': {
-      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(track.rarity ?? ''); }
-      return !rule.value || !!track.rarity?.toLowerCase().includes(rule.value.toLowerCase());
-    }
-    case 'path':
-      return !rule.value || track.path.toLowerCase().includes(rule.value.toLowerCase());
-    case 'extension': {
-      const ext = track.path.split('.').pop()?.toLowerCase() || '';
-      if (rule.op === 'in') { const s: string[] = JSON.parse(rule.value || '[]'); return s.length === 0 || s.includes(ext); }
-      return ext.includes(rule.value.toLowerCase());
-    }
-    case 'track_number': {
-      if (track.track_number == null) return false;
-      const n = Number(rule.value);
-      if (rule.op === 'eq') return track.track_number === n;
-      if (rule.op === 'gte') return track.track_number >= n;
-      if (rule.op === 'lte') return track.track_number <= n;
-      return false;
-    }
-    case 'duration_secs': {
-      if (track.duration_secs == null) return false;
-      const n = Number(rule.value);
-      if (rule.op === 'eq') return track.duration_secs === n;
-      if (rule.op === 'gte') return track.duration_secs >= n;
-      if (rule.op === 'lte') return track.duration_secs <= n;
-      return false;
-    }
-    case 'year': {
-      if (track.year == null) return false;
-      const n = Number(rule.value);
-      if (rule.op === 'eq') return track.year === n;
-      if (rule.op === 'gte') return track.year >= n;
-      if (rule.op === 'lte') return track.year <= n;
-      return false;
-    }
-    case 'play_count': {
-      const n = Number(rule.value);
-      if (rule.op === 'eq') return track.play_count === n;
-      if (rule.op === 'gte') return track.play_count >= n;
-      if (rule.op === 'lte') return track.play_count <= n;
-      return false;
-    }
-    case 'is_liked': return rule.op === 'is_true' ? track.is_liked : !track.is_liked;
-    case 'date_added': {
-      if (track.date_added == null) return false;
-      if (!rule.value) return true;
-      const dayStart = new Date(rule.value).getTime() / 1000;
-      if (rule.op === 'gte') return track.date_added >= dayStart;
-      if (rule.op === 'lte') return track.date_added < dayStart + 86400;
-      if (rule.op === 'eq') return track.date_added >= dayStart && track.date_added < dayStart + 86400;
-      return false;
-    }
-    case 'sort': return true;
-    default: return true;
-  }
-}
-function smartPlaylistTracks(sp: SmartPlaylist): Track[] {
-  if (sp.rules.length === 0) return [];
-  const filterRules = sp.rules.filter((rule) => rule.field !== 'sort');
-  const sortRules = smartPlaylistSortRules(sp);
-  const baseTracks = filterDuplicateTracks(libraryTracks.value);
-  const filteredTracks = filterRules.length === 0
-    ? baseTracks.slice()
-    : baseTracks.filter((track) =>
-      sp.match === 'all'
-        ? filterRules.every((rule) => matchesRule(track, rule))
-        : filterRules.some((rule) => matchesRule(track, rule))
-    );
-
-  if (sortRules.length === 0) {
-    return filteredTracks;
-  }
-
-  return filteredTracks.sort((left, right) => {
-    for (const rule of sortRules) {
-      const comparison = compareTracksForSortField(left, right, rule.field, rule.op === 'sort_desc');
-      if (comparison !== 0) {
-        return comparison;
-      }
-    }
-
-    return smartPlaylistSortCollator.compare(left.path, right.path);
-  });
 }
 
 type HomePinnedPlaylistItem = {
@@ -1236,7 +1193,7 @@ const homePinnedItems = computed<HomePinnedPlaylistItem[]>(() => {
   const smart = smartPlaylists.value
     .filter((sp) => sp.pinned)
     .map((sp) => {
-      const trackCount = smartPlaylistTracks(sp).length;
+      const trackCount = smartPlaylistPreviews.value[sp.id]?.total ?? 0;
       return {
         key: `smart:${sp.id}`,
         kind: 'smart' as const,
@@ -1258,7 +1215,7 @@ const homePinnedSections = computed<HomePinnedPlaylistSection[]>(() => {
   return homePinnedItems.value.map((item) => {
     const tracks = item.kind === 'regular'
       ? homePinnedRegularTracks.value[(item.playlist as Playlist).id] ?? []
-      : smartPlaylistTracks(item.playlist as SmartPlaylist);
+      : smartPlaylistPreviews.value[(item.playlist as SmartPlaylist).id]?.tracks ?? [];
 
     return {
       ...item,
@@ -1299,7 +1256,7 @@ async function playHomePinnedItem(item: HomePinnedPlaylistItem) {
     return;
   }
 
-  const tracks = smartPlaylistTracks(item.playlist as SmartPlaylist);
+  const tracks = (await getSmartPlaylistPage(item.playlist as SmartPlaylist, 100)).tracks;
   if (tracks.length) playFromPlaylist(tracks, 0);
 }
 
@@ -1380,9 +1337,15 @@ watch(showDuplicateTracks, async (show) => {
   await loadHomePinnedRegularTracks().catch(() => {
     homePinnedRegularTracks.value = {};
   });
+  await loadSmartPlaylistPreviews().catch(() => {
+    smartPlaylistPreviews.value = {};
+  });
 
   if (playlistView.value) {
     await loadPlaylistPage(playlistView.value.id, playlistView.value.name);
+  }
+  if (smartView.value) {
+    await loadSmartViewPage(smartView.value);
   }
 
   await loadLibraryPage({
@@ -2284,6 +2247,11 @@ function maybeLoadMoreSoulseekResults() {
 
   if (activeNav.value === 'playlists' && playlistTab.value === 'regular' && playlistView.value) {
     loadMorePlaylistTracks();
+    return;
+  }
+
+  if (activeNav.value === 'playlists' && playlistTab.value === 'smart' && smartView.value) {
+    loadMoreSmartViewTracks();
     return;
   }
 
@@ -3244,7 +3212,103 @@ const soulseekPreviewBufferPercent = computed(() => {
 
 const showSoulseekPreviewBuffer = computed(() => soulseekPreviewBufferPercent.value > 0);
 
-/** Return the full ordered list for a given source */
+function queuedSourceHasMore() {
+  return !!queuedPagedSource.value?.hasMore;
+}
+
+/**
+ * Extends the playback source at the moment the queue reaches the loaded
+ * boundary.  It deliberately uses the same page commands as scrolling, but
+ * keeps its own track array so changing the Library filter cannot redirect an
+ * already playing queue.
+ */
+async function loadNextQueuedSourcePage(): Promise<boolean> {
+  const source = queuedPagedSource.value;
+  if (!source || !source.hasMore || queuedPageLoading.value) return false;
+  queuedPageLoading.value = true;
+  if (source.kind === 'library') libraryLoadingMore.value = true;
+  if (source.kind === 'regular-playlist' && playlistView.value?.id === source.playlistId) {
+    playlistView.value.loadingMore = true;
+  }
+  if (source.kind === 'smart-playlist' && smartView.value?.id === source.playlist.id) {
+    smartViewLoadingMore.value = true;
+  }
+  try {
+    if (source.kind === 'library') {
+      const offset = queueLibraryTracks.value.length;
+      const page = await invoke<TrackPage>('get_tracks_page', {
+        query: source.query || null,
+        limit: LIBRARY_TRACK_PAGE_SIZE,
+        offset,
+        includeDuplicates: source.includeDuplicates,
+      });
+      // Playback may have switched sources while the request was in flight.
+      if (queuedPagedSource.value !== source) return false;
+      queueLibraryTracks.value = [...queueLibraryTracks.value, ...page.tracks];
+      source.hasMore = page.has_more;
+      if (libraryLoadedQuery.value === source.query) {
+        libraryTracks.value = [...libraryTracks.value, ...page.tracks];
+        libraryHasMore.value = page.has_more;
+      }
+      return page.tracks.length > 0;
+    }
+
+    if (source.kind === 'regular-playlist') {
+      const offset = queuePlaylistTracks.value.length;
+      const page = await invoke<TrackPage>('get_playlist_tracks_page', {
+        playlistId: source.playlistId,
+        limit: LIBRARY_TRACK_PAGE_SIZE,
+        offset,
+        includeDuplicates: source.includeDuplicates,
+      });
+      if (queuedPagedSource.value !== source) return false;
+      queuePlaylistTracks.value = [...queuePlaylistTracks.value, ...page.tracks];
+      source.hasMore = page.has_more;
+      if (playlistView.value?.id === source.playlistId) {
+        playlistView.value = {
+          ...playlistView.value,
+          tracks: [...playlistView.value.tracks, ...page.tracks],
+          total: page.total,
+          hasMore: page.has_more,
+          loadingMore: false,
+        };
+      }
+      return page.tracks.length > 0;
+    }
+
+    const offset = queuePlaylistTracks.value.length;
+    const page = await invoke<TrackPage>('get_smart_playlist_tracks_page', {
+      rulesJson: JSON.stringify(source.playlist.rules),
+      matchMode: source.playlist.match,
+      limit: LIBRARY_TRACK_PAGE_SIZE,
+      offset,
+      includeDuplicates: source.includeDuplicates,
+    });
+    if (queuedPagedSource.value !== source) return false;
+    queuePlaylistTracks.value = [...queuePlaylistTracks.value, ...page.tracks];
+    source.hasMore = page.has_more;
+    if (smartView.value?.id === source.playlist.id) {
+      smartViewTracks.value = [...smartViewTracks.value, ...page.tracks];
+      smartViewTotal.value = page.total;
+      smartViewHasMore.value = page.has_more;
+    }
+    return page.tracks.length > 0;
+  } catch (error) {
+    console.error('Failed to load the next playback page:', error);
+    return false;
+  } finally {
+    queuedPageLoading.value = false;
+    if (source.kind === 'library') libraryLoadingMore.value = false;
+    if (source.kind === 'regular-playlist' && playlistView.value?.id === source.playlistId) {
+      playlistView.value.loadingMore = false;
+    }
+    if (source.kind === 'smart-playlist' && smartView.value?.id === source.playlist.id) {
+      smartViewLoadingMore.value = false;
+    }
+  }
+}
+
+/** Return the full ordered list currently available for a given source */
 function sourceList(src: QueueSource): Track[] {
   if (src === 'recent') {
     const recent = filterDuplicateTracks(recentTracks.value);
@@ -3252,8 +3316,11 @@ function sourceList(src: QueueSource): Track[] {
   }
   if (src === 'playlist') return queuePlaylistTracks.value;
   if (src === 'soulseek') return queueSoulseekTracks.value;
-  // 'library' – flattened in grouped order (same as libraryFlatList)
-  return filterDuplicateTracks(libraryFlatList.value);
+  // 'library' – flattened in grouped order (same as libraryFlatList). Once
+  // playback starts, use its stable paged copy rather than the visible filter.
+  return queuedPagedSource.value?.kind === 'library'
+    ? queueLibraryTracks.value
+    : filterDuplicateTracks(libraryFlatList.value);
 }
 
 /** Fill the queue up to 5 upcoming tracks from the source */
@@ -3271,6 +3338,7 @@ function refillQueue() {
     attempts += 1;
     const nextIdx = queueSourceIndex.value + 1;
     if (nextIdx >= list.length) {
+      if (queuedSourceHasMore()) break;
       if ((queueSource.value === 'playlist' || queueSource.value === 'soulseek') && repeatMode.value !== 1) break; // stop at end of finite queue sources
       queueSourceIndex.value = -1; // wrap (library or repeat-all)
     } else {
@@ -3349,8 +3417,9 @@ async function mobileSeekHoldEnd(e: PointerEvent) {
 }
 
 /** Start playing a specific track from a given source list at a given index */
-function playFromPlaylist(tracks: Track[], index: number) {
+function playFromPlaylist(tracks: Track[], index: number, pagedSource: QueuedPagedSource | null = null) {
   queuePlaylistTracks.value = [...tracks];
+  queuedPagedSource.value = pagedSource;
   playTrackFrom('playlist', index);
 }
 
@@ -3385,6 +3454,9 @@ function restoreContentScroll(scrollTop: number | null) {
 }
 
 async function playTrackFrom(src: QueueSource, index: number) {
+  if (src !== 'library' && src !== 'playlist') {
+    queuedPagedSource.value = null;
+  }
   const list = sourceList(src);
   if (!list.length) return;
   bumpPlaybackTransitionSequence();
@@ -3415,6 +3487,11 @@ async function playTrackFrom(src: QueueSource, index: number) {
 /** Advance to next track in queue */
 async function playNext() {
   bumpPlaybackTransitionSequence();
+  if (!queue.value.length) {
+    if (await loadNextQueuedSourcePage()) {
+      refillQueue();
+    }
+  }
   if (!queue.value.length) {
     isPlaying.value = false;
     stopTicker();
@@ -3706,6 +3783,13 @@ async function togglePlay() {
       return;
     }
     if (libraryTracks.value.length) {
+      queueLibraryTracks.value = [...libraryFlatList.value];
+      queuedPagedSource.value = {
+        kind: 'library',
+        query: libraryLoadedQuery.value,
+        includeDuplicates: showDuplicateTracks.value,
+        hasMore: libraryHasMore.value,
+      };
       await playTrackFrom('library', 0);
     }
     return;
@@ -4049,7 +4133,9 @@ async function loadLibraryPage({
   append = false,
 }: { offset?: number; limit?: number; append?: boolean } = {}) {
   const request = ++libraryPageRequest;
-  const query = activeNav.value === 'library' ? libraryQuery.value.trim() : '';
+  const query = append
+    ? libraryLoadedQuery.value
+    : (activeNav.value === 'library' ? libraryQuery.value.trim() : '');
   if (append) libraryLoadingMore.value = true;
   else libraryLoading.value = true;
   try {
@@ -4064,7 +4150,10 @@ async function loadLibraryPage({
       ? [...libraryTracks.value, ...page.tracks]
       : page.tracks;
     libraryTotal.value = page.total;
-    if (!append) libraryOffset.value = page.offset;
+    if (!append) {
+      libraryOffset.value = page.offset;
+      libraryLoadedQuery.value = query;
+    }
     libraryHasMore.value = page.has_more;
     libraryPageSize.value = limit;
   } catch (e) {
@@ -5746,7 +5835,7 @@ onUnmounted(() => {
                     </button>
                     <h2 style="margin:0;">{{ playlistView.name }}</h2>
                   </div>
-                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playFromPlaylist(playlistView!.tracks, 0)">▶ Play</button>
+                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)">▶ Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
@@ -5756,7 +5845,7 @@ onUnmounted(() => {
                     class="track-row"
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
-                    @click="playPlaylistTrack(playlistView!.tracks, idx)"
+                    @click="playRegularPlaylistTrack(idx)"
                     @contextmenu.prevent="openTrackContextMenu($event, track, playlistView!.id)"
                     @touchstart.passive="startTrackRowLongPress($event, track, playlistView!.id)"
                     @touchmove.passive="moveTrackRowLongPress"
@@ -5843,7 +5932,7 @@ onUnmounted(() => {
                       @click.stop
                     />
                   </div>
-                  <span class="smart-track-count">{{ smartPlaylistTracks(editingSP).length }} tracks</span>
+                  <span class="smart-track-count">{{ editingSPTotal }} tracks</span>
                 </div>
 
                 <!-- Match mode -->
@@ -5925,12 +6014,13 @@ onUnmounted(() => {
                 </div>
 
                 <!-- Preview -->
-                <div class="sp-preview-header">Preview ({{ smartPlaylistTracks(editingSP).length }} tracks)</div>
+                <div class="sp-preview-header">Preview ({{ editingSPTotal }} tracks)</div>
                 <div v-if="editingSP.rules.length === 0" class="library-empty">Add rules above to filter your library.</div>
-                <div v-else-if="smartPlaylistTracks(editingSP).length === 0" class="library-empty">No tracks match the current rules.</div>
+                <div v-else-if="editingSPLoading" class="library-empty">Updating preview…</div>
+                <div v-else-if="editingSPTotal === 0" class="library-empty">No tracks match the current rules.</div>
                 <div v-else class="track-list sp-preview">
                   <div
-                    v-for="track in smartPlaylistTracks(editingSP).slice(0, 50)"
+                    v-for="track in editingSPTracks"
                     :key="track.id"
                     class="track-row"
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
@@ -5942,7 +6032,7 @@ onUnmounted(() => {
                     @touchend="endTrackRowLongPress"
                     @touchcancel="endTrackRowLongPress"
                   >
-                    <div class="track-cover-sm" :style="covers[track.id]
+                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                       : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                     />
@@ -5961,7 +6051,7 @@ onUnmounted(() => {
                     </div>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                   </div>
-                  <div v-if="smartPlaylistTracks(editingSP).length > 50" class="library-empty" style="padding:12px 0;">… and {{ smartPlaylistTracks(editingSP).length - 50 }} more</div>
+                  <div v-if="editingSPTotal > editingSPTracks.length" class="library-empty" style="padding:12px 0;">… and {{ editingSPTotal - editingSPTracks.length }} more</div>
                 </div>
               </template>
 
@@ -5976,25 +6066,26 @@ onUnmounted(() => {
                   </div>
                   <div style="display:flex;gap:8px;">
                     <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
-                    <button v-if="smartPlaylistTracks(smartView).length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playFromPlaylist(smartPlaylistTracks(smartView!), 0)">▶ Play</button>
+                    <button v-if="smartViewTracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playSmartPlaylistTrack(0)">▶ Play</button>
                   </div>
                 </div>
-                <div v-if="smartPlaylistTracks(smartView).length === 0" class="library-empty">No tracks match this smart playlist.</div>
+                <div v-if="smartViewLoading" class="library-empty">Loading playlist…</div>
+                <div v-else-if="smartViewTotal === 0" class="library-empty">No tracks match this smart playlist.</div>
                 <div v-else class="track-list">
                   <div
-                    v-for="(track, idx) in smartPlaylistTracks(smartView)"
+                    v-for="(track, idx) in smartViewTracks"
                     :key="track.id"
                     class="track-row"
                     :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
                     :style="rarityVars(track.rarity)"
-                    @click="playPlaylistTrack(smartPlaylistTracks(smartView!), idx)"
+                    @click="playSmartPlaylistTrack(idx)"
                     @contextmenu.prevent="openTrackContextMenu($event, track)"
                     @touchstart.passive="startTrackRowLongPress($event, track)"
                     @touchmove.passive="moveTrackRowLongPress"
                     @touchend="endTrackRowLongPress"
                     @touchcancel="endTrackRowLongPress"
                   >
-                    <div class="track-cover-sm" :style="covers[track.id]
+                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
                       ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
                       : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
                     />
@@ -6013,6 +6104,7 @@ onUnmounted(() => {
                     </div>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                   </div>
+                  <div v-if="smartViewLoadingMore" class="library-load-more"><span class="identify-mini-spinner" aria-label="Loading more tracks" /></div>
                 </div>
               </template>
 
@@ -6034,7 +6126,7 @@ onUnmounted(() => {
                     </div>
                     <div class="track-info">
                       <span class="track-title">{{ sp.name }}</span>
-                      <span class="track-album">{{ sp.rules.length }} rule{{ sp.rules.length !== 1 ? 's' : '' }} · {{ smartPlaylistTracks(sp).length }} tracks</span>
+                      <span class="track-album">{{ sp.rules.length }} rule{{ sp.rules.length !== 1 ? 's' : '' }} · {{ smartPlaylistPreviews[sp.id]?.total ?? 0 }} tracks</span>
                     </div>
                     <button class="icon-btn" :class="{ green: sp.pinned }" style="margin-right:4px;" :title="sp.pinned ? 'Unpin from Home' : 'Pin to Home'" @click.stop="toggleSmartPlaylistPinned(sp)">
                       <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v1h5v8h2v-8h5v-1l-2-2z"/></svg>
