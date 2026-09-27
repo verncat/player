@@ -4640,7 +4640,6 @@ onMounted(() => {
   document.addEventListener('keydown', onKeyDown);
   window.addEventListener('focus', onWindowFocus);
   document.addEventListener('visibilitychange', onDocumentVisibilityChange);
-  scheduleInitialAppDataLoad();
   void loadSoulseekStatus();
   invoke<DeviceSettings>('get_device_settings')
     .then((cfg) => {
@@ -4847,7 +4846,12 @@ onMounted(() => {
     coverLoadQueue.length = 0;
     queuedCoverIds.clear();
     void loadAppData('sync');
-  });
+  })
+    // Do the first fetch only after this subscription is active. Otherwise a
+    // short initial indexing run can finish between the fetch and subscription,
+    // leaving Home with a stale empty snapshot until the user navigates.
+    .then(() => scheduleInitialAppDataLoad())
+    .catch(() => scheduleInitialAppDataLoad());
   listen<number>('beat', (e) => {
     const lag = Math.max(0, Date.now() - e.payload);
     startBeatAnimation(lag);
@@ -4982,6 +4986,9 @@ onMounted(() => {
         indexLog.value = [...indexLog.value];
         localSession = null;
       }
+      // Keep Home current even if a platform delivers progress but misses the
+      // separate library-changed event during app startup.
+      void loadAppData('sync');
     }
     nextTick(() => { if (indexLogRef.value) indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight; });
   });

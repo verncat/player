@@ -2481,6 +2481,12 @@ fn index_cue_file(
         }
 
         let audio_rel = rel_path(data_dir, &audio_abs);
+        // A CUE track must have the same identity on every device.  Library
+        // paths are deliberately not part of this value: sync stores files in
+        // a metadata-based layout, which usually differs from the source
+        // device's layout.  Including either path made every CUE segment look
+        // new after a transfer and caused it to be downloaded again.
+        let audio_content_hash = hash_file(&audio_abs).unwrap_or_else(|| audio_rel.clone());
         let sidecar_cover = find_sidecar_cover_candidate(data_dir, &audio_abs);
         let mut audio_meta = read_audio_meta(&audio_abs, sidecar_cover.as_ref());
         let audio_duration = audio_meta.duration_secs;
@@ -2530,9 +2536,8 @@ fn index_cue_file(
             let end_key = end_secs
                 .map(|value| format!("{value:.3}"))
                 .unwrap_or_default();
-            let number_key = cue_track.number.to_string();
             let file_hash =
-                hash_virtual_track(&[&cue_rel, &audio_rel, &number_key, &start_key, &end_key]);
+                hash_virtual_track(&["cue-track-v2", &audio_content_hash, &start_key, &end_key]);
             let rarity = rarity_from_hash(&file_hash);
 
             #[cfg(feature = "tracy")]
@@ -4296,6 +4301,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(actual.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn cue_track_hash_is_independent_of_library_path() {
+        let audio_content_hash = "a2d86f9df8b9e1057f6ff7f314fc6509e38e914a6b0d51d7c26b8f90414f31d3";
+        let hash_on_mac =
+            hash_virtual_track(&["cue-track-v2", audio_content_hash, "123.000", "245.500"]);
+        let hash_on_phone =
+            hash_virtual_track(&["cue-track-v2", audio_content_hash, "123.000", "245.500"]);
+        let next_track_hash =
+            hash_virtual_track(&["cue-track-v2", audio_content_hash, "245.500", "369.000"]);
+
+        assert_eq!(hash_on_mac, hash_on_phone);
+        assert_ne!(hash_on_mac, next_track_hash);
     }
 
     #[test]
