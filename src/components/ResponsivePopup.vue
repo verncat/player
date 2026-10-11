@@ -185,6 +185,24 @@ onUnmounted(() => {
   background: rgba(0, 0, 0, 0.42);
 }
 
+.responsive-popup-desktop.dropdown-enter-active,
+.responsive-popup-desktop.dropdown-leave-active,
+.responsive-popup-desktop-backdrop.dropdown-enter-active,
+.responsive-popup-desktop-backdrop.dropdown-leave-active {
+  transition: opacity .12s, transform .12s;
+}
+
+.responsive-popup-desktop.dropdown-enter-from,
+.responsive-popup-desktop.dropdown-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.responsive-popup-desktop-backdrop.dropdown-enter-from,
+.responsive-popup-desktop-backdrop.dropdown-leave-to {
+  opacity: 0;
+}
+
 .responsive-popup-body {
   min-height: 0;
   overflow-y: auto;
