@@ -7334,13 +7334,6 @@ a, button, [role="button"] {
   font-size: 13px; font-weight: 700; text-transform: uppercase;
 }
 
-.dropdown {
-  position: absolute; top: calc(100% + 8px); right: 0;
-  background: #282828; border-radius: 4px; padding: 4px 0;
-  min-width: 190px;
-  box-shadow: 0 16px 32px rgba(0,0,0,.5);
-  z-index: 200;
-}
 .dropdown a {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 16px;
@@ -7348,9 +7341,6 @@ a, button, [role="button"] {
 }
 .dropdown a:hover { background: #3e3e3e; }
 .dropdown-sep { height: 1px; background: #3e3e3e; margin: 4px 0; }
-
-.dropdown-enter-active, .dropdown-leave-active { transition: opacity .12s, transform .12s; }
-.dropdown-enter-from, .dropdown-leave-to { opacity: 0; transform: translateY(-4px); }
 
 /* ── Content ── */
 .content {

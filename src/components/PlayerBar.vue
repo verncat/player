@@ -71,6 +71,13 @@ const emit = defineEmits<{
   setVolume: [event: MouseEvent];
 }>();
 
+const QUEUE_SOURCE_LABELS: Record<string, string> = {
+  recent: "Recently played",
+  library: "Library",
+  playlist: "Playlist",
+  soulseek: "Soulseek",
+};
+
 const ZIPPY_TOGGLE_COUNT = 5;
 const ZIPPY_TOGGLE_WINDOW_MS = 2_000;
 const ZIPPY_INTRO_MS = 5_400;
@@ -489,7 +496,7 @@ onUnmounted(() => {
             <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
           </button>
         </template>
-        <div class="dropdown-header">Queue · {{ queueSource === "recent" ? "Recently played" : "Library" }}</div>
+        <div class="dropdown-header">Queue · {{ QUEUE_SOURCE_LABELS[queueSource] ?? "Library" }}</div>
         <div class="queue-now" v-if="nowPlaying">
           <span class="queue-now-label">Now playing</span>
           <div class="queue-item active">
@@ -992,25 +999,6 @@ onUnmounted(() => {
   letter-spacing: .04em;
 }
 
-:global(.device-menu-wrapper),
-:global(.queue-menu-wrapper) {
-  position: relative;
-}
-:global(.device-dropdown),
-:global(.queue-dropdown) {
-  position: absolute;
-  top: auto;
-  bottom: calc(100% + 12px);
-  right: 0;
-}
-:global(.device-dropdown) {
-  min-width: 220px;
-}
-:global(.queue-dropdown) {
-  min-width: 300px;
-  max-width: 360px;
-}
-
 .device-list {
   max-height: 240px;
   overflow-y: auto;
@@ -1255,14 +1243,6 @@ onUnmounted(() => {
   .player-right .vol-wrap { display: none; }
   .progress-row { display: none; }
   .bar { flex: 1; }
-
-  :global(.queue-dropdown) {
-    min-width: 260px;
-    max-width: 92vw;
-  }
-  :global(.device-dropdown) {
-    min-width: 200px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
