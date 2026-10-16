@@ -20,7 +20,7 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use encoding_rs::WINDOWS_1251;
 use lofty::picture::PictureType;
-use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
+use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
 use lofty::probe::Probe;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::{params, params_from_iter, types::Value, Connection};
@@ -97,6 +97,12 @@ pub struct Track {
     pub tags: Option<String>,
     pub date_added: Option<i64>,
     pub is_duplicate: bool,
+    /// For "who is this album by" use `album_artist_or_artist`.
+    pub album_artist: Option<String>,
+    pub disc_number: Option<i64>,
+    pub album_artist_or_artist: Option<String>,
+    /// Whether the track has a cover image to load with `get_track_cover`.
+    pub has_cover: bool,
 }
 
 /// A bounded slice of the library.  The webview must not have to retain the
@@ -117,6 +123,20 @@ struct SmartPlaylistRule {
     field: String,
     op: String,
     value: String,
+}
+
+/// An entry in a flexible playlist's rule list: a rule, or a group of entries
+/// with its own match mode, e.g. `{"match": "any", "rules": [...]}`. Groups
+/// can nest. The playlist's own `match_mode` is the outermost group.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SmartPlaylistEntry {
+    Group {
+        #[serde(rename = "match")]
+        match_mode: String,
+        rules: Vec<SmartPlaylistEntry>,
+    },
+    Rule(SmartPlaylistRule),
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -142,6 +162,8 @@ struct Meta {
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
+    album_artist: Option<String>,
+    disc_number: Option<i64>,
     track_number: Option<i64>,
     duration_secs: Option<f64>,
     year: Option<i64>,
@@ -251,16 +273,17 @@ impl LibraryState {
     pub fn search(&self, query: &str) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let pat = format!("%{query}%");
-        let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate
-               FROM tracks
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}
+               FROM library_tracks
               WHERE title  LIKE ?1 COLLATE NOCASE
                  OR artist LIKE ?1 COLLATE NOCASE
                  OR album  LIKE ?1 COLLATE NOCASE
+                 OR album_artist_or_artist LIKE ?1 COLLATE NOCASE
                  OR genre  LIKE ?1 COLLATE NOCASE
                  OR tags   LIKE ?1 COLLATE NOCASE
-              ORDER BY artist, album, track_number, title",
-        )?;
+              ORDER BY {LIBRARY_ORDER_SQL}"
+        ))?;
         let tracks = stmt
             .query_map(params![pat], row_to_track)?
             .filter_map(|r| r.ok())
@@ -270,11 +293,11 @@ impl LibraryState {
 
     pub fn all_tracks(&self) -> Result<Vec<Track>, BoxError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate
-               FROM tracks
-              ORDER BY artist, album, track_number, title",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}
+               FROM library_tracks
+              ORDER BY {LIBRARY_ORDER_SQL}"
+        ))?;
         let tracks = stmt
             .query_map([], row_to_track)?
             .filter_map(|r| r.ok())
@@ -300,12 +323,13 @@ impl LibraryState {
 
         let total: i64 = conn.query_row(
             "SELECT COUNT(*)
-               FROM tracks
+               FROM library_tracks
               WHERE (?1 = 1 OR is_duplicate = 0)
                 AND (?2 = ''
                      OR title  LIKE ?3 COLLATE NOCASE
                      OR artist LIKE ?3 COLLATE NOCASE
                      OR album  LIKE ?3 COLLATE NOCASE
+                     OR album_artist_or_artist LIKE ?3 COLLATE NOCASE
                      OR genre  LIKE ?3 COLLATE NOCASE
                      OR tags   LIKE ?3 COLLATE NOCASE
                      OR path   LIKE ?3 COLLATE NOCASE
@@ -318,14 +342,15 @@ impl LibraryState {
             |row| row.get(0),
         )?;
 
-        let mut stmt = conn.prepare(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate
-               FROM tracks
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}
+               FROM library_tracks
               WHERE (?1 = 1 OR is_duplicate = 0)
                 AND (?2 = ''
                      OR title  LIKE ?3 COLLATE NOCASE
                      OR artist LIKE ?3 COLLATE NOCASE
                      OR album  LIKE ?3 COLLATE NOCASE
+                     OR album_artist_or_artist LIKE ?3 COLLATE NOCASE
                      OR genre  LIKE ?3 COLLATE NOCASE
                      OR tags   LIKE ?3 COLLATE NOCASE
                      OR path   LIKE ?3 COLLATE NOCASE
@@ -334,9 +359,9 @@ impl LibraryState {
                      OR CAST(duration_secs AS TEXT) LIKE ?3
                      OR CAST(play_count AS TEXT) LIKE ?3
                      OR CAST(year AS TEXT) LIKE ?3)
-              ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE, track_number, title COLLATE NOCASE, id
-              LIMIT ?4 OFFSET ?5",
-        )?;
+              ORDER BY {LIBRARY_ORDER_SQL}
+              LIMIT ?4 OFFSET ?5"
+        ))?;
         let tracks = stmt
             .query_map(
                 params![include_duplicates, query, pat, limit, offset],
@@ -374,17 +399,16 @@ impl LibraryState {
             params![playlist_id, include_duplicates],
             |row| row.get(0),
         )?;
-        let mut stmt = conn.prepare(
-            "SELECT t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                    t.duration_secs, t.file_hash, t.rarity, t.manually_edited,
-                    t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags, t.is_duplicate
-               FROM tracks t
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {columns}
+               FROM library_tracks t
                JOIN playlist_tracks pt ON pt.track_id = t.id
               WHERE pt.playlist_id = ?1
                 AND (?2 = 1 OR t.is_duplicate = 0)
               ORDER BY pt.position, pt.id
               LIMIT ?3 OFFSET ?4",
-        )?;
+            columns = track_columns_of("t"),
+        ))?;
         let tracks = stmt
             .query_map(params![playlist_id, include_duplicates, limit, offset], row_to_track)?
             .filter_map(|row| row.ok())
@@ -406,7 +430,7 @@ impl LibraryState {
         offset: usize,
         include_duplicates: bool,
     ) -> Result<TrackPage, BoxError> {
-        let rules: Vec<SmartPlaylistRule> = serde_json::from_str(rules_json)?;
+        let rules: Vec<SmartPlaylistEntry> = serde_json::from_str(rules_json)?;
         let (where_clause, mut values, order_by) = compile_smart_playlist_sql(
             &rules,
             match_mode,
@@ -417,7 +441,7 @@ impl LibraryState {
         let conn = self.conn.lock().unwrap();
 
         let total: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM tracks WHERE {where_clause}"),
+            &format!("SELECT COUNT(*) FROM library_tracks WHERE {where_clause}"),
             params_from_iter(values.iter()),
             |row| row.get(0),
         )?;
@@ -425,8 +449,8 @@ impl LibraryState {
         values.push(Value::Integer(limit));
         values.push(Value::Integer(offset));
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate
-               FROM tracks
+            "SELECT {TRACK_COLUMNS}
+               FROM library_tracks
               WHERE {where_clause}
               ORDER BY {order_by}
               LIMIT ? OFFSET ?"
@@ -448,11 +472,11 @@ impl LibraryState {
     pub fn smart_playlist_values(&self, field: &str) -> Result<Vec<String>, BoxError> {
         let conn = self.conn.lock().unwrap();
         let sql = match field {
-            "artist" => "SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL AND trim(artist) <> '' ORDER BY artist COLLATE NOCASE LIMIT ?",
-            "album" => "SELECT DISTINCT album FROM tracks WHERE album IS NOT NULL AND trim(album) <> '' ORDER BY album COLLATE NOCASE LIMIT ?",
-            "genre" => "SELECT DISTINCT genre FROM tracks WHERE genre IS NOT NULL AND trim(genre) <> '' ORDER BY genre COLLATE NOCASE LIMIT ?",
-            "rarity" => "SELECT DISTINCT rarity FROM tracks WHERE rarity IS NOT NULL AND trim(rarity) <> '' ORDER BY rarity COLLATE NOCASE LIMIT ?",
-            "extension" => "SELECT DISTINCT lower(substr(path, length(rtrim(path, replace(path, '.', ''))) + 1)) FROM tracks WHERE instr(path, '.') > 0 ORDER BY 1 COLLATE NOCASE LIMIT ?",
+            "artist" | "album" | "album_artist_or_artist" | "genre" | "rarity" => {
+                let column = text_column(field).expect("all are text columns");
+                format!("SELECT DISTINCT {column} AS v FROM library_tracks WHERE v IS NOT NULL AND trim(v) <> '' ORDER BY v COLLATE NOCASE LIMIT ?")
+            }
+            "extension" => "SELECT DISTINCT lower(substr(path, length(rtrim(path, replace(path, '.', ''))) + 1)) FROM tracks WHERE instr(path, '.') > 0 ORDER BY 1 COLLATE NOCASE LIMIT ?".to_owned(),
             "tags" => "WITH RECURSIVE split(value, rest) AS (
                     SELECT '', replace(replace(COALESCE(tags, ''), char(10), ','), ';', ',') || ','
                       FROM tracks
@@ -462,10 +486,10 @@ impl LibraryState {
                       FROM split
                      WHERE rest <> ''
                  )
-                 SELECT DISTINCT value FROM split WHERE value <> '' ORDER BY value COLLATE NOCASE LIMIT ?",
+                 SELECT DISTINCT value FROM split WHERE value <> '' ORDER BY value COLLATE NOCASE LIMIT ?".to_owned(),
             _ => return Ok(Vec::new()),
         };
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![300_i64], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(Result::ok).collect())
     }
@@ -622,6 +646,7 @@ fn text_column(field: &str) -> Option<&'static str> {
         "title" => Some("title"),
         "artist" => Some("artist"),
         "album" => Some("album"),
+        "album_artist_or_artist" => Some("album_artist_or_artist"),
         "genre" => Some("genre"),
         "tags" => Some("tags"),
         "rarity" => Some("rarity"),
@@ -632,6 +657,7 @@ fn text_column(field: &str) -> Option<&'static str> {
 
 fn numeric_column(field: &str) -> Option<&'static str> {
     match field {
+        "disc_number" => Some("disc_number"),
         "track_number" => Some("track_number"),
         "duration_secs" => Some("duration_secs"),
         "year" => Some("year"),
@@ -640,11 +666,142 @@ fn numeric_column(field: &str) -> Option<&'static str> {
     }
 }
 
+/// SQL condition for one rule, with its parameters appended to `values`.
+/// `None` = the rule is incomplete or unknown and is skipped.
+fn compile_rule(rule: &SmartPlaylistRule, values: &mut Vec<Value>) -> Option<String> {
+    let mut rule_values = Vec::<Value>::new();
+    let predicate = match rule.field.as_str() {
+        "any" => {
+            let pattern = format!("%{}%", escape_like(&rule.value));
+            let columns = [
+                "title", "artist", "album", "album_artist_or_artist", "genre", "tags", "rarity", "path",
+                "CAST(track_number AS TEXT)", "CAST(duration_secs AS TEXT)",
+                "CAST(year AS TEXT)", "CAST(play_count AS TEXT)",
+            ];
+            let parts = columns
+                .iter()
+                .map(|column| {
+                    rule_values.push(Value::Text(pattern.clone()));
+                    format!("COALESCE({column}, '') LIKE ? ESCAPE '\\'")
+                })
+                .collect::<Vec<_>>();
+            format!("({})", parts.join(" OR "))
+        }
+        "extension" => {
+            let selections = selected_values(&rule.value);
+            if selections.is_empty() {
+                return None;
+            }
+            let parts = selections
+                .iter()
+                .map(|extension| {
+                    rule_values.push(Value::Text(format!("%.{}", escape_like(extension.trim_start_matches('.')))));
+                    "lower(path) LIKE lower(?) ESCAPE '\\'".to_string()
+                })
+                .collect::<Vec<_>>();
+            format!("({})", parts.join(" OR "))
+        }
+        "is_liked" => match rule.op.as_str() {
+            "is_true" => "is_liked = 1".to_string(),
+            "is_false" => "is_liked = 0".to_string(),
+            _ => return None,
+        },
+        "date_added" => {
+            if rule.value.is_empty() {
+                return None;
+            }
+            match rule.op.as_str() {
+                "gte" => {
+                    rule_values.push(Value::Text(rule.value.clone()));
+                    "date_added >= CAST(strftime('%s', ?) AS INTEGER)".to_string()
+                }
+                "lte" => {
+                    rule_values.push(Value::Text(rule.value.clone()));
+                    "date_added < CAST(strftime('%s', ?, '+1 day') AS INTEGER)".to_string()
+                }
+                "eq" => {
+                    rule_values.push(Value::Text(rule.value.clone()));
+                    rule_values.push(Value::Text(rule.value.clone()));
+                    "(date_added >= CAST(strftime('%s', ?) AS INTEGER) AND date_added < CAST(strftime('%s', ?, '+1 day') AS INTEGER))".to_string()
+                }
+                _ => return None,
+            }
+        }
+        field if numeric_column(field).is_some() => {
+            let Some(number) = rule.value.parse::<f64>().ok() else {
+                // JavaScript's Number(invalid) is NaN, which matched no
+                // numeric track. Keep that behaviour in SQL.
+                return Some("0".to_string());
+            };
+            let operator = match rule.op.as_str() {
+                "eq" => "=",
+                "gte" => ">=",
+                "lte" => "<=",
+                _ => return None,
+            };
+            rule_values.push(Value::Real(number));
+            format!("{field} {operator} ?")
+        }
+        field if text_column(field).is_some() => {
+            let column = text_column(field).expect("checked above");
+            if rule.op == "in" {
+                let selections = selected_values(&rule.value);
+                if selections.is_empty() {
+                    return None;
+                }
+                let parts = selections
+                    .iter()
+                    .map(|selection| {
+                        if field == "tags" {
+                            // Tags are currently stored as delimited text. This
+                            // keeps exact tag matching without a schema change.
+                            rule_values.push(Value::Text(format!(",{},", escape_like(selection.trim()))));
+                            "(',' || replace(replace(replace(replace(lower(COALESCE(tags, '')), char(10), ','), ';', ','), ', ', ','), ' ,', ',') || ',') LIKE lower(?) ESCAPE '\\'".to_string()
+                        } else {
+                            rule_values.push(Value::Text(selection.clone()));
+                            format!("{column} = ?")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                format!("({})", parts.join(" OR "))
+            } else {
+                rule_values.push(Value::Text(format!("%{}%", escape_like(&rule.value))));
+                format!("COALESCE({column}, '') LIKE ? ESCAPE '\\'")
+            }
+        }
+        _ => return None,
+    };
+    values.extend(rule_values);
+    Some(predicate)
+}
+
+/// Joins the conditions of `entries` (recursing into groups) with AND
+/// (`match_mode` "all") or OR ("any"). Sort rules are skipped; they only count
+/// at the top level. `None` = nothing to filter by, e.g. an empty group.
+fn compile_filters(
+    entries: &[SmartPlaylistEntry],
+    match_mode: &str,
+    values: &mut Vec<Value>,
+) -> Option<String> {
+    let filters: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            SmartPlaylistEntry::Rule(rule) if rule.field == "sort" => None,
+            SmartPlaylistEntry::Rule(rule) => compile_rule(rule, values),
+            SmartPlaylistEntry::Group { match_mode, rules } => compile_filters(rules, match_mode, values),
+        })
+        .collect();
+    if filters.is_empty() {
+        return None;
+    }
+    Some(format!("({})", filters.join(if match_mode == "any" { " OR " } else { " AND " })))
+}
+
 /// Compiles persisted flexible-playlist rules into a parameterised SQLite
 /// filter. Column names, operators and sort directions are all whitelisted;
 /// values are supplied separately through rusqlite bindings.
 fn compile_smart_playlist_sql(
-    rules: &[SmartPlaylistRule],
+    rules: &[SmartPlaylistEntry],
     match_mode: &str,
     include_duplicates: bool,
 ) -> (String, Vec<Value>, String) {
@@ -660,137 +817,24 @@ fn compile_smart_playlist_sql(
         predicates.push("is_duplicate = 0".to_string());
     }
 
-    let mut filters = Vec::<String>::new();
-    for rule in rules.iter().filter(|rule| rule.field != "sort") {
-        let mut rule_values = Vec::<Value>::new();
-        let predicate = match rule.field.as_str() {
-            "any" => {
-                let pattern = format!("%{}%", escape_like(&rule.value));
-                let columns = [
-                    "title", "artist", "album", "genre", "tags", "rarity", "path",
-                    "CAST(track_number AS TEXT)", "CAST(duration_secs AS TEXT)",
-                    "CAST(year AS TEXT)", "CAST(play_count AS TEXT)",
-                ];
-                let parts = columns
-                    .iter()
-                    .map(|column| {
-                        rule_values.push(Value::Text(pattern.clone()));
-                        format!("COALESCE({column}, '') LIKE ? ESCAPE '\\'")
-                    })
-                    .collect::<Vec<_>>();
-                format!("({})", parts.join(" OR "))
-            }
-            "extension" => {
-                let selections = selected_values(&rule.value);
-                if selections.is_empty() {
-                    continue;
-                }
-                let parts = selections
-                    .iter()
-                    .map(|extension| {
-                        rule_values.push(Value::Text(format!("%.{}", escape_like(extension.trim_start_matches('.')))));
-                        "lower(path) LIKE lower(?) ESCAPE '\\'".to_string()
-                    })
-                    .collect::<Vec<_>>();
-                format!("({})", parts.join(" OR "))
-            }
-            "is_liked" => match rule.op.as_str() {
-                "is_true" => "is_liked = 1".to_string(),
-                "is_false" => "is_liked = 0".to_string(),
-                _ => continue,
-            },
-            "date_added" => {
-                if rule.value.is_empty() {
-                    continue;
-                }
-                match rule.op.as_str() {
-                    "gte" => {
-                        rule_values.push(Value::Text(rule.value.clone()));
-                        "date_added >= CAST(strftime('%s', ?) AS INTEGER)".to_string()
-                    }
-                    "lte" => {
-                        rule_values.push(Value::Text(rule.value.clone()));
-                        "date_added < CAST(strftime('%s', ?, '+1 day') AS INTEGER)".to_string()
-                    }
-                    "eq" => {
-                        rule_values.push(Value::Text(rule.value.clone()));
-                        rule_values.push(Value::Text(rule.value.clone()));
-                        "(date_added >= CAST(strftime('%s', ?) AS INTEGER) AND date_added < CAST(strftime('%s', ?, '+1 day') AS INTEGER))".to_string()
-                    }
-                    _ => continue,
-                }
-            }
-            field if numeric_column(field).is_some() => {
-                let Some(number) = rule.value.parse::<f64>().ok() else {
-                    // JavaScript's Number(invalid) is NaN, which matched no
-                    // numeric track. Keep that behaviour in SQL.
-                    filters.push("0".to_string());
-                    continue;
-                };
-                let operator = match rule.op.as_str() {
-                    "eq" => "=",
-                    "gte" => ">=",
-                    "lte" => "<=",
-                    _ => continue,
-                };
-                rule_values.push(Value::Real(number));
-                format!("{field} {operator} ?")
-            }
-            field if text_column(field).is_some() => {
-                let column = text_column(field).expect("checked above");
-                if rule.op == "in" {
-                    let selections = selected_values(&rule.value);
-                    if selections.is_empty() {
-                        continue;
-                    }
-                    let parts = selections
-                        .iter()
-                        .map(|selection| {
-                            if field == "tags" {
-                                // Tags are currently stored as delimited text. This
-                                // keeps exact tag matching without a schema change.
-                                rule_values.push(Value::Text(format!(",{},", escape_like(selection.trim()))));
-                                "(',' || replace(replace(replace(replace(lower(COALESCE(tags, '')), char(10), ','), ';', ','), ', ', ','), ' ,', ',') || ',') LIKE lower(?) ESCAPE '\\'".to_string()
-                            } else {
-                                rule_values.push(Value::Text(selection.clone()));
-                                format!("{column} = ?")
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    format!("({})", parts.join(" OR "))
-                } else {
-                    rule_values.push(Value::Text(format!("%{}%", escape_like(&rule.value))));
-                    format!("COALESCE({column}, '') LIKE ? ESCAPE '\\'")
-                }
-            }
-            _ => continue,
-        };
-        filters.push(predicate);
-        values.extend(rule_values);
-    }
-
-    if !filters.is_empty() {
-        predicates.push(format!("({})", filters.join(if match_mode == "any" { " OR " } else { " AND " })));
+    if let Some(filter) = compile_filters(rules, match_mode, &mut values) {
+        predicates.push(filter);
     }
 
     let mut ordering = Vec::new();
-    for rule in rules.iter().filter(|rule| rule.field == "sort") {
-        let Some(expression) = (match rule.value.as_str() {
-            "title" => Some("COALESCE(title, path) COLLATE NOCASE"),
-            "artist" => Some("artist COLLATE NOCASE"),
-            "album" => Some("album COLLATE NOCASE"),
-            "genre" => Some("genre COLLATE NOCASE"),
-            "tags" => Some("tags COLLATE NOCASE"),
-            "rarity" => Some("rarity COLLATE NOCASE"),
-            "path" => Some("path COLLATE NOCASE"),
-            "extension" => Some("lower(substr(path, length(rtrim(path, replace(path, '.', ''))) + 1)) COLLATE NOCASE"),
-            "track_number" => Some("track_number"),
-            "duration_secs" => Some("duration_secs"),
-            "year" => Some("year"),
-            "play_count" => Some("play_count"),
-            "is_liked" => Some("is_liked"),
-            "date_added" => Some("date_added"),
-            _ => None,
+    let sort_rules = rules.iter().filter_map(|entry| match entry {
+        SmartPlaylistEntry::Rule(rule) if rule.field == "sort" => Some(rule),
+        _ => None,
+    });
+    for rule in sort_rules {
+        let field = rule.value.as_str();
+        let Some(expression) = (match field {
+            "title" => Some("COALESCE(title, path) COLLATE NOCASE".to_owned()),
+            "extension" => Some("lower(substr(path, length(rtrim(path, replace(path, '.', ''))) + 1)) COLLATE NOCASE".to_owned()),
+            "is_liked" | "date_added" => Some(field.to_owned()),
+            _ => text_column(field)
+                .map(|column| format!("{column} COLLATE NOCASE"))
+                .or_else(|| numeric_column(field).map(str::to_owned)),
         }) else {
             continue;
         };
@@ -798,12 +842,11 @@ fn compile_smart_playlist_sql(
         ordering.push(format!("({expression}) IS NULL ASC, {expression} {direction}"));
     }
     if ordering.is_empty() {
-        ordering.push("artist COLLATE NOCASE ASC".to_string());
-        ordering.push("album COLLATE NOCASE ASC".to_string());
-        ordering.push("track_number ASC".to_string());
-        ordering.push("title COLLATE NOCASE ASC".to_string());
+        ordering.push(LIBRARY_ORDER_SQL.to_string());
+    } else {
+        // Ties in the user's sort keep a stable order (LIBRARY_ORDER_SQL ends in id already).
+        ordering.push("id ASC".to_string());
     }
-    ordering.push("id ASC".to_string());
 
     (predicates.join(" AND "), values, ordering.join(", "))
 }
@@ -920,12 +963,22 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cue_path TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN segment_start_secs REAL");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN segment_end_secs REAL");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN album_artist TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN disc_number INTEGER");
+    // Recreated on every start so changes to its definition take effect.
+    conn.execute_batch(&format!(
+        "DROP VIEW IF EXISTS library_tracks;
+         {};
+         CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);",
+        library_tracks_view_sql()
+    ))?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre COLLATE NOCASE);
          CREATE INDEX IF NOT EXISTS idx_tags ON tracks(tags COLLATE NOCASE);
          CREATE INDEX IF NOT EXISTS idx_tracks_cue_path ON tracks(cue_path);
-         CREATE INDEX IF NOT EXISTS idx_tracks_library_order
-             ON tracks(artist COLLATE NOCASE, album COLLATE NOCASE, track_number, title COLLATE NOCASE, id);",
+         DROP INDEX IF EXISTS idx_tracks_library_order;
+         CREATE INDEX IF NOT EXISTS idx_tracks_library_order_v2
+             ON tracks(artist COLLATE NOCASE, album COLLATE NOCASE, disc_number, track_number, title COLLATE NOCASE, id);",
     )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS play_history (
@@ -1198,25 +1251,94 @@ fn delete_tracks_by_path_except_id(
     Ok(removed)
 }
 
+/// Keep idx_tracks_library_order_v2 in sync with this
+const LIBRARY_ORDER_SQL: &str =
+    "artist COLLATE NOCASE, album COLLATE NOCASE, disc_number, track_number, title COLLATE NOCASE, id";
+
+const VARIOUS_ARTISTS_ALIASES: &[&str] = &["various artists", "various", "va", "v.a.", "v/a"];
+/// Must match VARIOUS_ARTISTS in src/utils/artists.ts.
+const VARIOUS_ARTISTS: &str = "Various Artists";
+
+/// The columns [`row_to_track`] reads, in order. Select them from the
+/// `library_tracks` view, not the `tracks` table: the view adds
+/// `album_artist_or_artist`.
+const TRACK_COLUMNS: &str = "id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate, album_artist, disc_number, album_artist_or_artist, has_cover";
+
+/// [`TRACK_COLUMNS`] for a query that names the view, e.g. `t.` for
+/// `FROM library_tracks t`.
+fn track_columns_of(alias: &str) -> String {
+    TRACK_COLUMNS
+        .split(", ")
+        .map(|column| format!("{alias}.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `library_tracks`: every column of `tracks`, plus `has_cover` and
+/// `album_artist_or_artist`, the artist an album is listed under:
+/// 1. the track's album artist tag;
+/// 2. else the first album artist tag on the same album (by disc, then track
+///    number), for albums where only some tracks are tagged;
+/// 3. else the track artist.
+///
+/// Any of [`VARIOUS_ARTISTS_ALIASES`] becomes [`VARIOUS_ARTISTS`]. Albums are
+/// identified by (album, album_artist_or_artist). This is the only place that
+/// rule is written down; everything else reads the column.
+fn library_tracks_view_sql() -> String {
+    let resolved = "COALESCE(
+            NULLIF(t.album_artist, ''),
+            (SELECT o.album_artist FROM tracks o
+              WHERE o.album = t.album AND trim(t.album) <> '' AND o.album_artist <> ''
+              ORDER BY o.disc_number IS NULL, o.disc_number,
+                       o.track_number IS NULL, o.track_number, o.path
+              LIMIT 1),
+            t.artist)";
+    let aliases = VARIOUS_ARTISTS_ALIASES
+        .iter()
+        .map(|alias| format!("'{alias}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "CREATE VIEW library_tracks AS
+         SELECT t.*,
+                t.cover_mime IS NOT NULL AS has_cover,
+                CASE WHEN lower(trim({resolved})) IN ({aliases}) THEN '{VARIOUS_ARTISTS}'
+                     ELSE {resolved} END AS album_artist_or_artist
+           FROM tracks t"
+    )
+}
+
+/// Reads a [`Track`] from a row that starts with [`TRACK_COLUMNS`].
 fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
+    track_from_row(row, 0)
+}
+
+/// Same as [`row_to_track`], for rows where the track columns start at
+/// column `start` (e.g. `SELECT h.played_at, t.id, ...` has start = 1).
+fn track_from_row(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<Track> {
+    let col = |i: usize| start + i;
     Ok(Track {
-        id: row.get(0)?,
-        path: row.get(1)?,
-        title: row.get(2)?,
-        artist: row.get(3)?,
-        album: row.get(4)?,
-        track_number: row.get(5)?,
-        duration_secs: row.get(6)?,
-        file_hash: row.get(7)?,
-        rarity: row.get(8)?,
-        manually_edited: row.get::<_, i64>(9).unwrap_or(0) != 0,
-        is_liked: row.get::<_, i64>(10).unwrap_or(0) != 0,
-        play_count: row.get::<_, i64>(11).unwrap_or(0),
-        year: row.get(12).unwrap_or(None),
-        genre: row.get(13).unwrap_or(None),
-        date_added: row.get(14).unwrap_or(None),
-        tags: row.get(15).unwrap_or(None),
-        is_duplicate: row.get::<_, i64>(16).unwrap_or(0) != 0,
+        id: row.get(col(0))?,
+        path: row.get(col(1))?,
+        title: row.get(col(2))?,
+        artist: row.get(col(3))?,
+        album: row.get(col(4))?,
+        track_number: row.get(col(5))?,
+        duration_secs: row.get(col(6))?,
+        file_hash: row.get(col(7))?,
+        rarity: row.get(col(8))?,
+        manually_edited: row.get::<_, i64>(col(9)).unwrap_or(0) != 0,
+        is_liked: row.get::<_, i64>(col(10)).unwrap_or(0) != 0,
+        play_count: row.get::<_, i64>(col(11)).unwrap_or(0),
+        year: row.get(col(12)).unwrap_or(None),
+        genre: row.get(col(13)).unwrap_or(None),
+        date_added: row.get(col(14)).unwrap_or(None),
+        tags: row.get(col(15)).unwrap_or(None),
+        is_duplicate: row.get::<_, i64>(col(16)).unwrap_or(0) != 0,
+        album_artist: row.get(col(17)).unwrap_or(None),
+        disc_number: row.get(col(18)).unwrap_or(None),
+        album_artist_or_artist: row.get(col(19)).unwrap_or(None),
+        has_cover: row.get::<_, i64>(col(20)).unwrap_or(0) != 0,
     })
 }
 
@@ -1274,12 +1396,22 @@ pub fn track_source_for_track(
     }
 }
 
+fn get_track_by_id(conn: &Connection, id: i64) -> rusqlite::Result<Track> {
+    conn.query_row(
+        &format!("SELECT {TRACK_COLUMNS} FROM library_tracks WHERE id = ?1"),
+        params![id],
+        row_to_track,
+    )
+}
+
 fn get_track_by_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<Track>> {
     match conn.query_row(
-        "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate
-           FROM tracks
-          WHERE path = ?1
-          LIMIT 1",
+        &format!(
+            "SELECT {TRACK_COLUMNS}
+               FROM library_tracks
+              WHERE path = ?1
+              LIMIT 1"
+        ),
         params![path],
         row_to_track,
     ) {
@@ -1301,33 +1433,17 @@ fn get_track_replacement_row_by_id(
     id: i64,
 ) -> rusqlite::Result<Option<TrackReplacementRow>> {
     match conn.query_row(
-        "SELECT id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate, cover_mime
-           FROM tracks
-          WHERE id = ?1
-          LIMIT 1",
+        &format!(
+            "SELECT cover_mime, {TRACK_COLUMNS}
+               FROM library_tracks
+              WHERE id = ?1
+              LIMIT 1"
+        ),
         params![id],
         |row| {
-            let cover_mime = normalize_cover_mime(row.get(17).unwrap_or(None));
+            let cover_mime = normalize_cover_mime(row.get(0).unwrap_or(None));
             Ok(TrackReplacementRow {
-                track: Track {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    title: row.get(2)?,
-                    artist: row.get(3)?,
-                    album: row.get(4)?,
-                    track_number: row.get(5)?,
-                    duration_secs: row.get(6)?,
-                    file_hash: row.get(7)?,
-                    rarity: row.get(8)?,
-                    manually_edited: row.get::<_, i64>(9).unwrap_or(0) != 0,
-                    is_liked: row.get::<_, i64>(10).unwrap_or(0) != 0,
-                    play_count: row.get::<_, i64>(11).unwrap_or(0),
-                    year: row.get(12).unwrap_or(None),
-                    genre: row.get(13).unwrap_or(None),
-                    date_added: row.get(14).unwrap_or(None),
-                    tags: row.get(15).unwrap_or(None),
-                    is_duplicate: row.get::<_, i64>(16).unwrap_or(0) != 0,
-                },
+                track: track_from_row(row, 1)?,
                 cover_data: read_cover_file(data_dir, id, cover_mime.as_deref()),
                 cover_mime,
             })
@@ -1833,7 +1949,9 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             "UPDATE tracks SET modified_secs = ?1, file_hash = ?2, rarity = ?3,
              duration_secs = COALESCE(?4, duration_secs), cover_data = NULL, cover_mime = ?5,
              cover_source_path = ?6, cover_source_mtime = ?7,
-             date_added = COALESCE(date_added, ?8)
+             date_added = COALESCE(date_added, ?8),
+             album_artist = COALESCE(album_artist, ?10),
+             disc_number = COALESCE(disc_number, ?11)
              WHERE path = ?9",
             params![
                 modified_secs,
@@ -1845,6 +1963,8 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
                 meta.cover_source_mtime,
                 date_added_secs,
                 rel,
+                meta.album_artist.unwrap_or_default(),
+                meta.disc_number,
             ],
         )?;
         let track_id: i64 = conn.query_row(
@@ -1893,12 +2013,14 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
     .entered();
     conn.execute(
         "INSERT INTO tracks
-             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, cover_source_path, cover_source_mtime, file_hash, rarity, year, genre, date_added, source_kind, source_path, cue_path, segment_start_secs, segment_end_secs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, NULL, NULL)
+             (path, title, artist, album, track_number, duration_secs, modified_secs, cover_data, cover_mime, cover_source_path, cover_source_mtime, file_hash, rarity, year, genre, date_added, source_kind, source_path, cue_path, segment_start_secs, segment_end_secs, album_artist, disc_number)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, NULL, NULL, ?18, ?19)
          ON CONFLICT(path) DO UPDATE SET
              title         = excluded.title,
              artist        = excluded.artist,
              album         = excluded.album,
+             album_artist  = excluded.album_artist,
+             disc_number   = excluded.disc_number,
              track_number  = excluded.track_number,
              duration_secs = excluded.duration_secs,
              modified_secs = excluded.modified_secs,
@@ -1934,6 +2056,8 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             date_added_secs,
             SOURCE_KIND_FILE,
             rel,
+            meta.album_artist.unwrap_or_default(),
+            meta.disc_number,
         ],
     )?;
     let track_id: i64 = conn.query_row(
@@ -2274,6 +2398,8 @@ fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -
         title: tag.title().as_deref().map(str::to_owned),
         artist: tag.artist().as_deref().map(str::to_owned),
         album: tag.album().as_deref().map(str::to_owned),
+        album_artist: tag_album_artist(tag),
+        disc_number: tag.disk().map(i64::from),
         track_number: tag.track().map(|n| n as i64),
         duration_secs,
         year: tag.date().map(|ts| ts.year as i64),
@@ -2285,10 +2411,18 @@ fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -
     }
 }
 
+fn tag_album_artist(tag: &lofty::tag::Tag) -> Option<String> {
+    tag.get_string(ItemKey::AlbumArtist)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 #[derive(Default)]
 struct CueSheet {
     title: Option<String>,
     performer: Option<String>,
+    disc_number: Option<i64>,
     files: Vec<CueFile>,
 }
 
@@ -2322,6 +2456,18 @@ fn cue_value(line: &str) -> Option<String> {
     }
 }
 
+/// `REM DISCNUMBER 2` (or `2/3`, the total is ignored) → `Some(2)`.
+fn cue_rem_disc_number(line: &str) -> Option<i64> {
+    let mut words = line.split_whitespace();
+    let is_disc_number = words.next()?.eq_ignore_ascii_case("REM")
+        && words.next()?.eq_ignore_ascii_case("DISCNUMBER");
+    if !is_disc_number {
+        return None;
+    }
+    let value = words.next()?.trim_matches('"');
+    value.split('/').next()?.trim().parse().ok()
+}
+
 fn cue_time_to_secs(value: &str) -> Option<f64> {
     let mut parts = value.split(':');
     let minutes = parts.next()?.parse::<f64>().ok()?;
@@ -2350,6 +2496,10 @@ fn parse_cue_sheet(path: &Path) -> Result<CueSheet, BoxError> {
 
     for raw_line in text.lines() {
         let line = raw_line.trim();
+        if let Some(disc_number) = cue_rem_disc_number(line) {
+            sheet.disc_number = Some(disc_number);
+            continue;
+        }
         if line.is_empty() || line.starts_with("REM ") {
             continue;
         }
@@ -2532,6 +2682,7 @@ fn index_cue_file(
                 .or_else(|| sheet.performer.clone())
                 .or(fallback.artist.clone());
             let album = sheet.title.clone().or(fallback.album.clone());
+            let album_artist = sheet.performer.clone().unwrap_or_default();
             let start_key = format!("{start_secs:.3}");
             let end_key = end_secs
                 .map(|value| format!("{value:.3}"))
@@ -2553,13 +2704,16 @@ fn index_cue_file(
                      (path, title, artist, album, track_number, duration_secs, modified_secs,
                       cover_data, cover_mime, cover_source_path, cover_source_mtime,
                       file_hash, rarity, year, genre, date_added, source_kind, source_path,
-                      cue_path, segment_start_secs, segment_end_secs)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                      cue_path, segment_start_secs, segment_end_secs, album_artist, disc_number)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
                  ON CONFLICT(path) DO UPDATE SET
                      title = CASE WHEN tracks.manually_edited != 0 THEN tracks.title ELSE excluded.title END,
                      artist = CASE WHEN tracks.manually_edited != 0 THEN tracks.artist ELSE excluded.artist END,
                      album = CASE WHEN tracks.manually_edited != 0 THEN tracks.album ELSE excluded.album END,
+                     album_artist = CASE WHEN tracks.manually_edited != 0 AND tracks.album_artist IS NOT NULL
+                                         THEN tracks.album_artist ELSE excluded.album_artist END,
                      track_number = CASE WHEN tracks.manually_edited != 0 THEN tracks.track_number ELSE excluded.track_number END,
+                     disc_number = CASE WHEN tracks.manually_edited != 0 THEN tracks.disc_number ELSE excluded.disc_number END,
                      duration_secs = excluded.duration_secs,
                      modified_secs = excluded.modified_secs,
                      cover_data = excluded.cover_data,
@@ -2597,6 +2751,8 @@ fn index_cue_file(
                     cue_rel,
                     start_secs,
                     end_secs,
+                    album_artist,
+                    sheet.disc_number,
                 ],
             )?;
             let track_id: i64 = conn.query_row(
@@ -3068,13 +3224,17 @@ pub fn reindex(app: tauri::AppHandle, state: tauri::State<'_, LibraryState>) -> 
     Ok(())
 }
 
+/// Returns the track as saved, so the caller sees values the library
+/// derives from the edit, like `album_artist_or_artist`.
 #[tauri::command]
 pub fn update_track(
     id: i64,
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
+    album_artist: Option<String>,
     track_number: Option<i64>,
+    disc_number: Option<i64>,
     year: Option<i64>,
     genre: Option<String>,
     tags: Option<String>,
@@ -3083,7 +3243,7 @@ pub fn update_track(
     date_added: Option<i64>,
     rarity: Option<String>,
     state: tauri::State<'_, LibraryState>,
-) -> Result<(), String> {
+) -> Result<Track, String> {
     let conn = state.conn.lock().unwrap();
     conn.execute(
         "UPDATE tracks
@@ -3098,6 +3258,8 @@ pub fn update_track(
                 is_liked = ?9,
                 date_added = ?10,
                 rarity = ?11,
+                album_artist = ?13,
+                disc_number = ?14,
                 manually_edited = 1
           WHERE id = ?12",
         params![
@@ -3112,11 +3274,13 @@ pub fn update_track(
             is_liked,
             date_added,
             rarity,
-            id
+            id,
+            album_artist.unwrap_or_default(),
+            disc_number,
         ],
     )
     .map_err(|e| e.to_string())?;
-    Ok(())
+    get_track_by_id(&conn, id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3213,8 +3377,13 @@ pub fn replace_track_with_file(
     let merged_title = merge_optional_text(existing.track.title, replacement_meta.title);
     let merged_artist = merge_optional_text(existing.track.artist, replacement_meta.artist);
     let merged_album = merge_optional_text(existing.track.album, replacement_meta.album);
+    let merged_album_artist =
+        merge_optional_text(existing.track.album_artist, replacement_meta.album_artist)
+            .unwrap_or_default();
     let merged_track_number =
         merge_optional_i64(existing.track.track_number, replacement_meta.track_number);
+    let merged_disc_number =
+        merge_optional_i64(existing.track.disc_number, replacement_meta.disc_number);
     let merged_year = merge_optional_i64(existing.track.year, replacement_meta.year);
     let merged_genre = merge_optional_text(existing.track.genre, replacement_meta.genre);
     let merged_tags = existing.track.tags;
@@ -3247,7 +3416,9 @@ pub fn replace_track_with_file(
                 manually_edited = ?15,
                 is_liked = ?16,
                 play_count = ?17,
-                is_duplicate = ?18
+                is_duplicate = ?18,
+                album_artist = ?20,
+                disc_number = ?21
           WHERE id = ?19",
         params![
             target_rel,
@@ -3269,6 +3440,8 @@ pub fn replace_track_with_file(
             existing.track.play_count,
             if existing.track.is_duplicate { 1 } else { 0 },
             id,
+            merged_album_artist,
+            merged_disc_number,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -3456,14 +3629,14 @@ pub fn get_recent_tracks(
 ) -> Result<Vec<Track>, String> {
     let conn = state.conn.lock().unwrap();
     let lim = limit.unwrap_or(12) as i64;
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags, t.is_duplicate
+    let mut stmt = conn.prepare(&format!(
+        "SELECT DISTINCT {columns}
            FROM play_history h
-           JOIN tracks t ON t.id = h.track_id
+           JOIN library_tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
           LIMIT ?1",
-    ).map_err(|e| e.to_string())?;
+        columns = track_columns_of("t"),
+    )).map_err(|e| e.to_string())?;
     let tracks = stmt
         .query_map(params![lim], row_to_track)
         .map_err(|e| e.to_string())?
@@ -3479,36 +3652,18 @@ pub fn get_play_history(
 ) -> Result<Vec<PlayHistoryEntry>, String> {
     let conn = state.conn.lock().unwrap();
     let lim = limit.unwrap_or(500) as i64;
-    let mut stmt = conn.prepare(
-        "SELECT h.played_at, t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited, t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags, t.is_duplicate
+    let mut stmt = conn.prepare(&format!(
+        "SELECT h.played_at, {columns}
            FROM play_history h
-           JOIN tracks t ON t.id = h.track_id
+           JOIN library_tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
           LIMIT ?1",
-    ).map_err(|e| e.to_string())?;
+        columns = track_columns_of("t"),
+    )).map_err(|e| e.to_string())?;
     let entries = stmt
         .query_map(params![lim], |row| {
             let played_at: i64 = row.get(0)?;
-            let track = Track {
-                id: row.get(1)?,
-                path: row.get(2)?,
-                title: row.get(3)?,
-                artist: row.get(4)?,
-                album: row.get(5)?,
-                track_number: row.get(6)?,
-                duration_secs: row.get(7)?,
-                file_hash: row.get(8)?,
-                rarity: row.get(9)?,
-                manually_edited: row.get::<_, i64>(10).unwrap_or(0) != 0,
-                is_liked: row.get::<_, i64>(11).unwrap_or(0) != 0,
-                play_count: row.get::<_, i64>(12).unwrap_or(0),
-                year: row.get(13).unwrap_or(None),
-                genre: row.get(14).unwrap_or(None),
-                date_added: row.get(15).unwrap_or(None),
-                tags: row.get(16).unwrap_or(None),
-                is_duplicate: row.get::<_, i64>(17).unwrap_or(0) != 0,
-            };
+            let track = track_from_row(row, 1)?;
             Ok(PlayHistoryEntry { played_at, track })
         })
         .map_err(|e| e.to_string())?
@@ -3584,6 +3739,77 @@ pub fn toggle_like(id: i64, state: tauri::State<'_, LibraryState>) -> Result<boo
     .map_err(|e| e.to_string())?;
 
     Ok(new_liked != 0)
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct AlbumSummary {
+    pub album: String,
+    /// With `album`, identifies the album.
+    pub album_artist_or_artist: String,
+    pub year: Option<i64>,
+    pub track_count: i64,
+    pub cover_track_id: i64,
+}
+
+/// Track order within an album. Must match the sort rules of
+/// fetchAlbumTracks() in src/api.ts, so the album card and the album page pick
+/// the same cover (the first track in this order that has one).
+const ALBUM_TRACK_ORDER_SQL: &str = "disc_number IS NULL, disc_number, track_number IS NULL, track_number, COALESCE(title, path) IS NULL, COALESCE(title, path) COLLATE NOCASE, id";
+
+/// Albums `artist` has tracks on: ones they're the album artist of, and ones
+/// they only appear on (compilations, guest tracks); the caller tells them
+/// apart by `album_artist_or_artist`. Counts include every track on the
+/// album, not just theirs. Oldest first, albums without a year last.
+fn artist_albums(
+    conn: &Connection,
+    artist: &str,
+    include_duplicates: bool,
+) -> rusqlite::Result<Vec<AlbumSummary>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT g.album,
+                g.album_artist_or_artist,
+                MAX(g.year),
+                COUNT(*),
+                -- The first track (in album order) with a cover, else the first track.
+                (SELECT c.id FROM library_tracks c
+                  WHERE c.album = g.album
+                    AND c.album_artist_or_artist = g.album_artist_or_artist
+                    AND (?2 = 1 OR c.is_duplicate = 0)
+                  ORDER BY c.has_cover DESC, {ALBUM_TRACK_ORDER_SQL}
+                  LIMIT 1)
+           FROM library_tracks g
+          WHERE g.album IS NOT NULL AND trim(g.album) <> ''
+            AND (?2 = 1 OR g.is_duplicate = 0)
+            AND (g.album, g.album_artist_or_artist) IN (
+                SELECT album, album_artist_or_artist FROM library_tracks
+                 WHERE (artist = ?1 OR album_artist_or_artist = ?1)
+                   AND (?2 = 1 OR is_duplicate = 0)
+            )
+          GROUP BY g.album, g.album_artist_or_artist
+          ORDER BY MAX(g.year) IS NULL, MAX(g.year), g.album COLLATE NOCASE"
+    ))?;
+    let albums = stmt
+        .query_map(params![artist, include_duplicates], |row| {
+            Ok(AlbumSummary {
+                album: row.get(0)?,
+                album_artist_or_artist: row.get(1)?,
+                year: row.get(2)?,
+                track_count: row.get(3)?,
+                cover_track_id: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(albums)
+}
+
+#[tauri::command]
+pub fn get_artist_albums(
+    artist: String,
+    include_duplicates: Option<bool>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Vec<AlbumSummary>, String> {
+    let conn = state.conn.lock().unwrap();
+    artist_albums(&conn, &artist, include_duplicates.unwrap_or(false)).map_err(|e| e.to_string())
 }
 
 // ── Playlists ─────────────────────────────────────────────────────────────────
@@ -3706,15 +3932,14 @@ pub fn get_playlist_tracks(
 ) -> Result<Vec<Track>, String> {
     let conn = state.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare(
-            "SELECT t.id, t.path, t.title, t.artist, t.album, t.track_number,
-                t.duration_secs, t.file_hash, t.rarity, t.manually_edited,
-                t.is_liked, t.play_count, t.year, t.genre, t.date_added, t.tags, t.is_duplicate
-         FROM tracks t
-         JOIN playlist_tracks pt ON pt.track_id = t.id
-         WHERE pt.playlist_id = ?1
-         ORDER BY pt.position, pt.id",
-        )
+        .prepare(&format!(
+            "SELECT {columns}
+               FROM library_tracks t
+               JOIN playlist_tracks pt ON pt.track_id = t.id
+              WHERE pt.playlist_id = ?1
+              ORDER BY pt.position, pt.id",
+            columns = track_columns_of("t"),
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![playlist_id], row_to_track)
@@ -4230,6 +4455,405 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn entries(rules: Vec<SmartPlaylistRule>) -> Vec<SmartPlaylistEntry> {
+        rules.into_iter().map(SmartPlaylistEntry::Rule).collect()
+    }
+
+    #[test]
+    fn flexible_playlist_groups_nest_and_or() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tracks (path, title, genre, year) VALUES
+                 ('rock-old.flac', 'B', 'Rock', 1990),
+                 ('rock-new.flac', 'C', 'Rock', 2005),
+                 ('jazz-new.flac', 'A', 'Jazz', 2010),
+                 ('pop-new.flac',  'D', 'Pop',  2010);",
+        )
+        .unwrap();
+        let state = LibraryState {
+            conn: Arc::new(Mutex::new(conn)),
+            data_dir: PathBuf::new(),
+        };
+        let paths = |rules_json: &str, match_mode: &str| -> Vec<String> {
+            state
+                .smart_playlist_tracks_page(rules_json, match_mode, 100, 0, false)
+                .unwrap()
+                .tracks
+                .into_iter()
+                .map(|t| t.path)
+                .collect()
+        };
+
+        // (genre is Rock OR genre is Jazz) AND year >= 2000, sorted by title.
+        let rules = r#"[
+            {"match": "any", "rules": [
+                {"field": "genre", "op": "in", "value": "[\"Rock\"]"},
+                {"field": "genre", "op": "in", "value": "[\"Jazz\"]"}
+            ]},
+            {"field": "year", "op": "gte", "value": "2000"},
+            {"field": "sort", "op": "sort_asc", "value": "title"}
+        ]"#;
+        assert_eq!(paths(rules, "all"), ["jazz-new.flac", "rock-new.flac"]);
+
+        // The inverse nesting: genre is Pop OR (genre is Rock AND year < 2000).
+        let rules = r#"[
+            {"field": "genre", "op": "in", "value": "[\"Pop\"]"},
+            {"match": "all", "rules": [
+                {"field": "genre", "op": "in", "value": "[\"Rock\"]"},
+                {"field": "year", "op": "lte", "value": "1999"}
+            ]}
+        ]"#;
+        // No sort rule: the default library order, which here comes down to title.
+        assert_eq!(paths(rules, "any"), ["rock-old.flac", "pop-new.flac"]);
+
+        // An empty group is skipped like an incomplete rule.
+        let rules = r#"[
+            {"match": "any", "rules": []},
+            {"field": "genre", "op": "in", "value": "[\"Jazz\"]"}
+        ]"#;
+        assert_eq!(paths(rules, "all"), ["jazz-new.flac"]);
+    }
+
+    #[test]
+    fn artist_albums_groups_and_orders_by_year() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // (path, artist, album, year, is_duplicate, cover_mime)
+        let rows: [(&str, &str, Option<&str>, Option<i64>, i64, Option<&str>); 6] = [
+            ("a1.flac", "A", Some("Second"), Some(2005), 0, None),
+            (
+                "a2.flac",
+                "A",
+                Some("Second"),
+                Some(2005),
+                0,
+                Some("image/jpeg"),
+            ),
+            ("a3.flac", "A", Some("First"), Some(1999), 0, None),
+            ("a4.flac", "A", Some("No Year"), None, 0, None),
+            ("a5.flac", "A", None, None, 0, None), // no album: skipped
+            ("a6.flac", "A", Some("Dupes"), Some(2010), 1, None), // duplicate only: skipped
+        ];
+        for (path, artist, album, year, dup, mime) in rows {
+            conn.execute(
+                "INSERT INTO tracks (path, artist, album, year, is_duplicate, cover_mime)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![path, artist, album, year, dup, mime],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO tracks (path, artist, album) VALUES ('b.flac', 'B', 'First')",
+            [],
+        )
+        .unwrap();
+
+        let albums = artist_albums(&conn, "A", false).unwrap();
+        let names: Vec<&str> = albums.iter().map(|a| a.album.as_str()).collect();
+        assert_eq!(names, ["First", "Second", "No Year"]);
+        assert_eq!(albums[0].track_count, 1); // B's "First" isn't counted
+        assert_eq!(albums[1].track_count, 2);
+        assert_eq!(albums[1].cover_track_id, 2); // the track that has a cover
+
+        let with_dupes = artist_albums(&conn, "A", true).unwrap();
+        assert_eq!(with_dupes.len(), 4);
+    }
+
+    #[test]
+    fn album_cover_is_first_covered_track_in_album_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Inserted out of order: ids don't follow disc/track order.
+        conn.execute_batch(
+            "INSERT INTO tracks (id, path, artist, album, disc_number, track_number, cover_mime) VALUES
+                 (1, 'd2t1', 'A', 'X', 2, 1, 'image/jpeg'),
+                 (2, 'd1t2', 'A', 'X', 1, 2, 'image/png'),
+                 (3, 'd1t1', 'A', 'X', 1, 1, NULL),
+                 (4, 'n1',   'A', 'None', NULL, 1, NULL),
+                 (5, 'n2',   'A', 'None', NULL, 2, NULL);",
+        )
+        .unwrap();
+        let albums = artist_albums(&conn, "A", false).unwrap();
+        let covers: Vec<(&str, i64)> = albums
+            .iter()
+            .map(|a| (a.album.as_str(), a.cover_track_id))
+            .collect();
+        // X: d1t1 comes first but has no cover, so d1t2. None: no covers, so
+        // its first track.
+        assert_eq!(covers, [("None", 4), ("X", 2)]);
+
+        let has_cover: Vec<bool> = conn
+            .prepare(&format!("SELECT {TRACK_COLUMNS} FROM library_tracks ORDER BY id"))
+            .unwrap()
+            .query_map([], row_to_track)
+            .unwrap()
+            .map(|t| t.unwrap().has_cover)
+            .collect();
+        assert_eq!(has_cover, [true, true, false, false, false]);
+    }
+
+    #[test]
+    fn artist_albums_uses_album_artist() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // (path, artist, album, album_artist)
+        let rows: [(&str, &str, &str, Option<&str>); 8] = [
+            ("c1.flac", "A", "Hits", Some("Various Artists")),
+            ("c2.flac", "B", "Hits", Some("Various Artists")),
+            ("c3.flac", "C", "Hits", Some("Various Artists")),
+            ("b1.flac", "B", "Own", Some("B")),
+            ("b2.flac", "A", "Own", Some("B")),
+            // Untagged, so it borrows "B" from the other "Own" tracks and
+            // joins B's album, even though it may be a different release.
+            ("d1.flac", "D", "Own", Some("")),
+            // No album has a tag: each artist's "Solo" is its own album.
+            ("e1.flac", "E", "Solo", Some("")),
+            ("f1.flac", "F", "Solo", Some("")),
+        ];
+        for (path, artist, album, album_artist) in rows {
+            conn.execute(
+                "INSERT INTO tracks (path, artist, album, album_artist) VALUES (?1, ?2, ?3, ?4)",
+                params![path, artist, album, album_artist],
+            )
+            .unwrap();
+        }
+
+        let albums = artist_albums(&conn, "A", false).unwrap();
+        let found: Vec<(&str, &str, i64)> = albums
+            .iter()
+            .map(|a| (a.album.as_str(), a.album_artist_or_artist.as_str(), a.track_count))
+            .collect();
+        assert_eq!(found, [("Hits", "Various Artists", 3), ("Own", "B", 3)]);
+
+        let albums = artist_albums(&conn, "D", false).unwrap();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(
+            (albums[0].album_artist_or_artist.as_str(), albums[0].track_count),
+            ("B", 3)
+        );
+
+        let albums = artist_albums(&conn, "E", false).unwrap();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(
+            (albums[0].album_artist_or_artist.as_str(), albums[0].track_count),
+            ("E", 1)
+        );
+    }
+
+    #[test]
+    fn library_order_sorts_by_disc_then_track() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // (path, disc_number, track_number), inserted out of order.
+        let rows = [
+            ("d2t1.flac", 2, 1),
+            ("d1t2.flac", 1, 2),
+            ("d2t2.flac", 2, 2),
+            ("d1t1.flac", 1, 1),
+        ];
+        for (path, disc, track) in rows {
+            conn.execute(
+                "INSERT INTO tracks (path, artist, album, disc_number, track_number)
+                 VALUES (?1, 'A', 'X', ?2, ?3)",
+                params![path, disc, track],
+            )
+            .unwrap();
+        }
+        let state = LibraryState {
+            conn: Arc::new(Mutex::new(conn)),
+            data_dir: PathBuf::new(),
+        };
+        let expected = ["d1t1.flac", "d1t2.flac", "d2t1.flac", "d2t2.flac"];
+        let paths = |tracks: Vec<Track>| tracks.into_iter().map(|t| t.path).collect::<Vec<_>>();
+
+        // Every query that uses LIBRARY_ORDER_SQL.
+        assert_eq!(
+            paths(state.tracks_page("", 100, 0, false).unwrap().tracks),
+            expected
+        );
+        assert_eq!(paths(state.all_tracks().unwrap()), expected);
+        assert_eq!(paths(state.search("X").unwrap()), expected);
+        // A flexible playlist without a sort rule.
+        let rules = r#"[{"field":"artist","op":"in","value":"[\"A\"]"}]"#;
+        let page = state
+            .smart_playlist_tracks_page(rules, "all", 100, 0, false)
+            .unwrap();
+        assert_eq!(paths(page.tracks), expected);
+    }
+
+    fn library_with(rows_sql: &str) -> LibraryState {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(rows_sql).unwrap();
+        LibraryState {
+            conn: Arc::new(Mutex::new(conn)),
+            data_dir: PathBuf::new(),
+        }
+    }
+
+    /// Runs flexible-playlist rules the way the frontend does.
+    fn rule_paths(state: &LibraryState, rules_json: &str) -> Vec<String> {
+        state
+            .smart_playlist_tracks_page(rules_json, "all", 100, 0, false)
+            .unwrap()
+            .tracks
+            .into_iter()
+            .map(|t| t.path)
+            .collect()
+    }
+
+    #[test]
+    fn album_artist_or_artist_view() {
+        let state = library_with(
+            "INSERT INTO tracks (path, artist, album, album_artist, disc_number, track_number) VALUES
+                 -- Partly tagged: the untagged track borrows the album's tag.
+                 ('hs1', 'Queen',         'Hot Space', 'Queen',  1, 2),
+                 ('hs2', 'Queen & Bowie', 'Hot Space', '',       1, 1),
+                 -- Conflicting tags: the first by disc, then track number wins.
+                 ('mx1', 'X',             'Mixed',     '',       2, 1),
+                 ('mx2', 'Y',             'Mixed',     'Second', 2, 2),
+                 ('mx3', 'Z',             'Mixed',     'First',  1, 5),
+                 -- No tags at all: the track artist, or nothing.
+                 ('un1', 'Solo',          'Untagged',  '',       NULL, 1),
+                 ('nn1', NULL,            'Nameless',  NULL,     NULL, 1),
+                 -- Tracks without an album don't borrow from each other.
+                 ('sg1', 'Single',        NULL,        '',       NULL, NULL),
+                 ('sg2', 'Other',         NULL,        'Tagged', NULL, NULL),
+                 -- Aliases become one spelling.
+                 ('va1', 'A',             'Comp',      'VA',     NULL, 1),
+                 ('va2', 'B',             'Comp',      'various artists', NULL, 2);",
+        );
+        let conn = state.conn.lock().unwrap();
+        let resolved: Vec<(String, Option<String>)> = conn
+            .prepare("SELECT path, album_artist_or_artist FROM library_tracks ORDER BY path")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let expected = [
+            ("hs1", Some("Queen")),
+            ("hs2", Some("Queen")),
+            ("mx1", Some("First")),
+            ("mx2", Some("Second")),
+            ("mx3", Some("First")),
+            ("nn1", None),
+            ("sg1", Some("Single")),
+            ("sg2", Some("Tagged")),
+            ("un1", Some("Solo")),
+            ("va1", Some("Various Artists")),
+            ("va2", Some("Various Artists")),
+        ]
+        .map(|(path, artist)| (path.to_owned(), artist.map(str::to_owned)));
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn search_matches_album_artist() {
+        let state = library_with(
+            "INSERT INTO tracks (path, artist, album, album_artist) VALUES
+                 ('comp', 'Madonna', 'Hits', 'Various Artists'),
+                 -- Borrows 'Various Artists' from the other 'Hits' track.
+                 ('untagged', 'Queen', 'Hits', ''),
+                 ('other', 'Queen', 'Opera', 'Queen');",
+        );
+        let mut paths: Vec<String> = state
+            .tracks_page("various", 100, 0, false)
+            .unwrap()
+            .tracks
+            .into_iter()
+            .map(|t| t.path)
+            .collect();
+        paths.sort();
+        assert_eq!(paths, ["comp", "untagged"]);
+        assert_eq!(state.tracks_page("various", 100, 0, false).unwrap().total, 2);
+        assert_eq!(state.search("various").unwrap().len(), 2);
+        let any = r#"[{"field": "any", "op": "contains", "value": "various"}]"#;
+        assert_eq!(rule_paths(&state, any).len(), 2);
+    }
+
+    #[test]
+    fn artist_tracks_rules() {
+        let state = library_with(
+            "INSERT INTO tracks (path, artist, album, album_artist, track_number) VALUES
+                 ('own',    'Queen',         'Opera',       'Queen',         1),
+                 ('feat',   'Queen & Bowie', 'Hot Space',   '',              1),
+                 ('hs',     'Queen',         'Hot Space',   'Queen',         2),
+                 ('guest',  'Queen',         'Bowie Album', 'David Bowie',   1),
+                 ('bowie',  'David Bowie',   'Bowie Album', 'David Bowie',   2),
+                 ('comp-q', 'Queen',         'Hits',        'Various Artists', 1),
+                 ('comp-m', 'Madonna',       'Hits',        'Various Artists', 2),
+                 ('single', 'Queen',         NULL,          '',              NULL);",
+        );
+        // The same rules as fetchArtistTracks() in src/api.ts.
+        let rules = r#"[
+            {"match": "any", "rules": [
+                {"field": "artist", "op": "in", "value": "[\"Queen\"]"},
+                {"field": "album_artist_or_artist", "op": "in", "value": "[\"Queen\"]"}
+            ]}
+        ]"#;
+        let mut paths = rule_paths(&state, rules);
+        paths.sort();
+        // Their own tracks anywhere, plus every track on their albums ("feat"),
+        // but not other artists' tracks on albums they're only on.
+        assert_eq!(paths, ["comp-q", "feat", "guest", "hs", "own", "single"]);
+
+        // The same rules as fetchAlbumTracks().
+        let rules = r#"[
+            {"field": "album", "op": "in", "value": "[\"Hot Space\"]"},
+            {"field": "album_artist_or_artist", "op": "in", "value": "[\"Queen\"]"},
+            {"field": "sort", "op": "sort_asc", "value": "disc_number"},
+            {"field": "sort", "op": "sort_asc", "value": "track_number"},
+            {"field": "sort", "op": "sort_asc", "value": "title"}
+        ]"#;
+        assert_eq!(rule_paths(&state, rules), ["feat", "hs"]);
+    }
+
+    #[test]
+    fn flexible_playlist_filters_disc_and_album_artist() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tracks (path, artist, album_artist, disc_number) VALUES
+                 ('va-d1.flac', 'A', 'Various', 1),
+                 ('va-d2.flac', 'B', 'Various', 2),
+                 ('own.flac',   'A', '',        2);",
+        )
+        .unwrap();
+        let rule = |field: &str, op: &str, value: &str| SmartPlaylistRule {
+            field: field.to_owned(),
+            op: op.to_owned(),
+            value: value.to_owned(),
+        };
+        let matching = |rules: Vec<SmartPlaylistRule>| -> Vec<String> {
+            let (where_clause, values, order_by) =
+                compile_smart_playlist_sql(&entries(rules), "all", false);
+            conn.prepare(&format!(
+                "SELECT path FROM library_tracks WHERE {where_clause} ORDER BY {order_by}"
+            ))
+            .unwrap()
+            .query_map(params_from_iter(values.iter()), |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+
+        assert_eq!(
+            matching(vec![rule("disc_number", "gte", "2")]),
+            ["own.flac", "va-d2.flac"] // default order: artist A before B
+        );
+        // '' falls back to the track artist, so own.flac's album artist is A.
+        assert_eq!(
+            matching(vec![rule("album_artist_or_artist", "in", r#"["A"]"#)]),
+            ["own.flac"]
+        );
+        assert_eq!(
+            matching(vec![rule("album_artist_or_artist", "in", r#"["Various Artists"]"#)]),
+            ["va-d1.flac", "va-d2.flac"]
+        );
+    }
+
     #[test]
     fn flexible_playlist_sql_is_parameterised_and_paged() {
         let rules = vec![
@@ -4251,7 +4875,7 @@ mod tests {
         ];
 
         let (where_clause, values, order_by) =
-            compile_smart_playlist_sql(&rules, "all", false);
+            compile_smart_playlist_sql(&entries(rules), "all", false);
 
         assert!(where_clause.contains("is_duplicate = 0"));
         assert!(where_clause.contains("artist = ?"));
@@ -4319,7 +4943,9 @@ mod tests {
 
     #[test]
     fn parse_cue_sheet_decodes_windows_1251() {
-        let cue = r#"PERFORMER "Тени Свободы"
+        let cue = r#"REM GENRE Rock
+REM DISCNUMBER 2/3
+PERFORMER "Тени Свободы"
 TITLE "Тени Свободы"
 FILE "Тени Свободы - 2015 - Тени Свободы.flac" WAVE
   TRACK 01 AUDIO
@@ -4344,6 +4970,7 @@ FILE "Тени Свободы - 2015 - Тени Свободы.flac" WAVE
 
         assert_eq!(sheet.performer.as_deref(), Some("Тени Свободы"));
         assert_eq!(sheet.title.as_deref(), Some("Тени Свободы"));
+        assert_eq!(sheet.disc_number, Some(2));
         assert_eq!(
             sheet.files.first().map(|file| file.filename.as_str()),
             Some("Тени Свободы - 2015 - Тени Свободы.flac")

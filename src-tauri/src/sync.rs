@@ -127,6 +127,8 @@ pub struct SyncTrackFields {
     pub genre: Option<String>,
     pub tags: Option<String>,
     pub date_added: Option<i64>,
+    pub album_artist: Option<String>,
+    pub disc_number: Option<i64>,
 }
 
 /// Per-track metadata synced by hash.
@@ -411,7 +413,7 @@ fn load_sync_track_state_by_hash(conn: &Connection, hash: &str) -> Option<SyncTr
 
 fn load_sync_track_fields_by_hash(conn: &Connection, hash: &str) -> Option<SyncTrackFields> {
     conn.query_row(
-        "SELECT title, artist, album, track_number, year, genre, tags, date_added
+        "SELECT title, artist, album, track_number, year, genre, tags, date_added, album_artist, disc_number
          FROM tracks WHERE file_hash = ?1 LIMIT 1",
         params![hash],
         |row| {
@@ -424,6 +426,8 @@ fn load_sync_track_fields_by_hash(conn: &Connection, hash: &str) -> Option<SyncT
                 genre: row.get(5)?,
                 tags: row.get(6)?,
                 date_added: row.get(7)?,
+                album_artist: row.get(8)?,
+                disc_number: row.get(9)?,
             })
         },
     )
@@ -433,7 +437,7 @@ fn load_sync_track_fields_by_hash(conn: &Connection, hash: &str) -> Option<SyncT
 fn load_sync_track_meta(conn: &Connection) -> Vec<SyncTrackMeta> {
     conn.prepare(
         "SELECT file_hash, is_liked, play_count, rarity, manually_edited,
-                title, artist, album, track_number, year, genre, tags, date_added
+                title, artist, album, track_number, year, genre, tags, date_added, album_artist, disc_number
          FROM tracks WHERE file_hash IS NOT NULL
          ORDER BY file_hash, id",
     )
@@ -454,6 +458,8 @@ fn load_sync_track_meta(conn: &Connection) -> Vec<SyncTrackMeta> {
                     genre: row.get(10)?,
                     tags: row.get(11)?,
                     date_added: row.get(12)?,
+                    album_artist: row.get(13)?,
+                    disc_number: row.get(14)?,
                 },
             })
         })
@@ -807,6 +813,8 @@ fn apply_remote_manual_track_fields(conn: &Connection, track_id: i64, fields: &S
              year = ?5,
              genre = ?6,
              tags = ?7,
+             album_artist = ?9,
+             disc_number = ?10,
              manually_edited = 1
          WHERE id = ?8",
         params![
@@ -818,6 +826,8 @@ fn apply_remote_manual_track_fields(conn: &Connection, track_id: i64, fields: &S
             fields.genre.clone(),
             fields.tags.clone(),
             track_id,
+            fields.album_artist.clone(),
+            fields.disc_number,
         ],
     );
 }
@@ -831,7 +841,7 @@ fn merge_remote_track_metadata(
     // play_count: MAX (take whichever is higher)
     // rarity: keep remote if local is NULL
     // date_added: keep earliest seen timestamp
-    // manually_edited fields: adopt remote title/artist/album/track_number/year/genre/tags only when local is not edited
+    // manually_edited fields: adopt remote title/artist/album/album_artist/track_number/disc_number/year/genre/tags only when local is not edited
     for remote_track in remote_tracks {
         let Some(&track_id) = hash_to_id.get(&remote_track.hash) else { continue };
         let Some(local) = load_local_track_sync_state(conn, track_id) else { continue };

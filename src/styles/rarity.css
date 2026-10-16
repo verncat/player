@@ -1,0 +1,56 @@
+/* ── Rarity animations ── */
+.rarity-animated { position: relative; overflow: hidden; }
+.rarity-animated::before {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* Epic: diagonal moving stripes */
+.rarity-epic::before {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--rc) 48%,
+    var(--rc) 48%,
+    transparent 40px,
+    transparent 80px
+  );
+  background-size: 113px 113px;
+  opacity: .15;
+  animation: rarity-slide 3s linear infinite;
+  image-rendering: pixelated;
+}
+@keyframes rarity-slide {
+  from { background-position: 0 0; }
+  to   { background-position: 113px 113px; }
+}
+
+/* Legendary: pulsing glow that breathes */
+.rarity-legendary::before {
+  background: radial-gradient(ellipse at 30% 50%, var(--rc), transparent 70%);
+  opacity: 0;
+  animation: rarity-pulse 2.5s ease-in-out infinite;
+}
+@keyframes rarity-pulse {
+  0%, 100% { opacity: .06; transform: scale(1); }
+  50%      { opacity: .22; transform: scale(1.15); }
+}
+
+/* Mythic: repeating diagonal light streaks */
+.rarity-mythic::before {
+  inset: -10px 0 0 0;
+  background: repeating-linear-gradient(
+    105deg,
+    transparent 0px,
+    transparent 20px,
+    var(--rc) 20px,
+    var(--rc) 36px
+  );
+  opacity: .2;
+  animation: rarity-sweep 1.5s linear infinite;
+}
+@keyframes rarity-sweep {
+  from { background-position: 0 0; }
+  to   { background-position: 34.77px 9.32px; }
+}

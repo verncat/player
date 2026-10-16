@@ -58,12 +58,34 @@ export interface Track {
   tags: string | null;
   date_added: number | null;
   is_duplicate: boolean;
+  album_artist: string | null;
+  disc_number: number | null;
+  /** Who the album is by: the album artist tag, or the track artist when the
+   *  album has none (see library_tracks in library.rs). */
+  album_artist_or_artist: string | null;
+  /** Whether get_track_cover has an image for this track. */
+  has_cover: boolean;
   local_preview_path?: string | null;
   preview_growing?: boolean;
   soulseek_preview?: boolean;
   soulseek_username?: string | null;
   soulseek_filename?: string | null;
   soulseek_size?: number | null;
+}
+
+export interface AlbumSummary {
+  album: string;
+  album_artist_or_artist: string;
+  year: number | null;
+  track_count: number;
+  cover_track_id: number;
+}
+
+export interface TrackPage {
+  tracks: Track[];
+  total: number;
+  offset: number;
+  has_more: boolean;
 }
 
 export const rarityColors: Record<string, string> = {
