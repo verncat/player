@@ -58,6 +58,13 @@ export interface Track {
   tags: string | null;
   date_added: number | null;
   is_duplicate: boolean;
+  album_artist: string | null;
+  disc_number: number | null;
+  /** Who the album is by: the album artist tag, or the track artist when the
+   *  album has none (see library_tracks in library.rs). */
+  album_artist_or_artist: string | null;
+  /** Whether get_track_cover has an image for this track. */
+  has_cover: boolean;
   local_preview_path?: string | null;
   preview_growing?: boolean;
   soulseek_preview?: boolean;

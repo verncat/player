@@ -117,7 +117,9 @@ const editForm = ref({
   title: '',
   artist: '',
   album: '',
+  album_artist: '',
   track_number: null as number | null,
+  disc_number: null as number | null,
   year: null as number | null,
   genre: '',
   tags: '',
@@ -876,7 +878,7 @@ function openTrackReplaceDialogFromTrackContext() {
 }
 
 // ── Smart Playlists ──────────────────────────────────────────────────────────
-type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'tags' | 'rarity' | 'path' | 'extension' | 'track_number' | 'duration_secs' | 'year' | 'play_count' | 'is_liked' | 'date_added' | 'sort';
+type SPField = 'any' | 'title' | 'artist' | 'album' | 'album_artist_or_artist' | 'genre' | 'tags' | 'rarity' | 'path' | 'extension' | 'disc_number' | 'track_number' | 'duration_secs' | 'year' | 'play_count' | 'is_liked' | 'date_added' | 'sort';
 type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false' | 'sort_asc' | 'sort_desc';
 type SPSortField = Exclude<SPField, 'any' | 'sort'>;
 type SPSortOp = Extract<SPOp, 'sort_asc' | 'sort_desc'>;
@@ -894,11 +896,13 @@ const SP_SORT_FIELD_OPTIONS: Array<{ value: SPSortField; label: string }> = [
   { value: 'title', label: 'Title' },
   { value: 'artist', label: 'Artist' },
   { value: 'album', label: 'Album' },
+  { value: 'album_artist_or_artist', label: 'Album artist' },
   { value: 'genre', label: 'Genre' },
   { value: 'tags', label: 'Tags' },
   { value: 'rarity', label: 'Rarity' },
   { value: 'path', label: 'Path' },
   { value: 'extension', label: 'Extension' },
+  { value: 'disc_number', label: 'Disc #' },
   { value: 'track_number', label: 'Track #' },
   { value: 'duration_secs', label: 'Duration (sec)' },
   { value: 'year', label: 'Year' },
@@ -990,8 +994,7 @@ async function loadSmartPlaylistPreviews() {
 }
 
 async function loadSmartPlaylistValues(field: SPField) {
-  if (field !== 'artist' && field !== 'album' && field !== 'genre'
-    && field !== 'tags' && field !== 'rarity' && field !== 'extension') return;
+  if (spFieldType(field) !== 'multiselect') return;
   if (smartPlaylistValues.value[field]) return;
   try {
     const values = await invoke<string[]>('get_smart_playlist_values', { field });
@@ -1120,22 +1123,26 @@ function removeSPRule(ruleId: string) {
   saveSP();
 }
 function onSPRuleFieldChange(rule: SPRule) {
-  const f = rule.field;
-  if (f === 'sort') { rule.op = 'sort_asc'; rule.value = 'title'; }
-  else if (f === 'is_liked') { rule.op = 'is_true'; rule.value = ''; }
-  else if (f === 'year' || f === 'play_count' || f === 'track_number' || f === 'duration_secs') { rule.op = 'gte'; rule.value = '0'; }
-  else if (f === 'date_added') { rule.op = 'gte'; rule.value = new Date().toISOString().slice(0, 10); }
-  else if (f === 'genre' || f === 'tags' || f === 'rarity' || f === 'extension' || f === 'artist' || f === 'album') { rule.op = 'in'; rule.value = '[]'; }
-  else { rule.op = 'contains'; rule.value = ''; }
+  switch (spFieldType(rule.field)) {
+    case 'sort': rule.op = 'sort_asc'; rule.value = 'title'; break;
+    case 'bool': rule.op = 'is_true'; rule.value = ''; break;
+    case 'number': rule.op = 'gte'; rule.value = '0'; break;
+    case 'date': rule.op = 'gte'; rule.value = new Date().toISOString().slice(0, 10); break;
+    case 'multiselect': rule.op = 'in'; rule.value = '[]'; break;
+    default: rule.op = 'contains'; rule.value = '';
+  }
   saveSP();
 }
 function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool' | 'date' | 'sort' {
-  if (field === 'sort') return 'sort';
-  if (field === 'is_liked') return 'bool';
-  if (field === 'year' || field === 'play_count' || field === 'track_number' || field === 'duration_secs') return 'number';
-  if (field === 'date_added') return 'date';
-  if (field === 'genre' || field === 'tags' || field === 'rarity' || field === 'extension' || field === 'artist' || field === 'album') return 'multiselect';
-  return 'text';
+  switch (field) {
+    case 'sort': return 'sort';
+    case 'is_liked': return 'bool';
+    case 'year': case 'play_count': case 'disc_number': case 'track_number': case 'duration_secs': return 'number';
+    case 'date_added': return 'date';
+    case 'genre': case 'tags': case 'rarity': case 'extension': case 'artist': case 'album': case 'album_artist_or_artist':
+      return 'multiselect';
+    default: return 'text';
+  }
 }
 function spUniqueValues(field: SPField): string[] {
   return smartPlaylistValues.value[field] ?? [];
@@ -1828,6 +1835,10 @@ function makeSoulseekTrack(result: SoulseekSearchResult, relativePath: string): 
     title: result.basename,
     artist: result.username,
     album: null,
+    album_artist: null,
+    disc_number: null,
+    album_artist_or_artist: null,
+    has_cover: false,
     track_number: null,
     duration_secs: result.duration,
     file_hash: null,
@@ -4502,7 +4513,9 @@ function openEditor(track: Track) {
     title: track.title || '',
     artist: track.artist || '',
     album: track.album || '',
+    album_artist: track.album_artist || '',
     track_number: track.track_number,
+    disc_number: track.disc_number,
     year: track.year,
     genre: track.genre || '',
     tags: track.tags || '',
@@ -4523,7 +4536,9 @@ async function saveTrack() {
     title: editForm.value.title || null,
     artist: editForm.value.artist || null,
     album: editForm.value.album || null,
+    albumArtist: editForm.value.album_artist.trim(),
     trackNumber: normalizeOptionalInteger(editForm.value.track_number),
+    discNumber: normalizeOptionalInteger(editForm.value.disc_number),
     year: normalizeOptionalInteger(editForm.value.year),
     genre: editForm.value.genre.trim() || null,
     tags: normalizeTrackTagsInput(editForm.value.tags),
@@ -4546,6 +4561,18 @@ async function saveTrack() {
     }
   }
 }
+
+// What leaving the album artist field empty resolves to: an album artist
+// borrowed from the album's other tracks, if this track already shows one,
+// else the track artist. (If the track has its own tag, clearing it may also
+// borrow; that can't be known here, so the artist is shown.)
+const albumArtistPlaceholder = computed(() => {
+  const track = editingTrack.value;
+  const borrowed = track && !track.album_artist && track.album_artist_or_artist !== track.artist
+    ? track.album_artist_or_artist
+    : null;
+  return borrowed || editForm.value.artist || 'Same as artist';
+});
 
 async function openDataDir() {
   const path = await invoke<string>('get_data_dir');
@@ -5960,11 +5987,13 @@ onUnmounted(() => {
                       <option value="title">Title</option>
                       <option value="artist">Artist</option>
                       <option value="album">Album</option>
+                      <option value="album_artist_or_artist">Album artist</option>
                       <option value="genre">Genre</option>
                       <option value="tags">Tags</option>
                       <option value="rarity">Rarity</option>
                       <option value="path">Path</option>
                       <option value="extension">Extension</option>
+                      <option value="disc_number">Disc #</option>
                       <option value="track_number">Track #</option>
                       <option value="duration_secs">Duration</option>
                       <option value="year">Year</option>
@@ -6583,8 +6612,16 @@ onUnmounted(() => {
               <input v-model="editForm.album" />
             </label>
             <label class="field">
+              <span>Album artist</span>
+              <input v-model="editForm.album_artist" :placeholder="albumArtistPlaceholder" />
+            </label>
+            <label class="field">
               <span>Track #</span>
               <input v-model.number="editForm.track_number" type="number" min="0" />
+            </label>
+            <label class="field">
+              <span>Disc #</span>
+              <input v-model.number="editForm.disc_number" type="number" min="1" />
             </label>
             <label class="field">
               <span>Year</span>
