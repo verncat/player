@@ -73,6 +73,21 @@ export interface Track {
   soulseek_size?: number | null;
 }
 
+export interface AlbumSummary {
+  album: string;
+  album_artist_or_artist: string;
+  year: number | null;
+  track_count: number;
+  cover_track_id: number;
+}
+
+export interface TrackPage {
+  tracks: Track[];
+  total: number;
+  offset: number;
+  has_more: boolean;
+}
+
 export const rarityColors: Record<string, string> = {
   Common: '#b0b0b0',
   Uncommon: '#1db954',

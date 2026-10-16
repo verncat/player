@@ -1,5 +1,6 @@
 import { createApp, type Directive } from "vue";
 import App from "./App.vue";
+import "./styles/rarity.css";
 
 const horizontalScroll: Directive = {
   mounted(el: HTMLElement) {

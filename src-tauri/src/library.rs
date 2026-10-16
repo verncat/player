@@ -125,6 +125,20 @@ struct SmartPlaylistRule {
     value: String,
 }
 
+/// An entry in a flexible playlist's rule list: a rule, or a group of entries
+/// with its own match mode, e.g. `{"match": "any", "rules": [...]}`. Groups
+/// can nest. The playlist's own `match_mode` is the outermost group.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SmartPlaylistEntry {
+    Group {
+        #[serde(rename = "match")]
+        match_mode: String,
+        rules: Vec<SmartPlaylistEntry>,
+    },
+    Rule(SmartPlaylistRule),
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct DeviceSettings {
     pub emoji: String,
@@ -416,7 +430,7 @@ impl LibraryState {
         offset: usize,
         include_duplicates: bool,
     ) -> Result<TrackPage, BoxError> {
-        let rules: Vec<SmartPlaylistRule> = serde_json::from_str(rules_json)?;
+        let rules: Vec<SmartPlaylistEntry> = serde_json::from_str(rules_json)?;
         let (where_clause, mut values, order_by) = compile_smart_playlist_sql(
             &rules,
             match_mode,
@@ -652,11 +666,142 @@ fn numeric_column(field: &str) -> Option<&'static str> {
     }
 }
 
+/// SQL condition for one rule, with its parameters appended to `values`.
+/// `None` = the rule is incomplete or unknown and is skipped.
+fn compile_rule(rule: &SmartPlaylistRule, values: &mut Vec<Value>) -> Option<String> {
+    let mut rule_values = Vec::<Value>::new();
+    let predicate = match rule.field.as_str() {
+        "any" => {
+            let pattern = format!("%{}%", escape_like(&rule.value));
+            let columns = [
+                "title", "artist", "album", "album_artist_or_artist", "genre", "tags", "rarity", "path",
+                "CAST(track_number AS TEXT)", "CAST(duration_secs AS TEXT)",
+                "CAST(year AS TEXT)", "CAST(play_count AS TEXT)",
+            ];
+            let parts = columns
+                .iter()
+                .map(|column| {
+                    rule_values.push(Value::Text(pattern.clone()));
+                    format!("COALESCE({column}, '') LIKE ? ESCAPE '\\'")
+                })
+                .collect::<Vec<_>>();
+            format!("({})", parts.join(" OR "))
+        }
+        "extension" => {
+            let selections = selected_values(&rule.value);
+            if selections.is_empty() {
+                return None;
+            }
+            let parts = selections
+                .iter()
+                .map(|extension| {
+                    rule_values.push(Value::Text(format!("%.{}", escape_like(extension.trim_start_matches('.')))));
+                    "lower(path) LIKE lower(?) ESCAPE '\\'".to_string()
+                })
+                .collect::<Vec<_>>();
+            format!("({})", parts.join(" OR "))
+        }
+        "is_liked" => match rule.op.as_str() {
+            "is_true" => "is_liked = 1".to_string(),
+            "is_false" => "is_liked = 0".to_string(),
+            _ => return None,
+        },
+        "date_added" => {
+            if rule.value.is_empty() {
+                return None;
+            }
+            match rule.op.as_str() {
+                "gte" => {
+                    rule_values.push(Value::Text(rule.value.clone()));
+                    "date_added >= CAST(strftime('%s', ?) AS INTEGER)".to_string()
+                }
+                "lte" => {
+                    rule_values.push(Value::Text(rule.value.clone()));
+                    "date_added < CAST(strftime('%s', ?, '+1 day') AS INTEGER)".to_string()
+                }
+                "eq" => {
+                    rule_values.push(Value::Text(rule.value.clone()));
+                    rule_values.push(Value::Text(rule.value.clone()));
+                    "(date_added >= CAST(strftime('%s', ?) AS INTEGER) AND date_added < CAST(strftime('%s', ?, '+1 day') AS INTEGER))".to_string()
+                }
+                _ => return None,
+            }
+        }
+        field if numeric_column(field).is_some() => {
+            let Some(number) = rule.value.parse::<f64>().ok() else {
+                // JavaScript's Number(invalid) is NaN, which matched no
+                // numeric track. Keep that behaviour in SQL.
+                return Some("0".to_string());
+            };
+            let operator = match rule.op.as_str() {
+                "eq" => "=",
+                "gte" => ">=",
+                "lte" => "<=",
+                _ => return None,
+            };
+            rule_values.push(Value::Real(number));
+            format!("{field} {operator} ?")
+        }
+        field if text_column(field).is_some() => {
+            let column = text_column(field).expect("checked above");
+            if rule.op == "in" {
+                let selections = selected_values(&rule.value);
+                if selections.is_empty() {
+                    return None;
+                }
+                let parts = selections
+                    .iter()
+                    .map(|selection| {
+                        if field == "tags" {
+                            // Tags are currently stored as delimited text. This
+                            // keeps exact tag matching without a schema change.
+                            rule_values.push(Value::Text(format!(",{},", escape_like(selection.trim()))));
+                            "(',' || replace(replace(replace(replace(lower(COALESCE(tags, '')), char(10), ','), ';', ','), ', ', ','), ' ,', ',') || ',') LIKE lower(?) ESCAPE '\\'".to_string()
+                        } else {
+                            rule_values.push(Value::Text(selection.clone()));
+                            format!("{column} = ?")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                format!("({})", parts.join(" OR "))
+            } else {
+                rule_values.push(Value::Text(format!("%{}%", escape_like(&rule.value))));
+                format!("COALESCE({column}, '') LIKE ? ESCAPE '\\'")
+            }
+        }
+        _ => return None,
+    };
+    values.extend(rule_values);
+    Some(predicate)
+}
+
+/// Joins the conditions of `entries` (recursing into groups) with AND
+/// (`match_mode` "all") or OR ("any"). Sort rules are skipped; they only count
+/// at the top level. `None` = nothing to filter by, e.g. an empty group.
+fn compile_filters(
+    entries: &[SmartPlaylistEntry],
+    match_mode: &str,
+    values: &mut Vec<Value>,
+) -> Option<String> {
+    let filters: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            SmartPlaylistEntry::Rule(rule) if rule.field == "sort" => None,
+            SmartPlaylistEntry::Rule(rule) => compile_rule(rule, values),
+            SmartPlaylistEntry::Group { match_mode, rules } => compile_filters(rules, match_mode, values),
+        })
+        .collect();
+    if filters.is_empty() {
+        return None;
+    }
+    Some(format!("({})", filters.join(if match_mode == "any" { " OR " } else { " AND " })))
+}
+
 /// Compiles persisted flexible-playlist rules into a parameterised SQLite
 /// filter. Column names, operators and sort directions are all whitelisted;
 /// values are supplied separately through rusqlite bindings.
 fn compile_smart_playlist_sql(
-    rules: &[SmartPlaylistRule],
+    rules: &[SmartPlaylistEntry],
     match_mode: &str,
     include_duplicates: bool,
 ) -> (String, Vec<Value>, String) {
@@ -672,121 +817,16 @@ fn compile_smart_playlist_sql(
         predicates.push("is_duplicate = 0".to_string());
     }
 
-    let mut filters = Vec::<String>::new();
-    for rule in rules.iter().filter(|rule| rule.field != "sort") {
-        let mut rule_values = Vec::<Value>::new();
-        let predicate = match rule.field.as_str() {
-            "any" => {
-                let pattern = format!("%{}%", escape_like(&rule.value));
-                let columns = [
-                    "title", "artist", "album", "album_artist_or_artist", "genre", "tags", "rarity", "path",
-                    "CAST(track_number AS TEXT)", "CAST(duration_secs AS TEXT)",
-                    "CAST(year AS TEXT)", "CAST(play_count AS TEXT)",
-                ];
-                let parts = columns
-                    .iter()
-                    .map(|column| {
-                        rule_values.push(Value::Text(pattern.clone()));
-                        format!("COALESCE({column}, '') LIKE ? ESCAPE '\\'")
-                    })
-                    .collect::<Vec<_>>();
-                format!("({})", parts.join(" OR "))
-            }
-            "extension" => {
-                let selections = selected_values(&rule.value);
-                if selections.is_empty() {
-                    continue;
-                }
-                let parts = selections
-                    .iter()
-                    .map(|extension| {
-                        rule_values.push(Value::Text(format!("%.{}", escape_like(extension.trim_start_matches('.')))));
-                        "lower(path) LIKE lower(?) ESCAPE '\\'".to_string()
-                    })
-                    .collect::<Vec<_>>();
-                format!("({})", parts.join(" OR "))
-            }
-            "is_liked" => match rule.op.as_str() {
-                "is_true" => "is_liked = 1".to_string(),
-                "is_false" => "is_liked = 0".to_string(),
-                _ => continue,
-            },
-            "date_added" => {
-                if rule.value.is_empty() {
-                    continue;
-                }
-                match rule.op.as_str() {
-                    "gte" => {
-                        rule_values.push(Value::Text(rule.value.clone()));
-                        "date_added >= CAST(strftime('%s', ?) AS INTEGER)".to_string()
-                    }
-                    "lte" => {
-                        rule_values.push(Value::Text(rule.value.clone()));
-                        "date_added < CAST(strftime('%s', ?, '+1 day') AS INTEGER)".to_string()
-                    }
-                    "eq" => {
-                        rule_values.push(Value::Text(rule.value.clone()));
-                        rule_values.push(Value::Text(rule.value.clone()));
-                        "(date_added >= CAST(strftime('%s', ?) AS INTEGER) AND date_added < CAST(strftime('%s', ?, '+1 day') AS INTEGER))".to_string()
-                    }
-                    _ => continue,
-                }
-            }
-            field if numeric_column(field).is_some() => {
-                let Some(number) = rule.value.parse::<f64>().ok() else {
-                    // JavaScript's Number(invalid) is NaN, which matched no
-                    // numeric track. Keep that behaviour in SQL.
-                    filters.push("0".to_string());
-                    continue;
-                };
-                let operator = match rule.op.as_str() {
-                    "eq" => "=",
-                    "gte" => ">=",
-                    "lte" => "<=",
-                    _ => continue,
-                };
-                rule_values.push(Value::Real(number));
-                format!("{field} {operator} ?")
-            }
-            field if text_column(field).is_some() => {
-                let column = text_column(field).expect("checked above");
-                if rule.op == "in" {
-                    let selections = selected_values(&rule.value);
-                    if selections.is_empty() {
-                        continue;
-                    }
-                    let parts = selections
-                        .iter()
-                        .map(|selection| {
-                            if field == "tags" {
-                                // Tags are currently stored as delimited text. This
-                                // keeps exact tag matching without a schema change.
-                                rule_values.push(Value::Text(format!(",{},", escape_like(selection.trim()))));
-                                "(',' || replace(replace(replace(replace(lower(COALESCE(tags, '')), char(10), ','), ';', ','), ', ', ','), ' ,', ',') || ',') LIKE lower(?) ESCAPE '\\'".to_string()
-                            } else {
-                                rule_values.push(Value::Text(selection.clone()));
-                                format!("{column} = ?")
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    format!("({})", parts.join(" OR "))
-                } else {
-                    rule_values.push(Value::Text(format!("%{}%", escape_like(&rule.value))));
-                    format!("COALESCE({column}, '') LIKE ? ESCAPE '\\'")
-                }
-            }
-            _ => continue,
-        };
-        filters.push(predicate);
-        values.extend(rule_values);
-    }
-
-    if !filters.is_empty() {
-        predicates.push(format!("({})", filters.join(if match_mode == "any" { " OR " } else { " AND " })));
+    if let Some(filter) = compile_filters(rules, match_mode, &mut values) {
+        predicates.push(filter);
     }
 
     let mut ordering = Vec::new();
-    for rule in rules.iter().filter(|rule| rule.field == "sort") {
+    let sort_rules = rules.iter().filter_map(|entry| match entry {
+        SmartPlaylistEntry::Rule(rule) if rule.field == "sort" => Some(rule),
+        _ => None,
+    });
+    for rule in sort_rules {
         let field = rule.value.as_str();
         let Some(expression) = (match field {
             "title" => Some("COALESCE(title, path) COLLATE NOCASE".to_owned()),
@@ -4415,6 +4455,66 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn entries(rules: Vec<SmartPlaylistRule>) -> Vec<SmartPlaylistEntry> {
+        rules.into_iter().map(SmartPlaylistEntry::Rule).collect()
+    }
+
+    #[test]
+    fn flexible_playlist_groups_nest_and_or() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tracks (path, title, genre, year) VALUES
+                 ('rock-old.flac', 'B', 'Rock', 1990),
+                 ('rock-new.flac', 'C', 'Rock', 2005),
+                 ('jazz-new.flac', 'A', 'Jazz', 2010),
+                 ('pop-new.flac',  'D', 'Pop',  2010);",
+        )
+        .unwrap();
+        let state = LibraryState {
+            conn: Arc::new(Mutex::new(conn)),
+            data_dir: PathBuf::new(),
+        };
+        let paths = |rules_json: &str, match_mode: &str| -> Vec<String> {
+            state
+                .smart_playlist_tracks_page(rules_json, match_mode, 100, 0, false)
+                .unwrap()
+                .tracks
+                .into_iter()
+                .map(|t| t.path)
+                .collect()
+        };
+
+        // (genre is Rock OR genre is Jazz) AND year >= 2000, sorted by title.
+        let rules = r#"[
+            {"match": "any", "rules": [
+                {"field": "genre", "op": "in", "value": "[\"Rock\"]"},
+                {"field": "genre", "op": "in", "value": "[\"Jazz\"]"}
+            ]},
+            {"field": "year", "op": "gte", "value": "2000"},
+            {"field": "sort", "op": "sort_asc", "value": "title"}
+        ]"#;
+        assert_eq!(paths(rules, "all"), ["jazz-new.flac", "rock-new.flac"]);
+
+        // The inverse nesting: genre is Pop OR (genre is Rock AND year < 2000).
+        let rules = r#"[
+            {"field": "genre", "op": "in", "value": "[\"Pop\"]"},
+            {"match": "all", "rules": [
+                {"field": "genre", "op": "in", "value": "[\"Rock\"]"},
+                {"field": "year", "op": "lte", "value": "1999"}
+            ]}
+        ]"#;
+        // No sort rule: the default library order, which here comes down to title.
+        assert_eq!(paths(rules, "any"), ["rock-old.flac", "pop-new.flac"]);
+
+        // An empty group is skipped like an incomplete rule.
+        let rules = r#"[
+            {"match": "any", "rules": []},
+            {"field": "genre", "op": "in", "value": "[\"Jazz\"]"}
+        ]"#;
+        assert_eq!(paths(rules, "all"), ["jazz-new.flac"]);
+    }
+
     #[test]
     fn artist_albums_groups_and_orders_by_year() {
         let conn = Connection::open_in_memory().unwrap();
@@ -4674,6 +4774,43 @@ mod tests {
     }
 
     #[test]
+    fn artist_tracks_rules() {
+        let state = library_with(
+            "INSERT INTO tracks (path, artist, album, album_artist, track_number) VALUES
+                 ('own',    'Queen',         'Opera',       'Queen',         1),
+                 ('feat',   'Queen & Bowie', 'Hot Space',   '',              1),
+                 ('hs',     'Queen',         'Hot Space',   'Queen',         2),
+                 ('guest',  'Queen',         'Bowie Album', 'David Bowie',   1),
+                 ('bowie',  'David Bowie',   'Bowie Album', 'David Bowie',   2),
+                 ('comp-q', 'Queen',         'Hits',        'Various Artists', 1),
+                 ('comp-m', 'Madonna',       'Hits',        'Various Artists', 2),
+                 ('single', 'Queen',         NULL,          '',              NULL);",
+        );
+        // The same rules as fetchArtistTracks() in src/api.ts.
+        let rules = r#"[
+            {"match": "any", "rules": [
+                {"field": "artist", "op": "in", "value": "[\"Queen\"]"},
+                {"field": "album_artist_or_artist", "op": "in", "value": "[\"Queen\"]"}
+            ]}
+        ]"#;
+        let mut paths = rule_paths(&state, rules);
+        paths.sort();
+        // Their own tracks anywhere, plus every track on their albums ("feat"),
+        // but not other artists' tracks on albums they're only on.
+        assert_eq!(paths, ["comp-q", "feat", "guest", "hs", "own", "single"]);
+
+        // The same rules as fetchAlbumTracks().
+        let rules = r#"[
+            {"field": "album", "op": "in", "value": "[\"Hot Space\"]"},
+            {"field": "album_artist_or_artist", "op": "in", "value": "[\"Queen\"]"},
+            {"field": "sort", "op": "sort_asc", "value": "disc_number"},
+            {"field": "sort", "op": "sort_asc", "value": "track_number"},
+            {"field": "sort", "op": "sort_asc", "value": "title"}
+        ]"#;
+        assert_eq!(rule_paths(&state, rules), ["feat", "hs"]);
+    }
+
+    #[test]
     fn flexible_playlist_filters_disc_and_album_artist() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
@@ -4691,7 +4828,7 @@ mod tests {
         };
         let matching = |rules: Vec<SmartPlaylistRule>| -> Vec<String> {
             let (where_clause, values, order_by) =
-                compile_smart_playlist_sql(&rules, "all", false);
+                compile_smart_playlist_sql(&entries(rules), "all", false);
             conn.prepare(&format!(
                 "SELECT path FROM library_tracks WHERE {where_clause} ORDER BY {order_by}"
             ))
@@ -4738,7 +4875,7 @@ mod tests {
         ];
 
         let (where_clause, values, order_by) =
-            compile_smart_playlist_sql(&rules, "all", false);
+            compile_smart_playlist_sql(&entries(rules), "all", false);
 
         assert!(where_clause.contains("is_duplicate = 0"));
         assert!(where_clause.contains("artist = ?"));
