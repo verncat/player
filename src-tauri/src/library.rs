@@ -19,13 +19,14 @@
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use encoding_rs::WINDOWS_1251;
+use lofty::config::ParseOptions;
 use lofty::picture::PictureType;
 use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
 use lofty::probe::Probe;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -257,6 +258,9 @@ impl LibraryState {
         log_library_snapshot("startup", &data_dir, db_path.as_deref(), &conn);
 
         let conn = Arc::new(Mutex::new(conn));
+        if !is_new_db {
+            spawn_album_tag_backfill(Arc::clone(&conn), data_dir.clone(), app_handle.clone());
+        }
         start_watcher(data_dir.clone(), Arc::clone(&conn), app_handle)?;
 
         Ok(Self { conn, data_dir })
@@ -963,6 +967,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cue_path TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN segment_start_secs REAL");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN segment_end_secs REAL");
+    // NULL means the tags were never read for this row (it predates the column);
+    // a track without an album artist tag stores ''. See `spawn_album_tag_backfill`.
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN album_artist TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN disc_number INTEGER");
     // Recreated on every start so changes to its definition take effect.
@@ -1754,6 +1760,87 @@ fn index_directory_async(conn: &Arc<Mutex<Connection>>, data_dir: &Path, app: &t
     let _ = app.emit("library-changed", ());
 }
 
+/// Reads the album artist and disc number tags of tracks indexed before those
+/// columns existed. Reindexing doesn't fill them in: it skips unchanged files,
+/// and manually edited tracks keep their metadata.
+fn spawn_album_tag_backfill(
+    conn: Arc<Mutex<Connection>>,
+    data_dir: PathBuf,
+    app: tauri::AppHandle,
+) {
+    let _ = thread::Builder::new()
+        .name("library-album-tag-backfill".to_owned())
+        .spawn(move || match backfill_album_tags(&conn, &data_dir) {
+            Ok(0) => {}
+            Ok(_) => {
+                use tauri::Emitter;
+                let _ = app.emit("library-changed", ());
+            }
+            Err(e) => eprintln!("[library] album tag backfill failed: {e}"),
+        });
+}
+
+fn backfill_album_tags(conn: &Mutex<Connection>, data_dir: &Path) -> Result<usize, BoxError> {
+    let pending: Vec<(i64, String, Option<String>)> = {
+        let conn = conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, COALESCE(source_path, path), cue_path FROM tracks WHERE album_artist IS NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        rows
+    };
+
+    let mut cue_sheet_tags: HashMap<String, AlbumTags> = HashMap::new();
+    let mut updated = 0;
+    for (id, source_rel, cue_rel) in pending {
+        let source_abs = data_dir.join(cue_rel.as_deref().unwrap_or(&source_rel));
+        // Rows of removed files are dropped by the watcher or the next reindex.
+        if !source_abs.exists() {
+            continue;
+        }
+        let (album_artist, disc_number) = match cue_rel {
+            Some(cue_rel) => cue_sheet_tags
+                .entry(cue_rel)
+                .or_insert_with(|| cue_sheet_album_tags(&source_abs))
+                .clone(),
+            None => audio_file_album_tags(&source_abs),
+        };
+        // Skips tracks edited since the SELECT.
+        updated += conn.lock().unwrap().execute(
+            "UPDATE tracks SET album_artist = ?1, disc_number = ?2
+              WHERE id = ?3 AND album_artist IS NULL",
+            params![album_artist.unwrap_or_default(), disc_number, id],
+        )?;
+    }
+    Ok(updated)
+}
+
+type AlbumTags = (Option<String>, Option<i64>);
+
+/// The same values `read_audio_meta` reads, without decoding the cover art.
+fn audio_file_album_tags(path: &Path) -> AlbumTags {
+    let tagged = Probe::open(path)
+        .map(|probe| probe.options(ParseOptions::new().read_cover_art(false)))
+        .and_then(|probe| probe.read())
+        .ok();
+    let tag = tagged
+        .as_ref()
+        .and_then(|t| t.primary_tag().or_else(|| t.first_tag()));
+    match tag {
+        Some(tag) => (tag_album_artist(tag), tag.disk().map(i64::from)),
+        None => (None, None),
+    }
+}
+
+/// The same values `index_cue_file` stores.
+fn cue_sheet_album_tags(path: &Path) -> AlbumTags {
+    parse_cue_sheet(path)
+        .map(|sheet| (sheet.performer, sheet.disc_number))
+        .unwrap_or_default()
+}
+
 /// Synchronous version for startup (no events available yet).
 #[cfg_attr(
     feature = "tracy",
@@ -1949,9 +2036,7 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             "UPDATE tracks SET modified_secs = ?1, file_hash = ?2, rarity = ?3,
              duration_secs = COALESCE(?4, duration_secs), cover_data = NULL, cover_mime = ?5,
              cover_source_path = ?6, cover_source_mtime = ?7,
-             date_added = COALESCE(date_added, ?8),
-             album_artist = COALESCE(album_artist, ?10),
-             disc_number = COALESCE(disc_number, ?11)
+             date_added = COALESCE(date_added, ?8)
              WHERE path = ?9",
             params![
                 modified_secs,
@@ -1963,8 +2048,6 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
                 meta.cover_source_mtime,
                 date_added_secs,
                 rel,
-                meta.album_artist.unwrap_or_default(),
-                meta.disc_number,
             ],
         )?;
         let track_id: i64 = conn.query_row(
@@ -2710,8 +2793,7 @@ fn index_cue_file(
                      title = CASE WHEN tracks.manually_edited != 0 THEN tracks.title ELSE excluded.title END,
                      artist = CASE WHEN tracks.manually_edited != 0 THEN tracks.artist ELSE excluded.artist END,
                      album = CASE WHEN tracks.manually_edited != 0 THEN tracks.album ELSE excluded.album END,
-                     album_artist = CASE WHEN tracks.manually_edited != 0 AND tracks.album_artist IS NOT NULL
-                                         THEN tracks.album_artist ELSE excluded.album_artist END,
+                     album_artist = CASE WHEN tracks.manually_edited != 0 THEN tracks.album_artist ELSE excluded.album_artist END,
                      track_number = CASE WHEN tracks.manually_edited != 0 THEN tracks.track_number ELSE excluded.track_number END,
                      disc_number = CASE WHEN tracks.manually_edited != 0 THEN tracks.disc_number ELSE excluded.disc_number END,
                      duration_secs = excluded.duration_secs,
@@ -4977,5 +5059,54 @@ FILE "Тени Свободы - 2015 - Тени Свободы.flac" WAVE
         );
         assert_eq!(sheet.files[0].tracks[0].title.as_deref(), Some("Для тупиц"));
         assert_eq!(sheet.files[0].tracks[1].index01_secs, Some(200.64));
+    }
+
+    #[test]
+    fn album_tag_backfill_fills_only_rows_indexed_before_the_columns() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let data_dir = std::env::temp_dir().join(format!("player-backfill-{suffix}"));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("album.cue"),
+            "REM DISCNUMBER 2\nPERFORMER \"Cue Artist\"\nFILE \"album.flac\" WAVE\n",
+        )
+        .unwrap();
+        std::fs::write(data_dir.join("untagged.mp3"), b"not audio").unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tracks (path, cue_path, album_artist, disc_number) VALUES
+                 ('album.cue#01', 'album.cue', NULL, NULL),
+                 ('untagged.mp3', NULL, NULL, 5),
+                 ('missing.mp3', NULL, NULL, NULL),
+                 ('edited.cue#01', 'album.cue', '', NULL);",
+        )
+        .unwrap();
+        let conn = Mutex::new(conn);
+
+        let updated = backfill_album_tags(&conn, &data_dir).unwrap();
+        let _ = std::fs::remove_dir_all(&data_dir);
+
+        assert_eq!(updated, 2);
+        let conn = conn.lock().unwrap();
+        let tags = |path: &str| -> (Option<String>, Option<i64>) {
+            conn.query_row(
+                "SELECT album_artist, disc_number FROM tracks WHERE path = ?1",
+                params![path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            tags("album.cue#01"),
+            (Some("Cue Artist".to_owned()), Some(2))
+        );
+        assert_eq!(tags("untagged.mp3"), (Some(String::new()), None));
+        assert_eq!(tags("missing.mp3"), (None, None));
+        assert_eq!(tags("edited.cue#01"), (Some(String::new()), None));
     }
 }
