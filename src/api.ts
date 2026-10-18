@@ -10,6 +10,8 @@ interface RuleGroup { match: 'all' | 'any'; rules: RuleEntry[] }
 type RuleEntry = Rule | RuleGroup;
 
 const isIn = (field: string, value: string): Rule => ({ field, op: 'in', value: JSON.stringify([value]) });
+// Missing or blank. `in` skips blank values, so it can't express this.
+const isEmpty = (field: string): Rule => ({ field, op: 'is_empty', value: '' });
 const sortBy = (field: string): Rule => ({ field: 'sort', op: 'sort_asc', value: field });
 
 // Runs rules (top level: all must match) and returns one page of results.
@@ -37,8 +39,9 @@ async function fetchAllByRules(rules: RuleEntry[], includeDuplicates: boolean): 
 function albumRules(album: string, albumArtistOrArtist: string): Rule[] {
   return [
     isIn('album', album),
-    // Empty when the album's tracks have no artist at all; then the name alone has to do.
-    ...(albumArtistOrArtist ? [isIn('album_artist_or_artist', albumArtistOrArtist)] : []),
+    albumArtistOrArtist.trim()
+      ? isIn('album_artist_or_artist', albumArtistOrArtist)
+      : isEmpty('album_artist_or_artist'),
   ];
 }
 

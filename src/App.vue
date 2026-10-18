@@ -4547,7 +4547,7 @@ async function saveTrack() {
 }
 
 // Editing a track on an album page can move it to another album (a new album
-// name or album artist, or another track's tag it borrowed from changed).
+// name or album artist).
 // The page stays while its album still has tracks; once it's empty, it
 // follows the edited track instead of showing nothing.
 async function followEditedTrackFromAlbumPage(before: Track, after: Track) {
@@ -4562,17 +4562,8 @@ async function followEditedTrackFromAlbumPage(before: Track, after: Track) {
   replaceAlbumNavEntry(newAlbum, newArtist);
 }
 
-// What leaving the album artist field empty resolves to: an album artist
-// borrowed from the album's other tracks, if this track already shows one,
-// else the track artist. (If the track has its own tag, clearing it may also
-// borrow; that can't be known here, so the artist is shown.)
-const albumArtistPlaceholder = computed(() => {
-  const track = editingTrack.value;
-  const borrowed = track && !track.album_artist && track.album_artist_or_artist !== track.artist
-    ? track.album_artist_or_artist
-    : null;
-  return borrowed || editForm.value.artist || 'Same as artist';
-});
+// Leaving the album artist field empty means the track artist.
+const albumArtistPlaceholder = computed(() => editForm.value.artist || 'Same as artist');
 
 async function openDataDir() {
   const path = await invoke<string>('get_data_dir');

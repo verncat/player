@@ -748,7 +748,9 @@ fn compile_rule(rule: &SmartPlaylistRule, values: &mut Vec<Value>) -> Option<Str
         }
         field if text_column(field).is_some() => {
             let column = text_column(field).expect("checked above");
-            if rule.op == "in" {
+            if rule.op == "is_empty" {
+                format!("COALESCE(trim({column}), '') = ''")
+            } else if rule.op == "in" {
                 let selections = selected_values(&rule.value);
                 if selections.is_empty() {
                     return None;
@@ -1281,24 +1283,14 @@ fn track_columns_of(alias: &str) -> String {
 }
 
 /// `library_tracks`: every column of `tracks`, plus `has_cover` and
-/// `album_artist_or_artist`, the artist an album is listed under:
-/// 1. the track's album artist tag;
-/// 2. else the first album artist tag on the same album (by disc, then track
-///    number), for albums where only some tracks are tagged;
-/// 3. else the track artist.
+/// `album_artist_or_artist`, the artist an album is listed under: the track's
+/// album artist tag, else the track artist.
 ///
 /// Any of [`VARIOUS_ARTISTS_ALIASES`] becomes [`VARIOUS_ARTISTS`]. Albums are
 /// identified by (album, album_artist_or_artist). This is the only place that
 /// rule is written down; everything else reads the column.
 fn library_tracks_view_sql() -> String {
-    let resolved = "COALESCE(
-            NULLIF(t.album_artist, ''),
-            (SELECT o.album_artist FROM tracks o
-              WHERE o.album = t.album AND trim(t.album) <> '' AND o.album_artist <> ''
-              ORDER BY o.disc_number IS NULL, o.disc_number,
-                       o.track_number IS NULL, o.track_number, o.path
-              LIMIT 1),
-            t.artist)";
+    let resolved = "COALESCE(NULLIF(t.album_artist, ''), t.artist)";
     let aliases = VARIOUS_ARTISTS_ALIASES
         .iter()
         .map(|alias| format!("'{alias}'"))
@@ -4686,8 +4678,7 @@ mod tests {
             ("c3.flac", "C", "Hits", Some("Various Artists")),
             ("b1.flac", "B", "Own", Some("B")),
             ("b2.flac", "A", "Own", Some("B")),
-            // Untagged, so it borrows "B" from the other "Own" tracks and
-            // joins B's album, even though it may be a different release.
+            // Untagged: D's own "Own", not B's.
             ("d1.flac", "D", "Own", Some("")),
             // No album has a tag: each artist's "Solo" is its own album.
             ("e1.flac", "E", "Solo", Some("")),
@@ -4706,13 +4697,13 @@ mod tests {
             .iter()
             .map(|a| (a.album.as_str(), a.album_artist_or_artist.as_str(), a.track_count))
             .collect();
-        assert_eq!(found, [("Hits", "Various Artists", 3), ("Own", "B", 3)]);
+        assert_eq!(found, [("Hits", "Various Artists", 3), ("Own", "B", 2)]);
 
         let albums = artist_albums(&conn, "D", false).unwrap();
         assert_eq!(albums.len(), 1);
         assert_eq!(
             (albums[0].album_artist_or_artist.as_str(), albums[0].track_count),
-            ("B", 3)
+            ("D", 1)
         );
 
         let albums = artist_albums(&conn, "E", false).unwrap();
@@ -4789,19 +4780,13 @@ mod tests {
     fn album_artist_or_artist_view() {
         let state = library_with(
             "INSERT INTO tracks (path, artist, album, album_artist, disc_number, track_number) VALUES
-                 -- Partly tagged: the untagged track borrows the album's tag.
+                 -- The tag wins over the track artist.
                  ('hs1', 'Queen',         'Hot Space', 'Queen',  1, 2),
-                 ('hs2', 'Queen & Bowie', 'Hot Space', '',       1, 1),
-                 -- Conflicting tags: the first by disc, then track number wins.
-                 ('mx1', 'X',             'Mixed',     '',       2, 1),
-                 ('mx2', 'Y',             'Mixed',     'Second', 2, 2),
-                 ('mx3', 'Z',             'Mixed',     'First',  1, 5),
-                 -- No tags at all: the track artist, or nothing.
+                 ('hs2', 'Queen & Bowie', 'Hot Space', 'Queen',  1, 1),
+                 -- Untagged: the track artist, never another track's tag.
+                 ('hs3', 'Queen & Bowie', 'Hot Space', '',       1, 3),
                  ('un1', 'Solo',          'Untagged',  '',       NULL, 1),
                  ('nn1', NULL,            'Nameless',  NULL,     NULL, 1),
-                 -- Tracks without an album don't borrow from each other.
-                 ('sg1', 'Single',        NULL,        '',       NULL, NULL),
-                 ('sg2', 'Other',         NULL,        'Tagged', NULL, NULL),
                  -- Aliases become one spelling.
                  ('va1', 'A',             'Comp',      'VA',     NULL, 1),
                  ('va2', 'B',             'Comp',      'various artists', NULL, 2);",
@@ -4817,12 +4802,8 @@ mod tests {
         let expected = [
             ("hs1", Some("Queen")),
             ("hs2", Some("Queen")),
-            ("mx1", Some("First")),
-            ("mx2", Some("Second")),
-            ("mx3", Some("First")),
+            ("hs3", Some("Queen & Bowie")),
             ("nn1", None),
-            ("sg1", Some("Single")),
-            ("sg2", Some("Tagged")),
             ("un1", Some("Solo")),
             ("va1", Some("Various Artists")),
             ("va2", Some("Various Artists")),
@@ -4836,7 +4817,7 @@ mod tests {
         let state = library_with(
             "INSERT INTO tracks (path, artist, album, album_artist) VALUES
                  ('comp', 'Madonna', 'Hits', 'Various Artists'),
-                 -- Borrows 'Various Artists' from the other 'Hits' track.
+                 -- Untagged, so not part of the compilation 'Hits'.
                  ('untagged', 'Queen', 'Hits', ''),
                  ('other', 'Queen', 'Opera', 'Queen');",
         );
@@ -4848,11 +4829,11 @@ mod tests {
             .map(|t| t.path)
             .collect();
         paths.sort();
-        assert_eq!(paths, ["comp", "untagged"]);
-        assert_eq!(state.tracks_page("various", 100, 0, false).unwrap().total, 2);
-        assert_eq!(state.search("various").unwrap().len(), 2);
+        assert_eq!(paths, ["comp"]);
+        assert_eq!(state.tracks_page("various", 100, 0, false).unwrap().total, 1);
+        assert_eq!(state.search("various").unwrap().len(), 1);
         let any = r#"[{"field": "any", "op": "contains", "value": "various"}]"#;
-        assert_eq!(rule_paths(&state, any).len(), 2);
+        assert_eq!(rule_paths(&state, any).len(), 1);
     }
 
     #[test]
@@ -4860,7 +4841,8 @@ mod tests {
         let state = library_with(
             "INSERT INTO tracks (path, artist, album, album_artist, track_number) VALUES
                  ('own',    'Queen',         'Opera',       'Queen',         1),
-                 ('feat',   'Queen & Bowie', 'Hot Space',   '',              1),
+                 ('feat',   'Queen & Bowie', 'Hot Space',   'Queen',         1),
+                 ('feat-untagged', 'Queen & Bowie', 'Hot Space', '',          3),
                  ('hs',     'Queen',         'Hot Space',   'Queen',         2),
                  ('guest',  'Queen',         'Bowie Album', 'David Bowie',   1),
                  ('bowie',  'David Bowie',   'Bowie Album', 'David Bowie',   2),
@@ -4878,7 +4860,8 @@ mod tests {
         let mut paths = rule_paths(&state, rules);
         paths.sort();
         // Their own tracks anywhere, plus every track on their albums ("feat"),
-        // but not other artists' tracks on albums they're only on.
+        // but not other artists' tracks on albums they're only on, nor untagged
+        // tracks that only share an album name with theirs.
         assert_eq!(paths, ["comp-q", "feat", "guest", "hs", "own", "single"]);
 
         // The same rules as fetchAlbumTracks().
@@ -4890,6 +4873,24 @@ mod tests {
             {"field": "sort", "op": "sort_asc", "value": "title"}
         ]"#;
         assert_eq!(rule_paths(&state, rules), ["feat", "hs"]);
+    }
+
+    #[test]
+    fn album_rules_for_an_album_without_artist() {
+        let state = library_with(
+            "INSERT INTO tracks (path, artist, album, album_artist, track_number) VALUES
+                 ('null-artist',  NULL,     'Demo', NULL, 1),
+                 ('blank-artist', '  ',     'Demo', '',   2),
+                 ('band',         'Band X', 'Demo', '',   1),
+                 ('tagged',       NULL,     'Demo', 'Y',  1);",
+        );
+        // The same rules as fetchAlbumTracks() when album_artist_or_artist is empty.
+        let rules = r#"[
+            {"field": "album", "op": "in", "value": "[\"Demo\"]"},
+            {"field": "album_artist_or_artist", "op": "is_empty", "value": ""},
+            {"field": "sort", "op": "sort_asc", "value": "track_number"}
+        ]"#;
+        assert_eq!(rule_paths(&state, rules), ["null-artist", "blank-artist"]);
     }
 
     #[test]
