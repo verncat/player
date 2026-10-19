@@ -60,7 +60,8 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: center;
 }
-.arrow-btn:hover { background: rgba(0,0,0,.7); }
+.arrow-btn:hover:not(:disabled) { background: rgba(0,0,0,.7); }
+.arrow-btn:disabled { opacity: .4; cursor: default; }
 
 .duplicates-toggle {
   border: 1px solid #4a4a4a;

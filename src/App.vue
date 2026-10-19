@@ -44,6 +44,7 @@ import AlbumView from "./components/AlbumView.vue";
 import TrackRow from "./components/TrackRow.vue";
 import CoverImage from "./components/CoverImage.vue";
 import { provideTrackActions } from "./composables/useTrackActions";
+import { useHistoryNavigation } from "./composables/useHistoryNavigation";
 import { artistLabel, hasArtistPage } from "./utils/artists";
 import { countAlbumTracks } from "./api";
 import { coverUrl } from "./utils/covers";
@@ -79,16 +80,20 @@ const activeNav = ref("home");
 const navTarget = ref('');
 const navTargetArtist = ref('');
 interface NavEntry { nav: string; target: string; targetArtist: string }
-const navHistory = ref<NavEntry[]>([{ nav: 'home', target: '', targetArtist: '' }]);
-const navCursor = ref(0);
 let _navSkipHistory = false;
+function showNavEntry(entry: NavEntry) {
+  _navSkipHistory = true;
+  navTarget.value = entry.target;
+  navTargetArtist.value = entry.targetArtist;
+  activeNav.value = entry.nav;
+  nextTick(() => { _navSkipHistory = false; });
+}
+const navigation = useHistoryNavigation<NavEntry>({ nav: 'home', target: '', targetArtist: '' }, showNavEntry);
 function pushNavHistory(entry: NavEntry) {
-  const current = navHistory.value[navCursor.value];
-  if (current && current.nav === entry.nav && current.target === entry.target
+  const current = navigation.current();
+  if (current.nav === entry.nav && current.target === entry.target
     && current.targetArtist === entry.targetArtist) return;
-  navHistory.value = navHistory.value.slice(0, navCursor.value + 1);
-  navHistory.value.push(entry);
-  navCursor.value = navHistory.value.length - 1;
+  navigation.push(entry);
 }
 watch(activeNav, (nav) => {
   if (_navSkipHistory) return;
@@ -99,23 +104,10 @@ watch(activeNav, (nav) => {
     targetArtist: nav === 'album' ? navTargetArtist.value : '',
   });
 });
-const canNavBack = computed(() => navCursor.value > 0);
-const canNavForward = computed(() => navCursor.value < navHistory.value.length - 1);
-function goToNavEntry(cursor: number) {
-  _navSkipHistory = true;
-  navCursor.value = cursor;
-  const entry = navHistory.value[cursor];
-  navTarget.value = entry.target;
-  navTargetArtist.value = entry.targetArtist;
-  activeNav.value = entry.nav;
-  nextTick(() => { _navSkipHistory = false; });
-}
-function navBack() {
-  if (canNavBack.value) goToNavEntry(navCursor.value - 1);
-}
-function navForward() {
-  if (canNavForward.value) goToNavEntry(navCursor.value + 1);
-}
+const canNavBack = navigation.canBack;
+const canNavForward = navigation.canForward;
+const navBack = navigation.back;
+const navForward = navigation.forward;
 function openArtist(name: string) {
   navTarget.value = name;
   navTargetArtist.value = '';
@@ -126,7 +118,7 @@ function openArtist(name: string) {
 function replaceAlbumNavEntry(name: string, albumArtistOrArtist: string) {
   navTarget.value = name;
   navTargetArtist.value = albumArtistOrArtist;
-  navHistory.value[navCursor.value] = { nav: 'album', target: name, targetArtist: albumArtistOrArtist };
+  navigation.replace({ nav: 'album', target: name, targetArtist: albumArtistOrArtist });
 }
 function openAlbum(name: string, albumArtistOrArtist: string) {
   navTarget.value = name;
