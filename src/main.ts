@@ -1,5 +1,7 @@
 import { createApp, type Directive } from "vue";
 import App from "./App.vue";
+import "./styles/appearance.css";
+import "./styles/audio-select.css";
 
 const horizontalScroll: Directive = {
   mounted(el: HTMLElement) {

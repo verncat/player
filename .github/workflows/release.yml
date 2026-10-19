@@ -103,12 +103,14 @@ jobs:
         if: matrix.name != 'macos'
         env:
           CI: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm tauri build
 
       - name: Build Tauri universal macOS bundles
         if: matrix.name == 'macos'
         env:
           CI: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm tauri build --target universal-apple-darwin
 
       - name: Upload desktop bundles
@@ -211,6 +213,7 @@ jobs:
       - name: Build Android bundle
         env:
           CI: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm tauri android build
 
       - name: Prepare Android release assets

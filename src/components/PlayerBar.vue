@@ -26,6 +26,7 @@ const props = defineProps<{
   currentTrack: CurrentTrackSummary;
   covers: Record<number, string | null>;
   beatScale: number;
+  reduceMotion: boolean;
   isLiked: boolean;
   isShuffled: boolean;
   isPlaying: boolean;
@@ -315,6 +316,7 @@ function toggleZippyMode() {
 }
 
 function handlePlayToggle() {
+  if (props.reduceMotion) { emit('togglePlay'); return; }
   const now = performance.now();
   playToggleTimestamps.push(now);
   while (
@@ -331,6 +333,8 @@ function handlePlayToggle() {
 
   emit("togglePlay");
 }
+
+watch(() => props.reduceMotion, (reduce) => { if (reduce) disableZippyMode(); });
 
 onMounted(() => {
   for (const sprite of [
@@ -384,7 +388,7 @@ onUnmounted(() => {
 <template>
   <div class="player-shell" :class="{ 'zippy-active': zippyVisible }">
     <div
-      v-if="zippyVisible && zippyIntroActive && props.isPlaying && zippyPausePhase === 'idle'"
+      v-if="!reduceMotion && zippyVisible && zippyIntroActive && props.isPlaying && zippyPausePhase === 'idle'"
       :key="zippyAnimationRun"
       class="zippy-stage"
       aria-hidden="true"
@@ -404,7 +408,7 @@ onUnmounted(() => {
     </div>
 
     <div
-      v-if="zippyVisible && (!zippyIntroActive || !props.isPlaying || zippyPausePhase !== 'idle')"
+      v-if="!reduceMotion && zippyVisible && (!zippyIntroActive || !props.isPlaying || zippyPausePhase !== 'idle')"
       class="zippy-viewport-stage"
       :class="{ 'zippy-over-footer': zippyOverFooter }"
       aria-hidden="true"
@@ -555,7 +559,7 @@ onUnmounted(() => {
               <span class="device-name">{{ dev.name }}</span>
               <select
                 v-if="!remoteOutputPeer && dev.name === currentDevice && dev.sample_rates.length"
-                class="device-sample-rate"
+                class="device-sample-rate audio-select"
                 :value="currentSampleRate ?? ''"
                 @click.stop
                 @change="emit('pickLocalSampleRate', dev, $event)"
@@ -1053,33 +1057,6 @@ onUnmounted(() => {
 .device-sample-rate {
   width: 178px;
   flex: 0 0 178px;
-  min-height: 30px;
-  padding: 5px 32px 5px 12px;
-  border: 1px solid #535353;
-  border-radius: 20px;
-  background-color: transparent;
-  color: #a7a7a7;
-  font-size: var(--fs-control);
-  font-weight: 600;
-  line-height: 1.2;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  background-size: 12px 12px;
-  outline: none;
-  transition: border-color .15s, color .15s, background-color .15s;
-}
-.device-sample-rate:hover,
-.device-sample-rate:focus {
-  border-color: #fff;
-  color: #fff;
-}
-.device-sample-rate option {
-  background: #282828;
-  color: #fff;
 }
 .device-error {
   padding: 0 16px 12px;

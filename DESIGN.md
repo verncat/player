@@ -109,6 +109,7 @@ This is a deliberately pragmatic but monolithic design: most state is colocated 
 - `history`: play history.
 - `playlists`: regular playlists and smart playlists.
 - `discovery`: peer devices and sync controls.
+- `settings`: preferences, with addressable Library, Playback, Devices & Sync, Soulseek, Appearance, and About sections.
 
 On mobile, navigation is presented as a side drawer opened by a burger button instead of a permanently visible desktop sidebar.
 
@@ -203,6 +204,21 @@ Responsibilities of this component:
 - React to playback state, beat scale, and pointer motion without exposing Three.js details to the rest of the app.
 
 This keeps the rendering code separate while the rest of the visual chrome remains in [src/App.vue](src/App.vue).
+
+### 5.9 Settings
+
+[src/components/SettingsView.vue](src/components/SettingsView.vue) groups preferences into six sections. On desktop it uses a section menu beside the active panel. On mobile it opens with a section list and shows each section on its own screen. Section changes participate in the existing navigation history, and the footer player remains available.
+
+[src/components/AppTopbar.vue](src/components/AppTopbar.vue) accepts an optional page title and subtitle beside the navigation arrows. Settings uses this area for its heading.
+
+- Library shows the data folder, indexing progress, and access to duplicate review and identification.
+- Playback shares audio output and sample rate state with the footer device picker.
+- Devices & Sync edits this device identity and controls the existing LAN sync setting. Peer management stays in the Devices view.
+- Soulseek owns credential drafts with explicit Save and Cancel actions. Device and Soulseek forms read the latest saved configuration before writing, so saving one form preserves the other settings.
+- Appearance stores device-local preferences in localStorage through [src/composables/useAppearance.ts](src/composables/useAppearance.ts). Reduced motion also respects the system preference, stops beat and cover motion, and uses a still cover. The 3D cover and rarity animations can be controlled independently.
+- About uses [src/components/AboutPanel.vue](src/components/AboutPanel.vue) for version information, the existing updater flow, release notes, and contributor profiles. Each frontend build runs [scripts/sync-contributors.mjs](scripts/sync-contributors.mjs) to refresh GitHub contributors and download their avatars into bundled assets. A checked-in snapshot keeps development and offline builds usable. The application makes no network requests to display these credits.
+
+Device identity and Soulseek credentials keep their existing SQLite persistence. Appearance preferences are separate from music metadata and are not synced. Long-running actions report progress, and setting failures remain visible next to the affected controls.
 
 ## 6. Backend Design
 

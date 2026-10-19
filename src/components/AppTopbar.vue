@@ -1,8 +1,13 @@
 <script setup lang="ts">
+import AppIcon from './AppIcon.vue';
+
 defineProps<{
   canNavBack: boolean;
   canNavForward: boolean;
   showDuplicateTracks: boolean;
+  showDuplicateToggle?: boolean;
+  title?: string;
+  subtitle?: string;
 }>();
 
 const emit = defineEmits<{
@@ -19,10 +24,15 @@ const emit = defineEmits<{
       <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
     </button>
     <div class="nav-arrows">
-      <button class="arrow-btn" :disabled="!canNavBack" @click="emit('navBack')">&lsaquo;</button>
-      <button class="arrow-btn" :disabled="!canNavForward" @click="emit('navForward')">&rsaquo;</button>
+      <button class="arrow-btn" aria-label="Back" :disabled="!canNavBack" @click="emit('navBack')"><AppIcon name="chevron-left" :size="22" /></button>
+      <button class="arrow-btn" aria-label="Forward" :disabled="!canNavForward" @click="emit('navForward')"><AppIcon name="chevron-right" :size="22" /></button>
+    </div>
+    <div v-if="title" class="page-heading">
+      <h1>{{ title }}</h1>
+      <p v-if="subtitle">{{ subtitle }}</p>
     </div>
     <button
+      v-if="showDuplicateToggle !== false"
       class="duplicates-toggle"
       :class="{ active: showDuplicateTracks }"
       @click="emit('update:showDuplicateTracks', !showDuplicateTracks)"
@@ -37,6 +47,7 @@ const emit = defineEmits<{
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 20px;
   padding: 16px 24px;
   padding-top: calc(16px + env(safe-area-inset-top));
   flex-shrink: 0;
@@ -45,7 +56,11 @@ const emit = defineEmits<{
 .nav-arrows {
   display: flex;
   gap: 8px;
+  flex-shrink: 0;
 }
+.page-heading { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.page-heading h1 { color: #fff; font-size: 24px; font-weight: 800; letter-spacing: -.5px; line-height: 1.25; margin: 0; }
+.page-heading p { color: #a7a7a7; font-size: 13px; line-height: 1.5; margin: 4px 0 0; }
 .arrow-btn {
   width: 32px;
   height: 32px;
@@ -63,6 +78,8 @@ const emit = defineEmits<{
 .arrow-btn:hover { background: rgba(0,0,0,.7); }
 
 .duplicates-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
   border: 1px solid #4a4a4a;
   background: rgba(20, 20, 20, 0.75);
   color: #d9dee8;
@@ -97,7 +114,6 @@ const emit = defineEmits<{
     color: #fff;
     cursor: pointer;
     padding: 6px;
-    margin-right: 8px;
     flex-shrink: 0;
   }
   .topbar {
@@ -111,5 +127,7 @@ const emit = defineEmits<{
     padding: 6px 10px;
     white-space: nowrap;
   }
+  .page-heading h1 { font-size: 20px; }
+  .page-heading p { font-size: 12px; }
 }
 </style>

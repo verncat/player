@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "pnpm contributors:sync && vue-tsc --noEmit && vite build",
+    "contributors:sync": "node ./scripts/sync-contributors.mjs",
+    "test:contributors": "node --test ./scripts/sync-contributors.test.mjs",
     "preview": "vite preview",
     "version": "pnpm version:sync",
     "version:sync": "node ./scripts/sync-version.mjs",

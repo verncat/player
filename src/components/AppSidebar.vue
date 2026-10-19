@@ -16,11 +16,7 @@ const emit = defineEmits<{
   navigatePlaylists: [];
   navigateSmartPlaylists: [];
   navigateDiscovery: [];
-  openDataDir: [];
-  reindex: [];
-  identify: [];
-  openDedup: [];
-  navigateAbout: [];
+  navigateSettings: [];
 }>();
 </script>
 
@@ -64,25 +60,11 @@ const emit = defineEmits<{
         <span v-if="syncActive" class="nav-sync-spinner" aria-label="Sync in progress" />
         <span v-else-if="peersCount" class="peer-badge">{{ peersCount }}</span>
       </a>
-      <a class="nav-item" href="#" @click.prevent="emit('openDataDir')">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-        Open Data Folder
-      </a>
-      <a class="nav-item" href="#" @click.prevent="emit('reindex')">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-        Reindex
-      </a>
-      <a class="nav-item" href="#" @click.prevent="emit('identify')">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
-        Identify
-      </a>
-      <a class="nav-item" :class="{ active: activeNav === 'dedup' }" href="#" @click.prevent="emit('openDedup')">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 4H5v16h14V8zm-1 13H7v-2h7zm0-4H7v-2h7zm-3-4H7V7h4zM3 2v18H1V2zm18 0h2v18h-2z"/></svg>
-        Duplicates
-      </a>
-      <a class="nav-item" :class="{ active: activeNav === 'about' }" href="#" @click.prevent="emit('navigateAbout')">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M11 7h2V5h-2v2zm0 12h2v-8h-2v8zm1-17C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
-        About
+    </nav>
+    <nav class="sidebar-settings">
+      <a class="nav-item" :class="{ active: activeNav === 'settings' || activeNav.startsWith('settings/') || activeNav === 'about' }" href="#" @click.prevent="emit('navigateSettings')">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22" aria-hidden="true"><path d="m19.4 13 .1-1-.1-1 2.1-1.6-2-3.4-2.5 1a8 8 0 0 0-1.7-1L15 3h-4l-.4 2.9-1.7 1-2.5-1-2 3.4L6.5 11l-.1 1 .1 1-2.1 1.6 2 3.4 2.5-1 1.7 1L11 21h4l.4-2.9 1.7-1 2.5 1 2-3.4zM13 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8z" /></svg>
+        Settings
         <span v-if="updateAvailable" class="peer-badge" aria-label="Update available">+</span>
       </a>
     </nav>
@@ -99,6 +81,7 @@ const emit = defineEmits<{
   gap: 6px;
   overflow-y: auto;
 }
+.sidebar-settings { margin-top: auto; padding-top: 24px; }
 .sidebar::-webkit-scrollbar { display: none; }
 
 .nav-item {
@@ -117,6 +100,7 @@ const emit = defineEmits<{
   position: relative;
 }
 .nav-item:hover { color: #fff; }
+.nav-item:focus-visible { outline: 2px solid #1db954; outline-offset: -2px; }
 .nav-item.active { color: #fff; }
 
 .peer-badge {
