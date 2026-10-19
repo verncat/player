@@ -60,12 +60,13 @@ const totalMinutes = computed(() =>
 
 const coverHash = computed(() => tracks.value.find((t) => t.cover_hash)?.cover_hash ?? null);
 const albumCoverUrl = computed(() => coverUrl(coverHash.value, 'medium'));
+const albumCoverFullUrl = computed(() => coverUrl(coverHash.value, 'full'));
 const coverGradient = computed(() => hashToColors(tracks.value[0]?.file_hash ?? null));
 </script>
 
 <template>
   <section class="album-view">
-    <PageHeader kind="Album" :title="name" :cover-url="albumCoverUrl" :cover-gradient="coverGradient">
+    <PageHeader kind="Album" :title="name" :cover-url="albumCoverUrl" :cover-gradient="coverGradient" :cover-preview-url="albumCoverFullUrl">
       <template #details>
         <a v-if="hasArtistPage(albumArtistOrArtist)" class="artist-link" href="#" @click.prevent="actions.openArtist(albumArtistOrArtist)">{{ albumArtistOrArtist }}</a>
         <template v-else>{{ artistLabel(albumArtistOrArtist) }}</template>

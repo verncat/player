@@ -1,12 +1,17 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import CoverImage from "./CoverImage.vue";
+import ImagePreview from "./ImagePreview.vue";
 
-defineProps<{
+const props = defineProps<{
   kind: string;
   title: string;
   coverUrl?: string | null;
   coverGradient?: [string, string];
+  coverPreviewUrl?: string | null;
 }>();
+
+const previewOpen = ref(false);
 </script>
 
 <template>
@@ -16,6 +21,18 @@ defineProps<{
       class="page-cover"
       :src="coverUrl ?? null"
       :placeholder="coverGradient"
+      :class="{ previewable: coverPreviewUrl }"
+      :role="coverPreviewUrl ? 'button' : undefined"
+      :tabindex="coverPreviewUrl ? 0 : undefined"
+      :aria-label="coverPreviewUrl ? 'Show full-size cover' : undefined"
+      @click="previewOpen = !!coverPreviewUrl"
+      @keydown.enter.space.prevent="previewOpen = !!coverPreviewUrl"
+    />
+    <ImagePreview
+      :src="previewOpen ? props.coverPreviewUrl ?? null : null"
+      :fallback-src="coverUrl"
+      :alt="title"
+      @close="previewOpen = false"
     />
     <div class="page-heading">
       <div class="page-kind">{{ kind }}</div>
@@ -43,6 +60,7 @@ defineProps<{
   background-position: center;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
 }
+.page-cover.previewable { cursor: zoom-in; }
 .page-heading {
   min-width: 0;
   display: flex;
