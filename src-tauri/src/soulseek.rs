@@ -1,4 +1,3 @@
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use crate::library::{DeviceSettings, LibraryState};
 use lofty::prelude::{Accessor, TaggedFileExt};
 use lofty::probe::Probe;
@@ -597,6 +596,8 @@ pub fn soulseek_promote_preview(
     Ok(final_path.to_string_lossy().to_string())
 }
 
+/// Downloads a search result's cover image and returns its hash in the
+/// cover store (see covers.rs).
 #[tauri::command]
 pub async fn soulseek_fetch_cover(
     request: SoulseekCoverRequest,
@@ -622,7 +623,7 @@ pub async fn soulseek_fetch_cover(
         .unwrap_or(false);
 
     if has_cached_cover {
-        return encode_cover_as_data_url(&local_path, &request.cover_filename);
+        return store_cover_preview(local_path, library.data_dir().to_path_buf()).await;
     }
 
     if local_path.exists() {
@@ -647,7 +648,7 @@ pub async fn soulseek_fetch_cover(
             | DownloadStatus::QueuedRemotely { .. }
             | DownloadStatus::InProgress { .. } => {}
             DownloadStatus::Completed => {
-                return encode_cover_as_data_url(&local_path, &request.cover_filename);
+                return store_cover_preview(local_path, library.data_dir().to_path_buf()).await;
             }
             DownloadStatus::Failed => {
                 eprintln!(
@@ -1064,35 +1065,15 @@ fn queue_sidecar_cover_download(
     Ok(())
 }
 
-fn encode_cover_as_data_url(path: &Path, cover_filename: &str) -> Result<Option<String>, String> {
-    let data = match fs::read(path) {
-        Ok(data) => data,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-
-    if data.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(format!(
-        "data:{};base64,{}",
-        cover_mime_from_filename(cover_filename),
-        B64.encode(data)
-    )))
-}
-
-fn cover_mime_from_filename(cover_filename: &str) -> &'static str {
-    match Path::new(cover_filename)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        _ => "image/jpeg",
-    }
+/// Puts a downloaded cover preview into the cover store and returns its hash.
+async fn store_cover_preview(path: PathBuf, data_dir: PathBuf) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || match fs::read(&path) {
+        Ok(data) => Ok(crate::covers::store(&data_dir, &data)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 async fn monitor_aux_download(download: Download, mut handle: DownloadHandle) {

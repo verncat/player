@@ -17,7 +17,7 @@
 //!   2. Folder structure: first component → artist, second → album.
 //!   3. Filename pattern: `<track>[-. ]<title>` or plain stem.
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use crate::covers;
 use encoding_rs::WINDOWS_1251;
 use lofty::config::ParseOptions;
 use lofty::picture::PictureType;
@@ -102,8 +102,9 @@ pub struct Track {
     pub album_artist: Option<String>,
     pub disc_number: Option<i64>,
     pub album_artist_or_artist: Option<String>,
-    /// Whether the track has a cover image to load with `get_track_cover`.
-    pub has_cover: bool,
+    /// Names the track's cover in the cover store (see covers.rs); None when
+    /// it has none.
+    pub cover_hash: Option<String>,
 }
 
 /// A bounded slice of the library.  The webview must not have to retain the
@@ -246,7 +247,7 @@ impl LibraryState {
             None => Connection::open_in_memory()?,
         };
         init_schema(&conn)?;
-        purge_internal_library_rows(&conn, &data_dir)?;
+        purge_internal_library_rows(&conn)?;
 
         // Only run the full directory scan on first launch (new DB).
         // On subsequent launches the FS watcher handles incremental changes;
@@ -261,6 +262,7 @@ impl LibraryState {
         if !is_new_db {
             spawn_album_tag_backfill(Arc::clone(&conn), data_dir.clone(), app_handle.clone());
         }
+        start_cover_maintenance(Arc::clone(&conn), data_dir.clone(), app_handle.clone());
         start_watcher(data_dir.clone(), Arc::clone(&conn), app_handle)?;
 
         Ok(Self { conn, data_dir })
@@ -272,6 +274,11 @@ impl LibraryState {
 
     pub fn conn(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.conn)
+    }
+
+    /// See [`read_full_cover`].
+    pub fn full_cover(&self, cover_hash: &str) -> Option<Vec<u8>> {
+        read_full_cover(&self.conn, &self.data_dir, cover_hash)
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<Track>, BoxError> {
@@ -899,10 +906,10 @@ fn is_internal_library_path(data_dir: &Path, path: &Path) -> bool {
         .is_some_and(|name| INTERNAL_LIBRARY_DIRECTORIES.contains(&name))
 }
 
-fn purge_internal_library_rows(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
+fn purge_internal_library_rows(conn: &Connection) -> Result<(), BoxError> {
     for directory in INTERNAL_LIBRARY_DIRECTORIES {
         let like_pattern = format!("{directory}/%");
-        delete_tracks_by_path_or_like(conn, data_dir, directory, &like_pattern)?;
+        delete_tracks_by_path_or_like(conn, directory, &like_pattern)?;
     }
 
     Ok(())
@@ -973,6 +980,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     // a track without an album artist tag stores ''. See `spawn_album_tag_backfill`.
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN album_artist TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN disc_number INTEGER");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_hash TEXT");
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_cover_hash ON tracks(cover_hash)")?;
     // Recreated on every start so changes to its definition take effect.
     conn.execute_batch(&format!(
         "DROP VIEW IF EXISTS library_tracks;
@@ -1055,71 +1064,12 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn cover_store_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(".covers")
-}
-
-fn normalize_cover_mime(mime: Option<String>) -> Option<String> {
-    let mime = mime?.trim().to_ascii_lowercase();
-    let normalized = match mime.as_str() {
-        "image/jpeg" | "image/jpg" | "jpeg" | "jpg" => "image/jpeg",
-        "image/png" | "png" => "image/png",
-        "image/webp" | "webp" => "image/webp",
-        "image/gif" | "gif" => "image/gif",
-        "image/svg+xml" | "svg" => "image/svg+xml",
-        _ => return None,
-    };
-    Some(normalized.to_string())
-}
-
-fn cover_extension_from_mime(mime: Option<&str>) -> &'static str {
-    match mime.unwrap_or("").to_ascii_lowercase().as_str() {
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/png" => "png",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        "image/svg+xml" => "svg",
-        _ => "jpg",
-    }
-}
-
-fn cover_file_path(data_dir: &Path, track_id: i64, mime: Option<&str>) -> PathBuf {
-    let ext = cover_extension_from_mime(mime);
-    cover_store_dir(data_dir).join(format!("{track_id}.{ext}"))
-}
-
-fn cover_file_candidates(data_dir: &Path, track_id: i64, mime: Option<&str>) -> Vec<PathBuf> {
-    let mut paths = vec![cover_file_path(data_dir, track_id, mime)];
-    for ext in ["jpg", "jpeg", "png", "webp", "gif", "svg"] {
-        let path = cover_store_dir(data_dir).join(format!("{track_id}.{ext}"));
-        if !paths.iter().any(|candidate| candidate == &path) {
-            paths.push(path);
-        }
-    }
-    paths
-}
-
-fn read_cover_file(data_dir: &Path, track_id: i64, mime: Option<&str>) -> Option<Vec<u8>> {
-    std::fs::read(cover_file_path(data_dir, track_id, mime)).ok()
-}
-
-fn remove_cover_files(data_dir: &Path, track_id: i64) -> Result<(), BoxError> {
-    for path in cover_file_candidates(data_dir, track_id, None) {
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(Box::new(error)),
-        }
-    }
-    Ok(())
-}
-
 #[cfg_attr(
     feature = "tracy",
     tracing::instrument(
         name = "library.cover.persist",
         target = "player_lib::profile",
-        skip(conn, data_dir, cover_data, cover_mime),
+        skip(conn, data_dir, cover_data),
         fields(track_id, bytes = cover_data.as_ref().map_or(0, Vec::len))
     )
 )]
@@ -1128,135 +1078,54 @@ fn persist_track_cover(
     data_dir: &Path,
     track_id: i64,
     cover_data: Option<Vec<u8>>,
-    cover_mime: Option<String>,
 ) -> Result<(), BoxError> {
-    let cover_mime = normalize_cover_mime(cover_mime);
-    match cover_data {
-        Some(data) if !data.is_empty() => {
-            std::fs::create_dir_all(cover_store_dir(data_dir))?;
-            remove_cover_files(data_dir, track_id)?;
-            std::fs::write(
-                cover_file_path(data_dir, track_id, cover_mime.as_deref()),
-                data,
-            )?;
-            conn.execute(
-                "UPDATE tracks SET cover_data = NULL, cover_mime = ?1 WHERE id = ?2",
-                params![cover_mime, track_id],
-            )?;
-        }
-        _ => {
-            remove_cover_files(data_dir, track_id)?;
-            conn.execute(
-                "UPDATE tracks SET cover_data = NULL, cover_mime = NULL WHERE id = ?1",
-                params![track_id],
-            )?;
-        }
-    }
-
+    let cover_hash = cover_data.and_then(|data| covers::store(data_dir, &data));
+    conn.execute(
+        "UPDATE tracks
+            SET cover_data = NULL,
+                cover_hash = ?1,
+                cover_mime = CASE WHEN ?1 IS NULL THEN NULL ELSE cover_mime END
+          WHERE id = ?2",
+        params![cover_hash, track_id],
+    )?;
     Ok(())
 }
 
-fn track_ids_by_query<P: rusqlite::Params>(
-    conn: &Connection,
-    sql: &str,
-    params: P,
-) -> rusqlite::Result<Vec<i64>> {
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt
-        .query_map(params, |row| row.get(0))?
-        .filter_map(Result::ok)
-        .collect();
-    Ok(rows)
-}
-
-fn remove_cover_files_for_track_ids(data_dir: &Path, track_ids: &[i64]) -> Result<(), BoxError> {
-    for track_id in track_ids {
-        remove_cover_files(data_dir, *track_id)?;
-    }
-    Ok(())
-}
-
-fn delete_tracks_by_path(
-    conn: &Connection,
-    data_dir: &Path,
-    path: &str,
-) -> Result<usize, BoxError> {
-    let track_ids =
-        track_ids_by_query(conn, "SELECT id FROM tracks WHERE path = ?1", params![path])?;
-    let removed = conn.execute("DELETE FROM tracks WHERE path = ?1", params![path])?;
-    remove_cover_files_for_track_ids(data_dir, &track_ids)?;
-    Ok(removed)
+fn delete_tracks_by_path(conn: &Connection, path: &str) -> Result<usize, BoxError> {
+    Ok(conn.execute("DELETE FROM tracks WHERE path = ?1", params![path])?)
 }
 
 fn delete_tracks_by_path_or_like(
     conn: &Connection,
-    data_dir: &Path,
     path: &str,
     like_pattern: &str,
 ) -> Result<usize, BoxError> {
-    let track_ids = track_ids_by_query(
-        conn,
-        "SELECT id FROM tracks WHERE path = ?1 OR path LIKE ?2",
-        params![path, like_pattern],
-    )?;
-    let removed = conn.execute(
+    Ok(conn.execute(
         "DELETE FROM tracks WHERE path = ?1 OR path LIKE ?2",
         params![path, like_pattern],
-    )?;
-    remove_cover_files_for_track_ids(data_dir, &track_ids)?;
-    Ok(removed)
+    )?)
 }
 
-fn delete_tracks_by_cue_path(
-    conn: &Connection,
-    data_dir: &Path,
-    cue_path: &str,
-) -> Result<usize, BoxError> {
-    let track_ids = track_ids_by_query(
-        conn,
-        "SELECT id FROM tracks WHERE cue_path = ?1",
-        params![cue_path],
-    )?;
-    let removed = conn.execute("DELETE FROM tracks WHERE cue_path = ?1", params![cue_path])?;
-    remove_cover_files_for_track_ids(data_dir, &track_ids)?;
-    Ok(removed)
+fn delete_tracks_by_cue_path(conn: &Connection, cue_path: &str) -> Result<usize, BoxError> {
+    Ok(conn.execute("DELETE FROM tracks WHERE cue_path = ?1", params![cue_path])?)
 }
 
-fn delete_tracks_by_path_or_source_path(
-    conn: &Connection,
-    data_dir: &Path,
-    path: &str,
-) -> Result<usize, BoxError> {
-    let track_ids = track_ids_by_query(
-        conn,
-        "SELECT id FROM tracks WHERE path = ?1 OR source_path = ?1",
-        params![path],
-    )?;
-    let removed = conn.execute(
+fn delete_tracks_by_path_or_source_path(conn: &Connection, path: &str) -> Result<usize, BoxError> {
+    Ok(conn.execute(
         "DELETE FROM tracks WHERE path = ?1 OR source_path = ?1",
         params![path],
-    )?;
-    remove_cover_files_for_track_ids(data_dir, &track_ids)?;
-    Ok(removed)
+    )?)
 }
 
 fn delete_tracks_by_path_except_id(
     conn: &Connection,
-    data_dir: &Path,
     path: &str,
     keep_id: i64,
 ) -> Result<usize, BoxError> {
-    let track_ids = track_ids_by_query(
-        conn,
-        "SELECT id FROM tracks WHERE path = ?1 AND id != ?2",
-        params![path, keep_id],
-    )?;
-    let removed = conn.execute(
+    Ok(conn.execute(
         "DELETE FROM tracks WHERE path = ?1 AND id != ?2",
         params![path, keep_id],
-    )?;
-    remove_cover_files_for_track_ids(data_dir, &track_ids)?;
-    Ok(removed)
+    )?)
 }
 
 /// Keep idx_tracks_library_order_v2 in sync with this
@@ -1270,7 +1139,7 @@ const VARIOUS_ARTISTS: &str = "Various Artists";
 /// The columns [`row_to_track`] reads, in order. Select them from the
 /// `library_tracks` view, not the `tracks` table: the view adds
 /// `album_artist_or_artist`.
-const TRACK_COLUMNS: &str = "id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate, album_artist, disc_number, album_artist_or_artist, has_cover";
+const TRACK_COLUMNS: &str = "id, path, title, artist, album, track_number, duration_secs, file_hash, rarity, manually_edited, is_liked, play_count, year, genre, date_added, tags, is_duplicate, album_artist, disc_number, album_artist_or_artist, cover_hash";
 
 /// [`TRACK_COLUMNS`] for a query that names the view, e.g. `t.` for
 /// `FROM library_tracks t`.
@@ -1282,9 +1151,9 @@ fn track_columns_of(alias: &str) -> String {
         .join(", ")
 }
 
-/// `library_tracks`: every column of `tracks`, plus `has_cover` and
-/// `album_artist_or_artist`, the artist an album is listed under: the track's
-/// album artist tag, else the track artist.
+/// `library_tracks`: every column of `tracks`, plus `album_artist_or_artist`,
+/// the artist an album is listed under: the track's album artist tag, else the
+/// track artist.
 ///
 /// Any of [`VARIOUS_ARTISTS_ALIASES`] becomes [`VARIOUS_ARTISTS`]. Albums are
 /// identified by (album, album_artist_or_artist). This is the only place that
@@ -1299,7 +1168,6 @@ fn library_tracks_view_sql() -> String {
     format!(
         "CREATE VIEW library_tracks AS
          SELECT t.*,
-                t.cover_mime IS NOT NULL AS has_cover,
                 CASE WHEN lower(trim({resolved})) IN ({aliases}) THEN '{VARIOUS_ARTISTS}'
                      ELSE {resolved} END AS album_artist_or_artist
            FROM tracks t"
@@ -1336,7 +1204,7 @@ fn track_from_row(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<Tra
         album_artist: row.get(col(17)).unwrap_or(None),
         disc_number: row.get(col(18)).unwrap_or(None),
         album_artist_or_artist: row.get(col(19)).unwrap_or(None),
-        has_cover: row.get::<_, i64>(col(20)).unwrap_or(0) != 0,
+        cover_hash: row.get(col(20)).unwrap_or(None),
     })
 }
 
@@ -1419,40 +1287,6 @@ fn get_track_by_path(conn: &Connection, path: &str) -> rusqlite::Result<Option<T
     }
 }
 
-struct TrackReplacementRow {
-    track: Track,
-    cover_data: Option<Vec<u8>>,
-    cover_mime: Option<String>,
-}
-
-fn get_track_replacement_row_by_id(
-    conn: &Connection,
-    data_dir: &Path,
-    id: i64,
-) -> rusqlite::Result<Option<TrackReplacementRow>> {
-    match conn.query_row(
-        &format!(
-            "SELECT cover_mime, {TRACK_COLUMNS}
-               FROM library_tracks
-              WHERE id = ?1
-              LIMIT 1"
-        ),
-        params![id],
-        |row| {
-            let cover_mime = normalize_cover_mime(row.get(0).unwrap_or(None));
-            Ok(TrackReplacementRow {
-                track: track_from_row(row, 1)?,
-                cover_data: read_cover_file(data_dir, id, cover_mime.as_deref()),
-                cover_mime,
-            })
-        },
-    ) {
-        Ok(track) => Ok(Some(track)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
 fn option_text_present(value: &Option<String>) -> bool {
     value
         .as_deref()
@@ -1472,23 +1306,6 @@ fn merge_optional_text(existing: Option<String>, replacement: Option<String>) ->
 
 fn merge_optional_i64(existing: Option<i64>, replacement: Option<i64>) -> Option<i64> {
     existing.or(replacement)
-}
-
-fn merge_cover(
-    existing_data: Option<Vec<u8>>,
-    existing_mime: Option<String>,
-    replacement_data: Option<Vec<u8>>,
-    replacement_mime: Option<String>,
-) -> (Option<Vec<u8>>, Option<String>) {
-    if existing_data
-        .as_ref()
-        .map(|data| !data.is_empty())
-        .unwrap_or(false)
-    {
-        (existing_data, existing_mime)
-    } else {
-        (replacement_data, replacement_mime)
-    }
 }
 
 fn same_canonical_path(left: &Path, right: &Path) -> bool {
@@ -1737,7 +1554,7 @@ fn index_directory_async(conn: &Arc<Mutex<Connection>>, data_dir: &Path, app: &t
                 .collect()
         };
         for path in &stale {
-            if let Err(error) = delete_tracks_by_path(&conn, data_dir, path) {
+            if let Err(error) = delete_tracks_by_path(&conn, path) {
                 eprintln!("[library] failed to remove stale track {path}: {error}");
             }
         }
@@ -1899,7 +1716,7 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
         stale
     };
     for path in stale {
-        delete_tracks_by_path(conn, data_dir, &path)?;
+        delete_tracks_by_path(conn, &path)?;
     }
 
     Ok(())
@@ -1948,7 +1765,7 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
                     COALESCE(cover_source_mtime, 0),
                     date_added,
                     id,
-                    cover_mime
+                    cover_hash
                FROM tracks
               WHERE path = ?1",
             params![rel],
@@ -1984,18 +1801,14 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
             cached_cover_source_path,
             cached_cover_source_mtime,
             Some(_),
-            track_id,
-            cover_mime,
+            _,
+            cover_hash,
         )) = &cached
         {
-            let normalized_cover_mime = cover_mime
-                .clone()
-                .and_then(|mime| normalize_cover_mime(Some(mime)));
-            let cached_cover_file_exists = normalized_cover_mime
+            let cached_cover_file_exists = cover_hash
                 .as_deref()
-                .map(|mime| cover_file_path(data_dir, *track_id, Some(mime)).exists())
-                .unwrap_or(false);
-            let cover_file_is_current = cover_mime.is_none() || cached_cover_file_exists;
+                .is_some_and(|hash| covers::is_stored(data_dir, hash));
+            let cover_file_is_current = cover_hash.is_none() || cached_cover_file_exists;
             if *ms == modified_secs
                 && cover_file_is_current
                 && sidecar_cover_state_matches(
@@ -2049,7 +1862,7 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
         )?;
         #[cfg(feature = "tracy")]
         drop(sqlite_span);
-        persist_track_cover(&conn, data_dir, track_id, cover_data, cover_mime)?;
+        persist_track_cover(conn, data_dir, track_id, cover_data)?;
         if let Some(file_hash) = file_hash.as_deref() {
             remove_stale_tracks_with_same_hash(conn, data_dir, &rel, file_hash)?;
         }
@@ -2142,7 +1955,7 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
     )?;
     #[cfg(feature = "tracy")]
     drop(sqlite_span);
-    persist_track_cover(&conn, data_dir, track_id, cover_data, cover_mime)?;
+    persist_track_cover(conn, data_dir, track_id, cover_data)?;
 
     if let Some(file_hash) = file_hash.as_deref() {
         remove_stale_tracks_with_same_hash(conn, data_dir, &rel, file_hash)?;
@@ -2173,7 +1986,7 @@ fn remove_stale_tracks_with_same_hash(
         .collect();
 
     for path in stale_paths {
-        delete_tracks_by_path(conn, data_dir, &path)?;
+        delete_tracks_by_path(conn, &path)?;
     }
 
     Ok(())
@@ -2836,24 +2649,110 @@ fn index_cue_file(
             )?;
             #[cfg(feature = "tracy")]
             drop(sqlite_span);
-            persist_track_cover(
-                conn,
-                data_dir,
-                track_id,
-                cover_data.clone(),
-                cover_mime.clone(),
-            )?;
+            persist_track_cover(conn, data_dir, track_id, cover_data.clone())?;
             visited.push(virtual_path);
         }
     }
 
     for stale_path in existing_paths {
         if !visited.contains(&stale_path) {
-            delete_tracks_by_path(conn, data_dir, &stale_path)?;
+            delete_tracks_by_path(conn, &stale_path)?;
         }
     }
 
     Ok(visited)
+}
+
+/// The original image behind a cover hash, read again from the audio file (or
+/// sidecar) of a track that has it. Falls back to the largest stored copy when
+/// no track's file still holds that exact image.
+fn read_full_cover(conn: &Mutex<Connection>, data_dir: &Path, hash: &str) -> Option<Vec<u8>> {
+    let audio_paths: Vec<PathBuf> = {
+        let conn = conn.lock().unwrap();
+        let ids = track_ids_with_cover(&conn, hash).unwrap_or_default();
+        ids.into_iter()
+            .filter_map(|id| match track_source_for_track(&conn, data_dir, id) {
+                Ok(Some(TrackSource::File { path })) => Some(path),
+                Ok(Some(TrackSource::CueSegment { audio_path, .. })) => Some(audio_path),
+                _ => None,
+            })
+            .collect()
+    };
+    audio_paths
+        .iter()
+        .find_map(|audio_path| {
+            let sidecar_cover = find_sidecar_cover_candidate(data_dir, audio_path);
+            read_audio_meta(audio_path, sidecar_cover.as_ref())
+                .cover_data
+                .filter(|data| covers::hash(data) == hash)
+        })
+        .or_else(|| covers::read_largest(data_dir, hash))
+}
+
+fn track_ids_with_cover(conn: &Connection, hash: &str) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT id FROM tracks WHERE cover_hash = ?1 LIMIT 4")?;
+    let ids = stmt.query_map(params![hash], |row| row.get(0))?.collect();
+    ids
+}
+
+/// Moves covers from the old one-file-per-track layout into the cover store,
+/// then deletes stored covers that no track uses any more.
+fn start_cover_maintenance(conn: Arc<Mutex<Connection>>, data_dir: PathBuf, app: tauri::AppHandle) {
+    thread::spawn(move || {
+        use tauri::Emitter;
+        let migrated = migrate_legacy_covers(&conn, &data_dir);
+        let referenced = match referenced_cover_hashes(&conn.lock().unwrap()) {
+            Ok(hashes) => hashes,
+            Err(error) => {
+                tracing::warn!(target: "player_lib::covers", %error, "couldn't list used covers");
+                return;
+            }
+        };
+        let pruned = covers::prune_unused(&data_dir, &referenced);
+        tracing::info!(target: "player_lib::covers", migrated, pruned, "cover maintenance done");
+        if migrated > 0 {
+            let _ = app.emit("library-changed", ());
+        }
+    });
+}
+
+fn migrate_legacy_covers(conn: &Mutex<Connection>, data_dir: &Path) -> usize {
+    let ids: Vec<i64> = {
+        let conn = conn.lock().unwrap();
+        let ids = conn
+            .prepare("SELECT id FROM tracks WHERE cover_mime IS NOT NULL AND cover_hash IS NULL")
+            .and_then(|mut stmt| stmt.query_map([], |row| row.get(0))?.collect());
+        ids.unwrap_or_default()
+    };
+    for id in &ids {
+        // Decoding and resizing happen without the lock held.
+        let cover_hash =
+            read_legacy_cover(data_dir, *id).and_then(|data| covers::store(data_dir, &data));
+        let _ = conn.lock().unwrap().execute(
+            "UPDATE tracks
+                SET cover_hash = ?1,
+                    cover_mime = CASE WHEN ?1 IS NULL THEN NULL ELSE cover_mime END
+              WHERE id = ?2 AND cover_hash IS NULL",
+            params![cover_hash, id],
+        );
+    }
+    ids.len()
+}
+
+/// Covers used to be stored per track, as `.covers/<track id>.<ext>`.
+fn read_legacy_cover(data_dir: &Path, track_id: i64) -> Option<Vec<u8>> {
+    ["jpg", "jpeg", "png", "webp", "gif", "svg"]
+        .iter()
+        .find_map(|ext| {
+            std::fs::read(covers::store_dir(data_dir).join(format!("{track_id}.{ext}"))).ok()
+        })
+}
+
+fn referenced_cover_hashes(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT cover_hash FROM tracks WHERE cover_hash IS NOT NULL")?;
+    let hashes = stmt.query_map([], |row| row.get(0))?.collect();
+    hashes
 }
 
 /// Extracts the first embedded cover image from a tag, falling back to sidecar folder art.
@@ -3126,7 +3025,7 @@ fn handle_fs_events_batch(
             conn.lock().unwrap()
         };
         let removed = if is_cue_extension(&ext) {
-            match delete_tracks_by_cue_path(&c, data_dir, &rel) {
+            match delete_tracks_by_cue_path(&c, &rel) {
                 Ok(removed) => removed,
                 Err(error) => {
                     eprintln!(
@@ -3137,7 +3036,7 @@ fn handle_fs_events_batch(
                 }
             }
         } else {
-            match delete_tracks_by_path_or_source_path(&c, data_dir, &rel) {
+            match delete_tracks_by_path_or_source_path(&c, &rel) {
                 Ok(removed) => removed,
                 Err(error) => {
                     eprintln!(
@@ -3161,33 +3060,6 @@ fn handle_fs_events_batch(
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
-
-/// Returns the cover image for a track as a base64-encoded data URL,
-/// e.g. `data:image/jpeg;base64,...`, or `None` if no cover is stored.
-#[tauri::command]
-pub fn get_track_cover(
-    id: i64,
-    state: tauri::State<'_, LibraryState>,
-) -> Result<Option<String>, String> {
-    let conn = state.conn.lock().unwrap();
-    let result: rusqlite::Result<Option<String>> = conn.query_row(
-        "SELECT cover_mime FROM tracks WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    );
-    match result {
-        Ok(mime) => {
-            let mime = normalize_cover_mime(mime).unwrap_or_else(|| "image/jpeg".to_owned());
-            if let Some(data) = read_cover_file(&state.data_dir, id, Some(&mime)) {
-                Ok(Some(format!("data:{};base64,{}", mime, B64.encode(&data))))
-            } else {
-                Ok(None)
-            }
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
-}
 
 #[tauri::command]
 pub fn search_tracks(
@@ -3375,11 +3247,13 @@ pub fn replace_track_with_file(
     }
 
     let conn = state.conn.lock().unwrap();
-    let existing = get_track_replacement_row_by_id(&conn, &state.data_dir, id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Track not found: {}", id))?;
+    let existing = match get_track_by_id(&conn, id) {
+        Ok(track) => track,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(format!("Track not found: {}", id)),
+        Err(error) => return Err(error.to_string()),
+    };
 
-    let current_abs = state.data_dir.join(&existing.track.path);
+    let current_abs = state.data_dir.join(&existing.path);
     let target_abs = replacement_target_path(&current_abs, &source_abs)?;
     let target_parent = target_abs.parent().ok_or_else(|| {
         format!(
@@ -3402,12 +3276,12 @@ pub fn replace_track_with_file(
         None
     };
 
-    if target_rel != existing.track.path {
+    if target_rel != existing.path {
         if let Some(conflict) = get_track_by_path(&conn, &target_rel).map_err(|e| e.to_string())? {
             let replacing_from_conflicting_path =
                 source_rel.as_deref() == Some(target_rel.as_str());
             if conflict.id != id && replacing_from_conflicting_path {
-                delete_tracks_by_path_except_id(&conn, &state.data_dir, &target_rel, id)
+                delete_tracks_by_path_except_id(&conn, &target_rel, id)
                     .map_err(|e| e.to_string())?;
             } else if conflict.id != id {
                 return Err(format!(
@@ -3448,25 +3322,24 @@ pub fn replace_track_with_file(
     let file_hash = hash_file(&target_abs);
     let rarity = file_hash.as_deref().map(rarity_from_hash);
     let modified_secs = path_modified_secs(&target_abs);
-    let merged_title = merge_optional_text(existing.track.title, replacement_meta.title);
-    let merged_artist = merge_optional_text(existing.track.artist, replacement_meta.artist);
-    let merged_album = merge_optional_text(existing.track.album, replacement_meta.album);
+    let merged_title = merge_optional_text(existing.title, replacement_meta.title);
+    let merged_artist = merge_optional_text(existing.artist, replacement_meta.artist);
+    let merged_album = merge_optional_text(existing.album, replacement_meta.album);
     let merged_album_artist =
-        merge_optional_text(existing.track.album_artist, replacement_meta.album_artist)
+        merge_optional_text(existing.album_artist, replacement_meta.album_artist)
             .unwrap_or_default();
     let merged_track_number =
-        merge_optional_i64(existing.track.track_number, replacement_meta.track_number);
+        merge_optional_i64(existing.track_number, replacement_meta.track_number);
     let merged_disc_number =
-        merge_optional_i64(existing.track.disc_number, replacement_meta.disc_number);
-    let merged_year = merge_optional_i64(existing.track.year, replacement_meta.year);
-    let merged_genre = merge_optional_text(existing.track.genre, replacement_meta.genre);
-    let merged_tags = existing.track.tags;
-    let (merged_cover_data, merged_cover_mime) = merge_cover(
-        existing.cover_data,
-        existing.cover_mime,
-        replacement_meta.cover_data,
-        replacement_meta.cover_mime,
-    );
+        merge_optional_i64(existing.disc_number, replacement_meta.disc_number);
+    let merged_year = merge_optional_i64(existing.year, replacement_meta.year);
+    let merged_genre = merge_optional_text(existing.genre, replacement_meta.genre);
+    let merged_tags = existing.tags;
+    let merged_cover_hash = existing.cover_hash.or_else(|| {
+        replacement_meta
+            .cover_data
+            .and_then(|data| covers::store(&state.data_dir, &data))
+    });
 
     conn.execute(
         "UPDATE tracks
@@ -3478,7 +3351,8 @@ pub fn replace_track_with_file(
                 duration_secs = ?6,
                 modified_secs = ?7,
                 cover_data = NULL,
-                cover_mime = ?8,
+                cover_mime = NULL,
+                cover_hash = ?8,
                 cover_source_path = NULL,
                 cover_source_mtime = 0,
                 file_hash = ?9,
@@ -3502,35 +3376,27 @@ pub fn replace_track_with_file(
             merged_track_number,
             replacement_meta.duration_secs,
             modified_secs,
-            merged_cover_mime.clone(),
+            merged_cover_hash,
             file_hash,
             rarity,
             merged_year,
             merged_genre,
-            existing.track.date_added,
+            existing.date_added,
             merged_tags,
-            if existing.track.manually_edited { 1 } else { 0 },
-            if existing.track.is_liked { 1 } else { 0 },
-            existing.track.play_count,
-            if existing.track.is_duplicate { 1 } else { 0 },
+            if existing.manually_edited { 1 } else { 0 },
+            if existing.is_liked { 1 } else { 0 },
+            existing.play_count,
+            if existing.is_duplicate { 1 } else { 0 },
             id,
             merged_album_artist,
             merged_disc_number,
         ],
     )
     .map_err(|e| e.to_string())?;
-    persist_track_cover(
-        &conn,
-        &state.data_dir,
-        id,
-        merged_cover_data,
-        merged_cover_mime,
-    )
-    .map_err(|e| e.to_string())?;
 
     if let Some(source_rel) = source_rel {
         if source_rel != target_rel {
-            delete_tracks_by_path_except_id(&conn, &state.data_dir, &source_rel, id)
+            delete_tracks_by_path_except_id(&conn, &source_rel, id)
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -3822,7 +3688,8 @@ pub struct AlbumSummary {
     pub album_artist_or_artist: String,
     pub year: Option<i64>,
     pub track_count: i64,
-    pub cover_track_id: i64,
+    /// The cover of the first track (in album order) that has one.
+    pub cover_hash: Option<String>,
 }
 
 /// Track order within an album. Must match the sort rules of
@@ -3844,12 +3711,12 @@ fn artist_albums(
                 g.album_artist_or_artist,
                 MAX(g.year),
                 COUNT(*),
-                -- The first track (in album order) with a cover, else the first track.
-                (SELECT c.id FROM library_tracks c
+                (SELECT c.cover_hash FROM library_tracks c
                   WHERE c.album = g.album
                     AND c.album_artist_or_artist = g.album_artist_or_artist
                     AND (?2 = 1 OR c.is_duplicate = 0)
-                  ORDER BY c.has_cover DESC, {ALBUM_TRACK_ORDER_SQL}
+                    AND c.cover_hash IS NOT NULL
+                  ORDER BY {ALBUM_TRACK_ORDER_SQL}
                   LIMIT 1)
            FROM library_tracks g
           WHERE g.album IS NOT NULL AND trim(g.album) <> ''
@@ -3869,7 +3736,7 @@ fn artist_albums(
                 album_artist_or_artist: row.get(1)?,
                 year: row.get(2)?,
                 track_count: row.get(3)?,
-                cover_track_id: row.get(4)?,
+                cover_hash: row.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -4593,7 +4460,7 @@ mod tests {
     fn artist_albums_groups_and_orders_by_year() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
-        // (path, artist, album, year, is_duplicate, cover_mime)
+        // (path, artist, album, year, is_duplicate, cover_hash)
         let rows: [(&str, &str, Option<&str>, Option<i64>, i64, Option<&str>); 6] = [
             ("a1.flac", "A", Some("Second"), Some(2005), 0, None),
             (
@@ -4602,18 +4469,18 @@ mod tests {
                 Some("Second"),
                 Some(2005),
                 0,
-                Some("image/jpeg"),
+                Some("cover-a2"),
             ),
             ("a3.flac", "A", Some("First"), Some(1999), 0, None),
             ("a4.flac", "A", Some("No Year"), None, 0, None),
             ("a5.flac", "A", None, None, 0, None), // no album: skipped
             ("a6.flac", "A", Some("Dupes"), Some(2010), 1, None), // duplicate only: skipped
         ];
-        for (path, artist, album, year, dup, mime) in rows {
+        for (path, artist, album, year, dup, cover_hash) in rows {
             conn.execute(
-                "INSERT INTO tracks (path, artist, album, year, is_duplicate, cover_mime)
+                "INSERT INTO tracks (path, artist, album, year, is_duplicate, cover_hash)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![path, artist, album, year, dup, mime],
+                params![path, artist, album, year, dup, cover_hash],
             )
             .unwrap();
         }
@@ -4628,7 +4495,7 @@ mod tests {
         assert_eq!(names, ["First", "Second", "No Year"]);
         assert_eq!(albums[0].track_count, 1); // B's "First" isn't counted
         assert_eq!(albums[1].track_count, 2);
-        assert_eq!(albums[1].cover_track_id, 2); // the track that has a cover
+        assert_eq!(albums[1].cover_hash.as_deref(), Some("cover-a2")); // the track that has a cover
 
         let with_dupes = artist_albums(&conn, "A", true).unwrap();
         assert_eq!(with_dupes.len(), 4);
@@ -4640,31 +4507,21 @@ mod tests {
         init_schema(&conn).unwrap();
         // Inserted out of order: ids don't follow disc/track order.
         conn.execute_batch(
-            "INSERT INTO tracks (id, path, artist, album, disc_number, track_number, cover_mime) VALUES
-                 (1, 'd2t1', 'A', 'X', 2, 1, 'image/jpeg'),
-                 (2, 'd1t2', 'A', 'X', 1, 2, 'image/png'),
+            "INSERT INTO tracks (id, path, artist, album, disc_number, track_number, cover_hash) VALUES
+                 (1, 'd2t1', 'A', 'X', 2, 1, 'cover-d2t1'),
+                 (2, 'd1t2', 'A', 'X', 1, 2, 'cover-d1t2'),
                  (3, 'd1t1', 'A', 'X', 1, 1, NULL),
                  (4, 'n1',   'A', 'None', NULL, 1, NULL),
                  (5, 'n2',   'A', 'None', NULL, 2, NULL);",
         )
         .unwrap();
         let albums = artist_albums(&conn, "A", false).unwrap();
-        let covers: Vec<(&str, i64)> = albums
+        let covers: Vec<(&str, Option<&str>)> = albums
             .iter()
-            .map(|a| (a.album.as_str(), a.cover_track_id))
+            .map(|a| (a.album.as_str(), a.cover_hash.as_deref()))
             .collect();
-        // X: d1t1 comes first but has no cover, so d1t2. None: no covers, so
-        // its first track.
-        assert_eq!(covers, [("None", 4), ("X", 2)]);
-
-        let has_cover: Vec<bool> = conn
-            .prepare(&format!("SELECT {TRACK_COLUMNS} FROM library_tracks ORDER BY id"))
-            .unwrap()
-            .query_map([], row_to_track)
-            .unwrap()
-            .map(|t| t.unwrap().has_cover)
-            .collect();
-        assert_eq!(has_cover, [true, true, false, false, false]);
+        // X: d1t1 comes first but has no cover, so d1t2's. None: no covers.
+        assert_eq!(covers, [("None", None), ("X", Some("cover-d1t2"))]);
     }
 
     #[test]
@@ -4966,6 +4823,55 @@ mod tests {
         assert_eq!(values.len(), 3);
         assert!(order_by.contains("date_added DESC"));
         assert!(!where_clause.contains("Artist A"));
+    }
+
+    #[test]
+    fn legacy_per_track_covers_move_into_the_store() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "player-legacy-covers-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(covers::store_dir(&data_dir)).unwrap();
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(600, 600, image::Rgb([10, 120, 200]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        // Two tracks of one album with the same cover, and one whose file is gone.
+        std::fs::write(covers::store_dir(&data_dir).join("1.png"), &png).unwrap();
+        std::fs::write(covers::store_dir(&data_dir).join("2.png"), &png).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tracks (id, path, cover_mime) VALUES
+                 (1, 'a', 'image/png'), (2, 'b', 'image/png'), (3, 'c', 'image/jpeg'), (4, 'd', NULL);",
+        )
+        .unwrap();
+        let conn = Mutex::new(conn);
+        assert_eq!(migrate_legacy_covers(&conn, &data_dir), 3);
+
+        let conn = conn.into_inner().unwrap();
+        let rows: Vec<(Option<String>, Option<String>)> = conn
+            .prepare("SELECT cover_hash, cover_mime FROM tracks ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let hash = covers::hash(&png);
+        assert_eq!(
+            rows,
+            [
+                (Some(hash.clone()), Some("image/png".to_owned())),
+                (Some(hash.clone()), Some("image/png".to_owned())),
+                (None, None),
+                (None, None),
+            ]
+        );
+        assert!(covers::is_stored(&data_dir, &hash));
+        assert_eq!(referenced_cover_hashes(&conn).unwrap(), HashSet::from([hash]));
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 
     #[test]

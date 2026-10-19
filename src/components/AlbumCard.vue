@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
 import type { AlbumSummary } from "../types";
-import { useCovers } from "../composables/useCovers";
-import { useOnVisible } from "../composables/useOnVisible";
+import { coverUrl } from "../utils/covers";
+import CoverImage from "./CoverImage.vue";
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   album: AlbumSummary;
   showArtist?: boolean;
 }>(), {
@@ -15,18 +14,11 @@ const emit = defineEmits<{
   open: [];
 }>();
 
-const { covers, fetchCovers } = useCovers();
-const cardEl = ref<HTMLElement | null>(null);
-useOnVisible(cardEl, () => fetchCovers([{ id: props.album.cover_track_id }]));
-const coverUrl = computed(() => covers.value[props.album.cover_track_id] ?? null);
 </script>
 
 <template>
-  <div ref="cardEl" class="album-card" @click="emit('open')">
-    <div
-      class="album-card-cover"
-      :style="coverUrl ? { backgroundImage: `url(${coverUrl})` } : {}"
-    />
+  <div class="album-card" @click="emit('open')">
+    <CoverImage class="album-card-cover" :src="coverUrl(album.cover_hash, 'medium')" />
     <div class="album-card-title" :title="album.album">{{ album.album }}</div>
     <div class="album-card-meta">
       <template v-if="album.year">{{ album.year }} · </template>

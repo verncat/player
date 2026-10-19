@@ -4,7 +4,7 @@ import type { Track } from "../types";
 import { fetchAlbumTracks } from "../api";
 import { hashToColors } from "../utils/rarity";
 import { artistLabel, hasArtistPage } from "../utils/artists";
-import { useCovers } from "../composables/useCovers";
+import { coverUrl } from "../utils/covers";
 import { useTrackActions } from "../composables/useTrackActions";
 import PageHeader from "./PageHeader.vue";
 import TrackRow from "./TrackRow.vue";
@@ -58,16 +58,14 @@ const discs = computed(() => {
 const totalMinutes = computed(() =>
   Math.round(tracks.value.reduce((sum, t) => sum + (t.duration_secs ?? 0), 0) / 60));
 
-const { covers, fetchCovers } = useCovers();
-const coverTrack = computed(() => tracks.value.find((t) => t.has_cover) ?? null);
-watch(coverTrack, (track) => { if (track) fetchCovers([track]); }, { immediate: true });
-const coverUrl = computed(() => (coverTrack.value ? covers.value[coverTrack.value.id] ?? null : null));
+const coverHash = computed(() => tracks.value.find((t) => t.cover_hash)?.cover_hash ?? null);
+const albumCoverUrl = computed(() => coverUrl(coverHash.value, 'medium'));
 const coverGradient = computed(() => hashToColors(tracks.value[0]?.file_hash ?? null));
 </script>
 
 <template>
   <section class="album-view">
-    <PageHeader kind="Album" :title="name" :cover-url="coverUrl" :cover-gradient="coverGradient">
+    <PageHeader kind="Album" :title="name" :cover-url="albumCoverUrl" :cover-gradient="coverGradient">
       <template #details>
         <a v-if="hasArtistPage(albumArtistOrArtist)" class="artist-link" href="#" @click.prevent="actions.openArtist(albumArtistOrArtist)">{{ albumArtistOrArtist }}</a>
         <template v-else>{{ artistLabel(albumArtistOrArtist) }}</template>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import CoverImage from './CoverImage.vue';
 
 const props = defineProps<{
   coverUrl: string | null;
@@ -31,19 +32,6 @@ const ZIPPY_SPRITE_SIZE = 1.36;
 const ZIPPY_OFFSET_Y_RATIO = 0.8;
 const DETAIL_CAMERA_Y = 0.5;
 const DETAIL_CAMERA_Z = 6.7;
-
-const fallbackStyle = computed(() => {
-  if (props.coverUrl) {
-    return {
-      backgroundImage: `url(${props.coverUrl})`,
-      backgroundSize: 'cover',
-      backgroundPosition: 'center',
-    };
-  }
-  return {
-    background: `linear-gradient(135deg, ${props.colors[0]}, ${props.colors[1]})`,
-  };
-});
 
 const SHEEN_VERTEX_SHADER = `
   varying vec2 vUv;
@@ -577,7 +565,7 @@ onUnmounted(() => cleanup());
 
 <template>
   <div ref="hostRef" class="webgl-album-renderer">
-    <div v-if="failedRef" class="webgl-album-fallback" :style="fallbackStyle" />
+    <CoverImage v-if="failedRef" class="webgl-album-fallback" :src="coverUrl" :placeholder="colors" />
   </div>
 </template>
 

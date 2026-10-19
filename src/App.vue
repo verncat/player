@@ -42,11 +42,11 @@ import ResponsivePopup from "./components/ResponsivePopup.vue";
 import ArtistView from "./components/ArtistView.vue";
 import AlbumView from "./components/AlbumView.vue";
 import TrackRow from "./components/TrackRow.vue";
-import { useCovers } from "./composables/useCovers";
+import CoverImage from "./components/CoverImage.vue";
 import { provideTrackActions } from "./composables/useTrackActions";
-import { observeOnce, provideScrollRoot } from "./composables/useOnVisible";
 import { artistLabel, hasArtistPage } from "./utils/artists";
 import { countAlbumTracks } from "./api";
+import { coverUrl } from "./utils/covers";
 
 // marked: no external links, open in browser via tauri
 marked.use({ gfm: true, breaks: true });
@@ -169,7 +169,6 @@ const editForm = ref({
   date_added: '',
   rarity: '',
 });
-const { covers, fetchCovers, clearCovers } = useCovers();
 const libraryVersion = ref(0);
 
 const HOME_TRACK_PAGE_SIZE = 12;
@@ -1465,7 +1464,7 @@ const soulseekLoading = ref(false);
 const soulseekSearching = ref(false);
 const soulseekError = ref('');
 const soulseekDownloads = ref<Record<string, SoulseekDownloadEvent>>({});
-const soulseekCoverUrls = ref<Record<string, string | null>>({});
+const soulseekCoverHashes = ref<Record<string, string | null>>({});
 const libraryDataDir = ref<string | null>(null);
 let soulseekSearchSeq = 0;
 let unlistenSoulseekDownload: (() => void) | null = null;
@@ -1594,9 +1593,13 @@ function soulseekCoverKey(username: string, filename: string) {
   return soulseekResultKey(username, filename);
 }
 
-function soulseekCoverUrl(result: SoulseekSearchResult) {
+function soulseekCoverHash(result: SoulseekSearchResult) {
   if (!result.coverFilename) return null;
-  return soulseekCoverUrls.value[soulseekCoverKey(result.username, result.coverFilename)] || null;
+  return soulseekCoverHashes.value[soulseekCoverKey(result.username, result.coverFilename)] || null;
+}
+
+function soulseekCoverUrl(result: SoulseekSearchResult) {
+  return coverUrl(soulseekCoverHash(result), 'small');
 }
 
 function soulseekTrackIdFromParts(username: string, filename: string) {
@@ -1866,7 +1869,7 @@ function makeSoulseekTrack(result: SoulseekSearchResult, relativePath: string): 
     album_artist: null,
     disc_number: null,
     album_artist_or_artist: null,
-    has_cover: false,
+    cover_hash: soulseekCoverHash(result),
     track_number: null,
     duration_secs: result.duration,
     file_hash: null,
@@ -2000,13 +2003,6 @@ async function maybeReplaceActiveSoulseekPreviewWithLibraryTrack(
   replaceSoulseekTrackInPlaybackState(previewTrackId, indexedTrack);
   isLiked.value = indexedTrack.is_liked;
   duration.value = indexedTrack.duration_secs || duration.value;
-  if (covers.value[indexedTrack.id] === undefined) {
-    invoke<string | null>('get_track_cover', { id: indexedTrack.id })
-      .then((url) => {
-        covers.value[indexedTrack.id] = url;
-      })
-      .catch(() => {});
-  }
   syncAndroid();
 }
 
@@ -2214,7 +2210,7 @@ async function fetchSoulseekCovers(
   for (const result of results) {
     if (!result.coverFilename || !result.coverSize) continue;
     const key = soulseekCoverKey(result.username, result.coverFilename);
-    if (soulseekCoverUrls.value[key] !== undefined || soulseekCoverLoading.has(key)) continue;
+    if (soulseekCoverHashes.value[key] !== undefined || soulseekCoverLoading.has(key)) continue;
     uniqueResults.set(key, result);
   }
 
@@ -2223,21 +2219,21 @@ async function fetchSoulseekCovers(
 
     soulseekCoverLoading.add(key);
     try {
-      const url = await invoke<string | null>('soulseek_fetch_cover', {
+      const hash = await invoke<string | null>('soulseek_fetch_cover', {
         request: {
           username: result.username,
           coverFilename: result.coverFilename,
           coverSize: result.coverSize,
         },
       });
-      soulseekCoverUrls.value = {
-        ...soulseekCoverUrls.value,
-        [key]: url,
+      soulseekCoverHashes.value = {
+        ...soulseekCoverHashes.value,
+        [key]: hash,
       };
     } catch (error) {
       console.error('Failed to fetch Soulseek cover preview:', error);
-      soulseekCoverUrls.value = {
-        ...soulseekCoverUrls.value,
+      soulseekCoverHashes.value = {
+        ...soulseekCoverHashes.value,
         [key]: null,
       };
     } finally {
@@ -2618,16 +2614,6 @@ function replaceSourceLocalPath(result: SoulseekSearchResult) {
   return null;
 }
 
-async function refreshTrackCover(trackId: number) {
-  try {
-    const coverUrl = await invoke<string | null>('get_track_cover', { id: trackId });
-    covers.value = {
-      ...covers.value,
-      [trackId]: coverUrl,
-    };
-  } catch (_) {}
-}
-
 async function performTrackReplacement(
   trackId: number,
   result: Pick<SoulseekSearchResult, 'username' | 'filename'>,
@@ -2676,8 +2662,6 @@ async function performTrackReplacement(
         },
       };
     }
-
-    await refreshTrackCover(replacedTrack.id);
 
     const previewTrackId = soulseekTrackId(result);
     if (nowPlaying.value?.id === previewTrackId && !!nowPlaying.value.soulseek_preview) {
@@ -2903,28 +2887,12 @@ const beatIntensity = computed(() => {
   return Math.max(0, Math.min(1.4, (beatScale.value - 1) / BEAT_AMP));
 });
 
-const currentCoverUrl = computed(() => {
-  if (!nowPlaying.value) return null;
-  return covers.value[nowPlaying.value.id] ?? null;
-});
+const currentCoverUrl = computed(() => coverUrl(nowPlaying.value?.cover_hash, 'medium'));
 
 const currentRarityColor = computed(() => {
   const rarity = nowPlaying.value?.rarity;
   if (!rarity || rarity === 'Common') return '#d9dee8';
   return rarityColors[rarity] ?? '#d9dee8';
-});
-
-const detailBackdropImageStyle = computed(() => {
-  if (currentCoverUrl.value) {
-    return {
-      backgroundImage: `url(${currentCoverUrl.value})`,
-      backgroundSize: 'cover',
-      backgroundPosition: 'center',
-    };
-  }
-  return {
-    background: `linear-gradient(135deg, ${currentTrack.value.colors[0]}, ${currentTrack.value.colors[1]})`,
-  };
 });
 
 const detailBackdropWashStyle = computed(() => {
@@ -3000,6 +2968,7 @@ function spectrumBarStyle(segment: (typeof spectrumSegments)[number]) {
 const mobileSeekActive = ref(false);
 const seekPreviewPos = ref<number | null>(null);
 const showDetail = ref(false);
+
 let spectrumPollTimer: ReturnType<typeof setInterval> | null = null;
 let spectrumPollPending = false;
 let spectrumPollVersion = 0;
@@ -4289,7 +4258,6 @@ async function loadAppData(reason: 'mount' | 'resume' | 'sync' = 'mount') {
 async function loadRecent() {
   try {
     recentTracks.value = await invoke<Track[]>('get_recent_tracks', { limit: 12 });
-    fetchCovers(recentTracks.value);
   } catch (_) {}
 }
 
@@ -4297,7 +4265,6 @@ async function loadHistory() {
   historyLoading.value = true;
   try {
     historyEntries.value = await invoke<PlayHistoryEntry[]>('get_play_history');
-    fetchCovers(historyEntries.value.map(e => e.track));
   } catch (_) {} finally {
     historyLoading.value = false;
   }
@@ -4478,20 +4445,6 @@ provideTrackActions({
   openAlbum,
 });
 
-provideScrollRoot(contentRef);
-
-// Template version of useOnVisible(), for markup that isn't a component.
-const stopLazyCover = new WeakMap<HTMLElement, () => void>();
-const vLazyCover = {
-  mounted(el: HTMLElement, binding: { value: Track }) {
-    const track = binding.value;
-    stopLazyCover.set(el, observeOnce(el, () => fetchCovers([track]), contentRef.value));
-  },
-  unmounted(el: HTMLElement) {
-    stopLazyCover.get(el)?.();
-    stopLazyCover.delete(el);
-  },
-};
 
 function openEditor(track: Track) {
   editForm.value = {
@@ -4841,7 +4794,6 @@ onMounted(() => {
     const track = trackForHash(p.hash);
     if (track && nowPlaying.value?.id !== track.id) {
       nowPlaying.value = track;
-      void refreshTrackCover(track.id);
     }
     isPlaying.value = p.state === 'playing';
     currentTime.value = Math.floor(p.position ?? 0);
@@ -4859,7 +4811,6 @@ onMounted(() => {
   });
   
   listen('library-changed', () => {
-    clearCovers();
     libraryVersion.value++;
     void loadAppData('sync');
   })
@@ -5146,16 +5097,14 @@ onUnmounted(() => {
                 @touchmove.passive="moveTrackRowLongPress"
                 @touchend="endTrackRowLongPress"
                 @touchcancel="endTrackRowLongPress">
-                <div v-lazy-cover="track" class="cover" :style="covers[track.id]
-                  ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                  : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`">
+                <CoverImage class="cover" :src="coverUrl(track.cover_hash, 'medium')" :placeholder="hashToColors(track.file_hash)">
                   <div class="hover-play">
                     <button class="green-circle" type="button" @click.stop="toggleRecentCardPlayback(idx, track.id)">
                       <svg v-if="!isTrackPlaying(track.id)" viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
                       <svg v-else viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
                     </button>
                   </div>
-                </div>
+                </CoverImage>
                 <div class="card-title">{{ track.title || track.path }}</div>
                 <div class="card-artist">{{ artistLabel(track.artist) }}</div>
               </div>
@@ -5452,11 +5401,9 @@ onUnmounted(() => {
                   class="track-row soulseek-row"
                   @click="activateSoulseekResult(result)"
                 >
-                  <div class="track-cover-sm soulseek-cover-sm" :style="soulseekCoverUrl(result)
-                    ? `background-image: url(${soulseekCoverUrl(result)}); background-size: cover; background-position: center`
-                    : ''">
+                  <CoverImage class="track-cover-sm soulseek-cover-sm" :src="soulseekCoverUrl(result)">
                     <span v-if="!soulseekCoverUrl(result)">{{ result.coverFilename ? 'ART' : 'SL' }}</span>
-                  </div>
+                  </CoverImage>
                   <div class="track-info">
                     <div class="track-title-row">
                       <span class="track-title">{{ result.basename }}</span>
@@ -5580,11 +5527,9 @@ onUnmounted(() => {
                 class="track-row soulseek-row"
                 @click="activateSoulseekResult(result)"
               >
-                <div class="track-cover-sm soulseek-cover-sm" :style="soulseekCoverUrl(result)
-                  ? `background-image: url(${soulseekCoverUrl(result)}); background-size: cover; background-position: center`
-                  : ''">
+                <CoverImage class="track-cover-sm soulseek-cover-sm" :src="soulseekCoverUrl(result)">
                   <span v-if="!soulseekCoverUrl(result)">{{ result.coverFilename ? 'ART' : 'SL' }}</span>
-                </div>
+                </CoverImage>
                 <div class="track-info">
                   <div class="track-title-row">
                     <span class="track-title">{{ result.basename }}</span>
@@ -6013,10 +5958,7 @@ onUnmounted(() => {
                     :style="rarityVars(track.rarity)"
                     @click="dedupToggleTrack(i, track.id)"
                   >
-                    <div class="track-cover-sm" :style="covers[track.id]
-                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                    />
+                    <CoverImage class="track-cover-sm" :src="coverUrl(track.cover_hash, 'small')" :placeholder="hashToColors(track.file_hash)" />
                     <div class="track-info">
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>
@@ -6610,7 +6552,6 @@ onUnmounted(() => {
       v-model:show-device-menu="showDeviceMenu"
       :now-playing="nowPlaying"
       :current-track="currentTrack"
-      :covers="covers"
       :beat-scale="beatScale"
       :is-playing="isPlaying"
       :current-time="currentTime"
@@ -6650,7 +6591,7 @@ onUnmounted(() => {
     <Transition name="detail">
       <div v-if="showDetail && nowPlaying" class="player-detail" @click.self="showDetail = false">
           <div class="detail-backdrop" aria-hidden="true">
-            <div class="detail-backdrop-image" :style="detailBackdropImageStyle" />
+            <CoverImage class="detail-backdrop-image" :src="currentCoverUrl" :placeholder="currentTrack.colors" />
             <div class="detail-backdrop-wash" :style="detailBackdropWashStyle" />
           </div>
           <div class="detail-sheet">
@@ -6675,7 +6616,7 @@ onUnmounted(() => {
               <div class="detail-aura-field" :style="detailAuraStyle" aria-hidden="true" />
               <div class="detail-art-stage">
                 <WebGLAlbumRenderer
-                  :cover-url="currentCoverUrl"
+                  :cover-url="coverUrl(nowPlaying.cover_hash, 'medium')"
                   :colors="currentTrack.colors"
                   :rarity-color="currentRarityColor"
                   :beat-scale="beatScale"

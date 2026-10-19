@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { ref } from "vue";
 import type { Track } from "../types";
 import { formatDuration } from "../utils/format";
 import { hashToColors, rarityClass, rarityVars } from "../utils/rarity";
-import { useCovers } from "../composables/useCovers";
-import { useOnVisible } from "../composables/useOnVisible";
+import { coverUrl } from "../utils/covers";
 import { useTrackActions, type TrackButton } from "../composables/useTrackActions";
+import CoverImage from "./CoverImage.vue";
 import TrackMeta from "./TrackMeta.vue";
 
 // Everything except "play" goes through the injected TrackActions, because
@@ -39,18 +38,6 @@ const emit = defineEmits<{
 
 const actions = useTrackActions();
 
-const { covers, fetchCovers } = useCovers();
-const rowEl = ref<HTMLElement | null>(null);
-useOnVisible(rowEl, () => {
-  if (props.showCover) fetchCovers([props.track]);
-});
-
-function coverStyle() {
-  const url = covers.value[props.track.id];
-  if (url) return { backgroundImage: `url(${url})`, backgroundSize: 'cover', backgroundPosition: 'center' };
-  const [a, b] = hashToColors(props.track.file_hash);
-  return { background: `linear-gradient(135deg, ${a}, ${b})` };
-}
 
 const LONG_PRESS_MS = 420;
 const MOVE_TOLERANCE_PX = 12;
@@ -91,7 +78,6 @@ function onClick() {
 
 <template>
   <div
-    ref="rowEl"
     class="track-row"
     :class="[rarityClass(track.rarity), {
       'track-row-current': actions.isCurrent(track.id),
@@ -105,7 +91,12 @@ function onClick() {
     @touchend="cancelPress"
     @touchcancel="cancelPress"
   >
-    <div v-if="showCover" class="track-cover-sm" :style="coverStyle()" />
+    <CoverImage
+      v-if="showCover"
+      class="track-cover-sm"
+      :src="coverUrl(track.cover_hash, 'small')"
+      :placeholder="hashToColors(track.file_hash)"
+    />
     <span v-if="showNumber" class="track-num">{{ track.track_number ?? '–' }}</span>
     <div class="track-info">
       <div class="track-title-row">

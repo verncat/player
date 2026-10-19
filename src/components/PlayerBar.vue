@@ -5,6 +5,8 @@ import type { AudioDevice, Track } from "../types";
 import { formatDuration, formatSampleRate, formatTime } from "../utils/format";
 import { hashToColors } from "../utils/rarity";
 import { artistLabel } from "../utils/artists";
+import { coverUrl } from "../utils/covers";
+import CoverImage from "./CoverImage.vue";
 
 interface CurrentTrackSummary {
   title: string;
@@ -25,7 +27,6 @@ interface Peer {
 const props = defineProps<{
   nowPlaying: Track | null;
   currentTrack: CurrentTrackSummary;
-  covers: Record<number, string | null>;
   beatScale: number;
   isLiked: boolean;
   isShuffled: boolean;
@@ -436,10 +437,7 @@ onUnmounted(() => {
 
     <footer class="player">
     <div class="player-left" @click="nowPlaying && emit('openDetail')" style="cursor: pointer;">
-      <div class="thumb" :style="{
-        ...(nowPlaying && covers[nowPlaying.id]
-          ? { backgroundImage: `url(${covers[nowPlaying.id]})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-          : { background: `linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})` }),
+      <CoverImage class="thumb" :src="coverUrl(nowPlaying?.cover_hash, 'small')" :placeholder="currentTrack.colors" :style="{
         transform: `scale(${beatScale})`,
         transformOrigin: 'center center',
         willChange: 'transform',
@@ -501,9 +499,7 @@ onUnmounted(() => {
         <div class="queue-now" v-if="nowPlaying">
           <span class="queue-now-label">Now playing</span>
           <div class="queue-item active">
-            <div class="queue-item-cover" :style="covers[nowPlaying.id]
-              ? `background-image: url(${covers[nowPlaying.id]}); background-size: cover; background-position: center`
-              : `background: linear-gradient(135deg, ${hashToColors(nowPlaying.file_hash)[0]}, ${hashToColors(nowPlaying.file_hash)[1]})`" />
+            <CoverImage class="queue-item-cover" :src="coverUrl(nowPlaying.cover_hash, 'small')" :placeholder="hashToColors(nowPlaying.file_hash)" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ nowPlaying.title || nowPlaying.path }}</span>
               <span class="queue-item-artist">{{ artistLabel(nowPlaying.artist) }}</span>
@@ -519,9 +515,7 @@ onUnmounted(() => {
             class="queue-item"
             @click="emit('jumpToQueueItem', i)"
           >
-            <div class="queue-item-cover" :style="covers[track.id]
-              ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-              : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`" />
+            <CoverImage class="queue-item-cover" :src="coverUrl(track.cover_hash, 'small')" :placeholder="hashToColors(track.file_hash)" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ track.title || track.path }}</span>
               <span class="queue-item-artist">{{ artistLabel(track.artist) }}</span>

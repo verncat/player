@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import CoverImage from "./CoverImage.vue";
+
 defineProps<{
   kind: string;
   title: string;
@@ -9,14 +11,11 @@ defineProps<{
 
 <template>
   <header class="page-header">
-    <div
+    <CoverImage
       v-if="coverUrl !== undefined || coverGradient"
       class="page-cover"
-      :style="coverUrl
-        ? { backgroundImage: `url(${coverUrl})` }
-        : coverGradient
-          ? { background: `linear-gradient(135deg, ${coverGradient[0]}, ${coverGradient[1]})` }
-          : {}"
+      :src="coverUrl ?? null"
+      :placeholder="coverGradient"
     />
     <div class="page-heading">
       <div class="page-kind">{{ kind }}</div>
