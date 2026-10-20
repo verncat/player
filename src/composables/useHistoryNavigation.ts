@@ -19,6 +19,7 @@ interface TransientEntry {
   id: number;
   index: number;
   onLeave: () => void;
+  forward: HistoryEntry[];
 }
 
 function isHistoryEntry(state: unknown): state is HistoryEntry {
@@ -28,19 +29,43 @@ function isHistoryEntry(state: unknown): state is HistoryEntry {
 // Module-level: there is one browser history per window.
 const currentIndex = ref(0);
 const lastIndex = ref(0);
+const entries: HistoryEntry[] = [];
 let currentPage: unknown = null;
 let showPage: ((page: unknown) => void) | null = null;
 let transient: TransientEntry | null = null;
 let nextTransientId = 1;
+/** Forward entries to push again once back from a transient entry lands on the page under it. */
+let pendingRestore: { index: number; forward: HistoryEntry[] } | null = null;
+let ignoreNextPopState = false;
 
-/** Stops tracking the transient entry. It stays in the browser history, past where forward can reach. */
+/**
+ * Stops tracking the transient entry. Unless back restores forward entries
+ * over it, it stays in the browser history, past where forward can reach.
+ */
 function forgetTransient(): TransientEntry | null {
   const forgotten = transient;
   if (forgotten) {
     transient = null;
-    lastIndex.value = forgotten.index - 1;
+    lastIndex.value = forgotten.index - 1 + forgotten.forward.length;
   }
   return forgotten;
+}
+
+/** Forgets the transient entry, which back is leaving, and restores what was ahead of it. */
+function leaveTransientBack() {
+  const left = forgetTransient();
+  if (left) pendingRestore = { index: left.index - 1, forward: left.forward };
+  return left;
+}
+
+function restoreForward(forward: HistoryEntry[]) {
+  for (const entry of forward) history.pushState(entry, '');
+  entries.splice(currentIndex.value + 1, Infinity, ...forward);
+  lastIndex.value = currentIndex.value + forward.length;
+  if (forward.length) {
+    ignoreNextPopState = true;
+    history.go(-forward.length);
+  }
 }
 
 /** Adds an entry. A transient entry gets replaced, so back never returns to it. */
@@ -51,14 +76,19 @@ function addEntry(page: unknown, transientId?: number) {
   lastIndex.value = currentIndex.value;
   currentPage = page;
   const state: HistoryEntry = { index: currentIndex.value, page, transientId };
+  entries.splice(currentIndex.value, Infinity, state);
   if (replaced) history.replaceState(state, '');
   else history.pushState(state, '');
 }
 
 function onPopState(event: PopStateEvent) {
   if (!isHistoryEntry(event.state)) return;
+  if (ignoreNextPopState) {
+    ignoreNextPopState = false;
+    return;
+  }
   const entry = event.state;
-  if (transient && entry.transientId !== transient.id) forgetTransient()?.onLeave();
+  if (transient && entry.transientId !== transient.id) leaveTransientBack()?.onLeave();
   if (entry.transientId !== undefined && entry.transientId !== transient?.id) {
     // A forgotten transient entry, reached with the mouse's forward button.
     history.back();
@@ -67,6 +97,9 @@ function onPopState(event: PopStateEvent) {
   currentIndex.value = entry.index;
   currentPage = entry.page;
   showPage?.(entry.page);
+  const restore = pendingRestore;
+  pendingRestore = null;
+  if (restore?.index === entry.index) restoreForward(restore.forward);
 }
 
 /**
@@ -77,7 +110,9 @@ export function useHistoryNavigation<P>(initialPage: P, show: (page: P) => void)
   currentPage = initialPage;
   currentIndex.value = 0;
   lastIndex.value = 0;
-  history.replaceState({ index: 0, page: initialPage } satisfies HistoryEntry, '');
+  const initialEntry: HistoryEntry = { index: 0, page: initialPage };
+  entries.splice(0, Infinity, initialEntry);
+  history.replaceState(initialEntry, '');
   showPage = show as (page: unknown) => void;
 
   onMounted(() => window.addEventListener('popstate', onPopState));
@@ -92,7 +127,9 @@ export function useHistoryNavigation<P>(initialPage: P, show: (page: P) => void)
     /** Changes the current entry's page, e.g. after the page's subject was renamed. */
     replace: (page: P) => {
       currentPage = page;
-      history.replaceState({ ...(history.state as HistoryEntry), page }, '');
+      const entry: HistoryEntry = { ...(history.state as HistoryEntry), page };
+      entries[entry.index] = entry;
+      history.replaceState(entry, '');
     },
     back: () => history.back(),
     forward: () => history.forward(),
@@ -112,14 +149,15 @@ export function useTransientHistoryEntry(isActive: WatchSource<boolean>, onLeave
 
   function remove() {
     if (transient?.id !== id) return;
-    forgetTransient();
+    leaveTransientBack();
     history.back();
   }
 
   watch(isActive, (active) => {
     if (active && transient?.id !== id) {
+      const forward = transient?.forward ?? entries.slice(currentIndex.value + 1, lastIndex.value + 1);
       addEntry(currentPage, id);
-      transient = { id, index: currentIndex.value, onLeave };
+      transient = { id, index: currentIndex.value, onLeave, forward };
     } else if (!active) {
       remove();
     }
