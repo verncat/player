@@ -14,7 +14,7 @@ use std::thread;
 use tauri::Emitter;
 
 use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_OPUS};
 use symphonia::core::formats::{FormatOptions, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -728,7 +728,10 @@ fn decode_thread_seek(
         .format(
             &hint,
             mss,
-            &FormatOptions::default(),
+            &FormatOptions {
+                enable_gapless: true,
+                ..FormatOptions::default()
+            },
             &MetadataOptions::default(),
         )
         .map_err(|e| format!("probe error: {e}"))?;
@@ -739,6 +742,7 @@ fn decode_thread_seek(
 
     let track_id = track.id;
     let codec_params = track.codec_params.clone();
+    let is_opus = codec_params.codec == CODEC_TYPE_OPUS;
 
     let sample_rate = codec_params.sample_rate.unwrap_or(44100);
     shared
@@ -760,17 +764,23 @@ fn decode_thread_seek(
         shared.duration_ms.store(dur_ms, Ordering::SeqCst);
     }
 
-    let mut decoder = symphonia::default::get_codecs()
+    let mut decoder = crate::audio_codecs::registry()
         .make(&codec_params, &DecoderOptions::default())
         .map_err(|e| format!("decoder error: {e}"))?;
 
     // Seek if requested
     let absolute_seek_secs = source.segment_start_secs + seek_secs.max(0.0);
     if absolute_seek_secs > 0.0 {
+        // Opus needs at least 80 ms of decoded pre-roll after seeking.
+        let decode_from = if is_opus {
+            (absolute_seek_secs - 0.080).max(0.0)
+        } else {
+            absolute_seek_secs
+        };
         let _ = format.seek(
             SeekMode::Coarse,
             SeekTo::Time {
-                time: Time::new(absolute_seek_secs as u64, absolute_seek_secs.fract()),
+                time: Time::new(decode_from as u64, decode_from.fract()),
                 track_id: Some(track_id),
             },
         );
@@ -821,8 +831,9 @@ fn decode_thread_seek(
         }
 
         if let Some(packet_start) = packet_time_secs(&codec_params, packet.ts()) {
-            if packet_start + packet_duration_secs(&codec_params, packet.dur())
-                <= source.segment_start_secs
+            if !is_opus
+                && packet_start + packet_duration_secs(&codec_params, packet.dur())
+                    <= source.segment_start_secs
             {
                 continue;
             }
@@ -835,7 +846,17 @@ fn decode_thread_seek(
         }
 
         match decoder.decode(&packet) {
-            Ok(decoded) => {
+            Ok(mut decoded) => {
+                if is_opus {
+                    crate::audio_codecs::trim_opus_output(
+                        &mut decoded,
+                        packet.ts(),
+                        (absolute_seek_secs * sample_rate as f64).round() as u64,
+                        source
+                            .segment_end_secs
+                            .map(|end| (end * sample_rate as f64).round() as u64),
+                    );
+                }
                 write_to_ring(
                     &shared,
                     &decoded,

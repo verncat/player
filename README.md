@@ -135,6 +135,7 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 ### Playback
 
 - Native audio decoding and playback in Rust.
+- Opus playback through bundled libopus, including seeking, encoder delay, and end padding.
 - Seek, pause, resume, stop, and volume control.
 - Output device selection.
 - Playback spectrum data for visuals.
@@ -199,7 +200,7 @@ pnpm tauri build
 - Frontend: Vue 3, TypeScript, Vite.
 - Desktop/mobile shell: Tauri 2.
 - Backend: Rust.
-- Audio decode: Symphonia.
+- Audio decode: Symphonia with bundled libopus for Opus.
 - Audio output: CPAL.
 - Metadata extraction: lofty.
 - Local database: SQLite via rusqlite.
@@ -273,6 +274,9 @@ to capture directory walking, database lock waits, metadata and cover reads,
 file hashing, SQLite writes, CUE indexing, stale cleanup, and watcher batches.
 
 ### Build desktop app
+
+Native builds require CMake and a C/C++ toolchain to compile bundled libopus.
+No separate Opus library is required on the user's device.
 
 ```bash
 pnpm tauri build

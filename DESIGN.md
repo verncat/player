@@ -21,7 +21,7 @@ The project is not designed as a cloud service, a streaming client, or a multi-u
 - Frontend: Vue 3 + TypeScript + Vite.
 - Shell/runtime: Tauri 2.
 - Backend: Rust.
-- Audio decode: Symphonia.
+- Audio decode: Symphonia with a bundled libopus decoder for Opus.
 - Audio output: CPAL.
 - Local database: SQLite via rusqlite.
 - File watching: notify.
@@ -398,6 +398,10 @@ That makes iteration on UI rules easy, but it means smart playlist results are c
 - End-of-track notification back into the frontend.
 
 ### 8.2 Playback pipeline
+
+[src-tauri/src/audio_codecs.rs](src-tauri/src/audio_codecs.rs) provides a shared codec registry with all enabled Symphonia codecs and an Opus adapter backed by the `opus` crate. Libopus is compiled and linked statically. The adapter validates OpusHead, applies its output gain, handles packets up to 120 ms, and maps mono through 7.1 channel layouts into Symphonia channel order. Ogg Opus uses gapless packet trimming and 80 ms of seek pre-roll, discarding decoded samples before the requested position.
+
+The local `symphonia-format-ogg` Cargo patch fixes Opus pre-skip and end padding, including streams containing only one audio page and packets queued before start/end probing. Its provenance and changes are recorded in [src-tauri/vendor/symphonia-format-ogg/PATCHES.md](src-tauri/vendor/symphonia-format-ogg/PATCHES.md). Other Ogg codecs retain the upstream demuxer behavior. Synthetic fixtures cover Opus decoding and seeking, channel order, long packets, and FLAC/MP3/Vorbis regression checks without an audio device.
 
 ```mermaid
 flowchart LR
