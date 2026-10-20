@@ -8,6 +8,7 @@ const rootDir = path.resolve(scriptDir, '..');
 
 const packageJsonPath = path.join(rootDir, 'package.json');
 const cargoTomlPath = path.join(rootDir, 'src-tauri', 'Cargo.toml');
+const cargoLockPath = path.join(rootDir, 'src-tauri', 'Cargo.lock');
 const tauriConfigPath = path.join(rootDir, 'src-tauri', 'tauri.conf.json');
 
 function readJson(filePath) {
@@ -38,6 +39,23 @@ function syncJsonVersion(filePath, version) {
   return true;
 }
 
+function syncCargoLockVersion(filePath, version) {
+  const manifest = readFileSync(cargoTomlPath, 'utf8');
+  const name = manifest.match(/^name = "([^"]+)"$/m)?.[1];
+  const source = readFileSync(filePath, 'utf8');
+  let found = false;
+  const next = source.replace(/(\[\[package\]\]\r?\nname = "([^"]+)"\r?\nversion = ")[^"]+("(?:\r?\n|$))/g,
+    (entry, prefix, packageName, suffix) => {
+      if (packageName !== name) return entry;
+      found = true;
+      return `${prefix}${version}${suffix}`;
+    });
+  if (!found) throw new Error(`Could not find ${name} in Cargo.lock`);
+  if (next === source) return false;
+  writeFileSync(filePath, next);
+  return true;
+}
+
 const packageJson = readJson(packageJsonPath);
 const version = packageJson.version;
 
@@ -50,6 +68,10 @@ const changed = [];
 
 if (syncCargoVersion(cargoTomlPath, version)) {
   changed.push(path.relative(rootDir, cargoTomlPath));
+}
+
+if (syncCargoLockVersion(cargoLockPath, version)) {
+  changed.push(path.relative(rootDir, cargoLockPath));
 }
 
 if (syncJsonVersion(tauriConfigPath, version)) {
