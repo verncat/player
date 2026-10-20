@@ -3,6 +3,7 @@ import App from "./App.vue";
 import "./styles/appearance.css";
 import "./styles/audio-select.css";
 import "./styles/glass.css";
+import "./styles/rarity.css";
 
 const horizontalScroll: Directive = {
   mounted(el: HTMLElement) {

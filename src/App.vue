@@ -15,6 +15,7 @@ import {
   type SoulseekSearchResult,
   type SoulseekStatus,
   type Track,
+  type TrackPage,
 } from "./types";
 import {
   formatBytes,
@@ -43,6 +44,14 @@ import SettingsView from "./components/SettingsView.vue";
 import AboutPanel from "./components/AboutPanel.vue";
 import { useAppearance } from "./composables/useAppearance";
 import { SETTINGS_SECTIONS, type SettingsSection, type DeviceSettings, type AboutInfo, type AboutUpdateStatus } from "./types/settings";
+import ArtistView from "./components/ArtistView.vue";
+import AlbumView from "./components/AlbumView.vue";
+import TrackRow from "./components/TrackRow.vue";
+import { useCovers } from "./composables/useCovers";
+import { provideTrackActions } from "./composables/useTrackActions";
+import { observeOnce, provideScrollRoot } from "./composables/useOnVisible";
+import { artistLabel, hasArtistPage } from "./utils/artists";
+import { countAlbumTracks } from "./api";
 
 const { preferences: appearance, reducedMotion } = useAppearance();
 watch([reducedMotion, () => appearance.rarityAnimations], ([reduce, rarity]) => {
@@ -89,32 +98,64 @@ function openSettings(section: SettingsSection | null = null) {
   showDeviceMenu.value = false;
   showQueueMenu.value = false;
 }
-const navHistory = ref<string[]>(['home']);
+const navTarget = ref('');
+const navTargetArtist = ref('');
+interface NavEntry { nav: string; target: string; targetArtist: string }
+const navHistory = ref<NavEntry[]>([{ nav: 'home', target: '', targetArtist: '' }]);
 const navCursor = ref(0);
 let _navSkipHistory = false;
+function pushNavHistory(entry: NavEntry) {
+  const current = navHistory.value[navCursor.value];
+  if (current && current.nav === entry.nav && current.target === entry.target
+    && current.targetArtist === entry.targetArtist) return;
+  navHistory.value = navHistory.value.slice(0, navCursor.value + 1);
+  navHistory.value.push(entry);
+  navCursor.value = navHistory.value.length - 1;
+}
 watch(activeNav, (nav) => {
   if (_navSkipHistory) return;
-  const history = navHistory.value;
-  if (history[navCursor.value] === nav) return;
-  navHistory.value = history.slice(0, navCursor.value + 1);
-  navHistory.value.push(nav);
-  navCursor.value = navHistory.value.length - 1;
+  const hasTarget = nav === 'artist' || nav === 'album';
+  pushNavHistory({
+    nav,
+    target: hasTarget ? navTarget.value : '',
+    targetArtist: nav === 'album' ? navTargetArtist.value : '',
+  });
 });
 const canNavBack = computed(() => navCursor.value > 0);
 const canNavForward = computed(() => navCursor.value < navHistory.value.length - 1);
-function navBack() {
-  if (!canNavBack.value) return;
+function goToNavEntry(cursor: number) {
   _navSkipHistory = true;
-  navCursor.value--;
-  activeNav.value = navHistory.value[navCursor.value];
+  navCursor.value = cursor;
+  const entry = navHistory.value[cursor];
+  navTarget.value = entry.target;
+  navTargetArtist.value = entry.targetArtist;
+  activeNav.value = entry.nav;
   nextTick(() => { _navSkipHistory = false; });
 }
+function navBack() {
+  if (canNavBack.value) goToNavEntry(navCursor.value - 1);
+}
 function navForward() {
-  if (!canNavForward.value) return;
-  _navSkipHistory = true;
-  navCursor.value++;
-  activeNav.value = navHistory.value[navCursor.value];
-  nextTick(() => { _navSkipHistory = false; });
+  if (canNavForward.value) goToNavEntry(navCursor.value + 1);
+}
+function openArtist(name: string) {
+  navTarget.value = name;
+  navTargetArtist.value = '';
+  activeNav.value = 'artist';
+  pushNavHistory({ nav: 'artist', target: name, targetArtist: '' });
+  showMobileNav.value = false;
+}
+function replaceAlbumNavEntry(name: string, albumArtistOrArtist: string) {
+  navTarget.value = name;
+  navTargetArtist.value = albumArtistOrArtist;
+  navHistory.value[navCursor.value] = { nav: 'album', target: name, targetArtist: albumArtistOrArtist };
+}
+function openAlbum(name: string, albumArtistOrArtist: string) {
+  navTarget.value = name;
+  navTargetArtist.value = albumArtistOrArtist;
+  activeNav.value = 'album';
+  pushNavHistory({ nav: 'album', target: name, targetArtist: albumArtistOrArtist });
+  showMobileNav.value = false;
 }
 const libraryTracks = ref<Track[]>([]);
 const showDuplicateTracks = ref(false);
@@ -139,7 +180,9 @@ const editForm = ref({
   title: '',
   artist: '',
   album: '',
+  album_artist: '',
   track_number: null as number | null,
+  disc_number: null as number | null,
   year: null as number | null,
   genre: '',
   tags: '',
@@ -148,19 +191,11 @@ const editForm = ref({
   date_added: '',
   rarity: '',
 });
-const covers = ref<Record<number, string | null>>({});
-
-interface TrackPage {
-  tracks: Track[];
-  total: number;
-  offset: number;
-  has_more: boolean;
-}
+const { covers, fetchCovers, clearCovers } = useCovers();
+const libraryVersion = ref(0);
 
 const HOME_TRACK_PAGE_SIZE = 12;
 const LIBRARY_TRACK_PAGE_SIZE = 50;
-const MAX_CACHED_COVERS = 100;
-const MAX_CONCURRENT_COVER_LOADS = 3;
 
 function filterDuplicateTracks(tracks: Track[]) {
   return showDuplicateTracks.value ? tracks : tracks.filter((track) => !track.is_duplicate);
@@ -564,11 +599,6 @@ function openAddToPlaylistMenuAt(track: Track, x: number, y: number) {
   addToPlaylistMenu.value = { track, x: pos.x, y: pos.y };
 }
 
-function openAddToPlaylistMenu(e: MouseEvent, track: Track) {
-  e.stopPropagation();
-  openAddToPlaylistMenuAt(track, e.clientX, e.clientY);
-}
-
 function openTrackContextMenuAt(track: Track, x: number, y: number, playlistId: number | null = null) {
   const pos = clampMenuPosition(x, y);
   homePinnedContextMenu.value = null;
@@ -884,7 +914,7 @@ function openTrackReplaceDialogFromTrackContext() {
 }
 
 // ── Smart Playlists ──────────────────────────────────────────────────────────
-type SPField = 'any' | 'title' | 'artist' | 'album' | 'genre' | 'tags' | 'rarity' | 'path' | 'extension' | 'track_number' | 'duration_secs' | 'year' | 'play_count' | 'is_liked' | 'date_added' | 'sort';
+type SPField = 'any' | 'title' | 'artist' | 'album' | 'album_artist_or_artist' | 'genre' | 'tags' | 'rarity' | 'path' | 'extension' | 'disc_number' | 'track_number' | 'duration_secs' | 'year' | 'play_count' | 'is_liked' | 'date_added' | 'sort';
 type SPOp = 'contains' | 'in' | 'eq' | 'gte' | 'lte' | 'is_true' | 'is_false' | 'sort_asc' | 'sort_desc';
 type SPSortField = Exclude<SPField, 'any' | 'sort'>;
 type SPSortOp = Extract<SPOp, 'sort_asc' | 'sort_desc'>;
@@ -902,11 +932,13 @@ const SP_SORT_FIELD_OPTIONS: Array<{ value: SPSortField; label: string }> = [
   { value: 'title', label: 'Title' },
   { value: 'artist', label: 'Artist' },
   { value: 'album', label: 'Album' },
+  { value: 'album_artist_or_artist', label: 'Album artist' },
   { value: 'genre', label: 'Genre' },
   { value: 'tags', label: 'Tags' },
   { value: 'rarity', label: 'Rarity' },
   { value: 'path', label: 'Path' },
   { value: 'extension', label: 'Extension' },
+  { value: 'disc_number', label: 'Disc #' },
   { value: 'track_number', label: 'Track #' },
   { value: 'duration_secs', label: 'Duration (sec)' },
   { value: 'year', label: 'Year' },
@@ -998,8 +1030,7 @@ async function loadSmartPlaylistPreviews() {
 }
 
 async function loadSmartPlaylistValues(field: SPField) {
-  if (field !== 'artist' && field !== 'album' && field !== 'genre'
-    && field !== 'tags' && field !== 'rarity' && field !== 'extension') return;
+  if (spFieldType(field) !== 'multiselect') return;
   if (smartPlaylistValues.value[field]) return;
   try {
     const values = await invoke<string[]>('get_smart_playlist_values', { field });
@@ -1128,22 +1159,26 @@ function removeSPRule(ruleId: string) {
   saveSP();
 }
 function onSPRuleFieldChange(rule: SPRule) {
-  const f = rule.field;
-  if (f === 'sort') { rule.op = 'sort_asc'; rule.value = 'title'; }
-  else if (f === 'is_liked') { rule.op = 'is_true'; rule.value = ''; }
-  else if (f === 'year' || f === 'play_count' || f === 'track_number' || f === 'duration_secs') { rule.op = 'gte'; rule.value = '0'; }
-  else if (f === 'date_added') { rule.op = 'gte'; rule.value = new Date().toISOString().slice(0, 10); }
-  else if (f === 'genre' || f === 'tags' || f === 'rarity' || f === 'extension' || f === 'artist' || f === 'album') { rule.op = 'in'; rule.value = '[]'; }
-  else { rule.op = 'contains'; rule.value = ''; }
+  switch (spFieldType(rule.field)) {
+    case 'sort': rule.op = 'sort_asc'; rule.value = 'title'; break;
+    case 'bool': rule.op = 'is_true'; rule.value = ''; break;
+    case 'number': rule.op = 'gte'; rule.value = '0'; break;
+    case 'date': rule.op = 'gte'; rule.value = new Date().toISOString().slice(0, 10); break;
+    case 'multiselect': rule.op = 'in'; rule.value = '[]'; break;
+    default: rule.op = 'contains'; rule.value = '';
+  }
   saveSP();
 }
 function spFieldType(field: SPField): 'text' | 'multiselect' | 'number' | 'bool' | 'date' | 'sort' {
-  if (field === 'sort') return 'sort';
-  if (field === 'is_liked') return 'bool';
-  if (field === 'year' || field === 'play_count' || field === 'track_number' || field === 'duration_secs') return 'number';
-  if (field === 'date_added') return 'date';
-  if (field === 'genre' || field === 'tags' || field === 'rarity' || field === 'extension' || field === 'artist' || field === 'album') return 'multiselect';
-  return 'text';
+  switch (field) {
+    case 'sort': return 'sort';
+    case 'is_liked': return 'bool';
+    case 'year': case 'play_count': case 'disc_number': case 'track_number': case 'duration_secs': return 'number';
+    case 'date_added': return 'date';
+    case 'genre': case 'tags': case 'rarity': case 'extension': case 'artist': case 'album': case 'album_artist_or_artist':
+      return 'multiselect';
+    default: return 'text';
+  }
 }
 function spUniqueValues(field: SPField): string[] {
   return smartPlaylistValues.value[field] ?? [];
@@ -1753,6 +1788,10 @@ function makeSoulseekTrack(result: SoulseekSearchResult, relativePath: string): 
     title: result.basename,
     artist: result.username,
     album: null,
+    album_artist: null,
+    disc_number: null,
+    album_artist_or_artist: null,
+    has_cover: false,
     track_number: null,
     duration_secs: result.duration,
     file_hash: null,
@@ -2773,7 +2812,7 @@ const currentTrack = computed<{ title: string; artist: string; colors: [string, 
   if (nowPlaying.value) {
     return {
       title: nowPlaying.value.title || nowPlaying.value.path,
-      artist: nowPlaying.value.artist || 'Unknown',
+      artist: artistLabel(nowPlaying.value.artist),
       colors: hashToColors(nowPlaying.value.file_hash),
     };
   }
@@ -2781,7 +2820,7 @@ const currentTrack = computed<{ title: string; artist: string; colors: [string, 
   if (rp && (rp.title || rp.hash)) {
     return {
       title: rp.title || 'Unknown',
-      artist: rp.artist || 'Unknown',
+      artist: artistLabel(rp.artist),
       colors: hashToColors(rp.hash ?? null),
     };
   }
@@ -4024,7 +4063,7 @@ const libraryPageLoading = computed(() => libraryLoading.value || localSearchLoa
 const groupedByArtist = computed(() => {
   const map = new Map<string, Track[]>();
   for (const t of filteredTracks.value) {
-    const key = t.artist || 'Unknown Artist';
+    const key = t.artist || ''; // '' = unknown artist
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(t);
   }
@@ -4356,73 +4395,30 @@ function formatHistoryDate(ts: number): string {
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ', ' + time;
 }
 
-const coverLoadQueue: Track[] = [];
-const queuedCoverIds = new Set<number>();
-const coverLastUsed = new Map<number, number>();
-let activeCoverLoads = 0;
+provideTrackActions({
+  isCurrent: isCurrentTrack,
+  isNext: isNextTrack,
+  toggleLike: (track) => void toggleLike(track),
+  identify: (track) => void identifySingle(track),
+  edit: openEditor,
+  openAddToPlaylist: openAddToPlaylistMenuAt,
+  openMenu: openTrackContextMenuAt,
+  openArtist,
+  openAlbum,
+});
 
-function trimCoverCache() {
-  while (coverLastUsed.size > MAX_CACHED_COVERS) {
-    const oldest = coverLastUsed.keys().next().value as number | undefined;
-    if (oldest === undefined) return;
-    coverLastUsed.delete(oldest);
-    delete covers.value[oldest];
-  }
-}
+provideScrollRoot(contentRef);
 
-function pumpCoverQueue() {
-  while (activeCoverLoads < MAX_CONCURRENT_COVER_LOADS && coverLoadQueue.length) {
-    const track = coverLoadQueue.shift()!;
-    queuedCoverIds.delete(track.id);
-    activeCoverLoads += 1;
-    invoke<string | null>('get_track_cover', { id: track.id })
-      .then((url) => {
-        covers.value[track.id] = url;
-        coverLastUsed.delete(track.id);
-        coverLastUsed.set(track.id, Date.now());
-        trimCoverCache();
-      })
-      .catch(() => {
-        // Cache a negative result too, otherwise rows without covers retry on
-        // every rerender.
-        covers.value[track.id] = null;
-      })
-      .finally(() => {
-        activeCoverLoads -= 1;
-        pumpCoverQueue();
-      });
-  }
-}
-
-async function fetchCovers(tracks: Track[]) {
-  for (const track of tracks) {
-    if (covers.value[track.id] !== undefined || queuedCoverIds.has(track.id)) continue;
-    queuedCoverIds.add(track.id);
-    coverLoadQueue.push(track);
-  }
-  pumpCoverQueue();
-}
-
-const lazyCoverObservers = new WeakMap<HTMLElement, IntersectionObserver>();
+// Template version of useOnVisible(), for markup that isn't a component.
+const stopLazyCover = new WeakMap<HTMLElement, () => void>();
 const vLazyCover = {
   mounted(el: HTMLElement, binding: { value: Track }) {
     const track = binding.value;
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      observer.disconnect();
-      lazyCoverObservers.delete(el);
-      void fetchCovers([track]);
-    }, {
-      root: contentRef.value,
-      // Start a little before the row is on screen to avoid visible pop-in.
-      rootMargin: '240px 0px',
-    });
-    lazyCoverObservers.set(el, observer);
-    observer.observe(el);
+    stopLazyCover.set(el, observeOnce(el, () => fetchCovers([track]), contentRef.value));
   },
   unmounted(el: HTMLElement) {
-    lazyCoverObservers.get(el)?.disconnect();
-    lazyCoverObservers.delete(el);
+    stopLazyCover.get(el)?.();
+    stopLazyCover.delete(el);
   },
 };
 
@@ -4431,7 +4427,9 @@ function openEditor(track: Track) {
     title: track.title || '',
     artist: track.artist || '',
     album: track.album || '',
+    album_artist: track.album_artist || '',
     track_number: track.track_number,
+    disc_number: track.disc_number,
     year: track.year,
     genre: track.genre || '',
     tags: track.tags || '',
@@ -4447,12 +4445,14 @@ async function saveTrack() {
   const activeTrack = editingTrack.value;
   if (!activeTrack) return;
   const activePlaylistId = playlistView.value?.id ?? null;
-  await invoke('update_track', {
+  const savedTrack = await invoke<Track>('update_track', {
     id: activeTrack.id,
     title: editForm.value.title || null,
     artist: editForm.value.artist || null,
     album: editForm.value.album || null,
+    albumArtist: editForm.value.album_artist.trim(),
     trackNumber: normalizeOptionalInteger(editForm.value.track_number),
+    discNumber: normalizeOptionalInteger(editForm.value.disc_number),
     year: normalizeOptionalInteger(editForm.value.year),
     genre: editForm.value.genre.trim() || null,
     tags: normalizeTrackTagsInput(editForm.value.tags),
@@ -4462,17 +4462,16 @@ async function saveTrack() {
     rarity: editForm.value.rarity.trim() || null,
   });
   editingTrack.value = null;
+  await followEditedTrackFromAlbumPage(activeTrack, savedTrack);
+  libraryVersion.value++; // so an open artist/album page reloads too
   await loadLibrary();
   await loadRecent();
   if (activePlaylistId !== null && playlistView.value?.id === activePlaylistId) {
     await loadPlaylistPage(activePlaylistId, playlistView.value.name);
   }
   if (nowPlaying.value?.id === activeTrack.id) {
-    const refreshedTrack = libraryTracks.value.find((track) => track.id === activeTrack.id);
-    if (refreshedTrack) {
-      nowPlaying.value = refreshedTrack;
-      isLiked.value = refreshedTrack.is_liked;
-    }
+    nowPlaying.value = savedTrack;
+    isLiked.value = savedTrack.is_liked;
   }
 }
 
@@ -4483,6 +4482,25 @@ async function openSettingsFolder() {
     await openDataDir();
   } catch { settingsActionError.value = 'Could not open the music folder. Please try again.'; }
 }
+// Editing a track on an album page can move it to another album (a new album
+// name or album artist).
+// The page stays while its album still has tracks; once it's empty, it
+// follows the edited track instead of showing nothing.
+async function followEditedTrackFromAlbumPage(before: Track, after: Track) {
+  if (activeNav.value !== 'album') return;
+  const oldAlbum = before.album ?? '';
+  const oldArtist = before.album_artist_or_artist ?? '';
+  const newAlbum = after.album ?? '';
+  const newArtist = after.album_artist_or_artist ?? '';
+  if (oldAlbum !== navTarget.value || oldArtist !== navTargetArtist.value) return;
+  if ((oldAlbum === newAlbum && oldArtist === newArtist) || !newAlbum) return;
+  if (await countAlbumTracks(oldAlbum, oldArtist, showDuplicateTracks.value) > 0) return;
+  replaceAlbumNavEntry(newAlbum, newArtist);
+}
+
+// Leaving the album artist field empty means the track artist.
+const albumArtistPlaceholder = computed(() => editForm.value.artist || 'Same as artist');
+
 async function openDataDir() {
   const path = await invoke<string>('get_data_dir');
   // On Android, use the native JavascriptInterface bridge that calls
@@ -4831,10 +4849,8 @@ onMounted(() => {
   });
   
   listen('library-changed', () => {
-    covers.value = {};
-    coverLastUsed.clear();
-    coverLoadQueue.length = 0;
-    queuedCoverIds.clear();
+    clearCovers();
+    libraryVersion.value++;
     void loadAppData('sync');
   })
     // Do the first fetch only after this subscription is active. Otherwise a
@@ -5129,7 +5145,7 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div class="card-title">{{ track.title || track.path }}</div>
-                <div class="card-artist">{{ track.artist || 'Unknown' }}</div>
+                <div class="card-artist">{{ artistLabel(track.artist) }}</div>
               </div>
             </div>
           </section>
@@ -5178,38 +5194,13 @@ onUnmounted(() => {
             </div>
             <div v-if="item.previewTracks.length === 0" class="library-empty">No tracks in this playlist yet.</div>
             <div v-else class="track-list">
-              <div
+              <TrackRow
                 v-for="(track, idx) in item.previewTracks"
                 :key="`${item.key}:${track.id}`"
-                class="track-row"
-                :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
-                :style="rarityVars(track.rarity)"
-                @click="playPlaylistTrack(item.tracks, idx)"
-                @contextmenu.prevent="openTrackContextMenu($event, track)"
-                @touchstart.passive="startTrackRowLongPress($event, track)"
-                @touchmove.passive="moveTrackRowLongPress"
-                @touchend="endTrackRowLongPress"
-                @touchcancel="endTrackRowLongPress"
-              >
-                <div class="track-cover-sm" :style="covers[track.id]
-                  ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                  : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                />
-                <div class="track-info">
-                  <div class="track-title-row">
-                    <span class="track-title">{{ track.title || track.path }}</span>
-                    <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                      <AppIcon name="play" :size="12" />
-                    </span>
-                    <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                      <AppIcon name="play" :size="12" />
-                      <span class="track-playback-step">1</span>
-                    </span>
-                  </div>
-                  <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
-                </div>
-                <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
-              </div>
+                :track="track"
+                show-genre
+                @play="playPlaylistTrack(item.tracks, idx)"
+              />
             </div>
             <div v-if="item.tracks.length > item.previewTracks.length" class="library-empty home-playlist-more">… and {{ item.tracks.length - item.previewTracks.length }} more</div>
           </section>
@@ -5254,55 +5245,18 @@ onUnmounted(() => {
 
             <div v-else class="track-groups">
               <div v-for="[artist, tracks] in groupedByArtist" :key="artist" class="track-group">
-                <div class="group-artist">{{ artist }}</div>
-                <div
+                <div class="group-artist">
+                  <a v-if="hasArtistPage(artist)" class="group-artist-link" href="#" @click.prevent="openArtist(artist)">{{ artist }}</a>
+                  <template v-else>{{ artistLabel(artist) }}</template>
+                </div>
+                <TrackRow
                   v-for="track in tracks"
                   :key="track.id"
-                  class="track-row" :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
-                  :style="rarityVars(track.rarity)"
-                  @click="playLibraryTrack(libraryFlatList.indexOf(track))"
-                  @contextmenu.prevent="openTrackContextMenu($event, track)"
-                  @touchstart.passive="startTrackRowLongPress($event, track)"
-                  @touchmove.passive="moveTrackRowLongPress"
-                  @touchend="endTrackRowLongPress"
-                  @touchcancel="endTrackRowLongPress"
-                >
-                  <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
-                    ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                    : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                  />
-                  <span class="track-num">{{ track.track_number ?? '–' }}</span>
-                  <div class="track-info">
-                    <div class="track-title-row">
-                      <span class="track-title">{{ track.title || track.path }}</span>
-                      <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                        <AppIcon name="play" :size="12" />
-                      </span>
-                      <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                        <AppIcon name="play" :size="12" />
-                        <span class="track-playback-step">1</span>
-                      </span>
-                    </div>
-                    <span class="track-album">{{ track.album || '' }}</span>
-                  </div>
-                  <button class="icon-btn edit-btn track-inline-action" title="Identify" @click.stop="identifySingle(track)">
-                    <AppIcon name="wand-sparkles" :size="14" />
-                  </button>
-                  <button class="icon-btn edit-btn track-inline-action" title="Edit" @click.stop="openEditor(track)">
-                    <AppIcon name="pencil" :size="14" />
-                  </button>
-                  <span title="Play Count" v-if="track.play_count > 0" class="track-play-count" style="margin-right: 8px;">
-                    <AppIcon name="play" :size="12" /> {{ track.play_count }}
-                  </span>
-                  <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
-                    <AppIcon name="heart" v-if="track.is_liked" :size="16" color="#1db954" filled />
-                    <AppIcon name="heart" v-else :size="16" />
-                  </button>
-                  <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
-                    <AppIcon name="list-plus" :size="16" />
-                  </button>
-                  <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
-                </div>
+                  :track="track"
+                  show-number
+                  :show-artist="false"
+                  @play="playLibraryTrack(libraryFlatList.indexOf(track))"
+                />
               </div>
             </div>
 
@@ -5334,45 +5288,14 @@ onUnmounted(() => {
                 </div>
 
                 <div v-if="searchRecentTracks.length" class="track-list">
-                  <div
+                  <TrackRow
                     v-for="(track, idx) in searchRecentTracks"
                     :key="track.id"
-                    class="track-row"
-                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
-                    :style="rarityVars(track.rarity)"
-                    @click="playPlaylistTrack(searchRecentTracks, idx)"
-                    @contextmenu.prevent="openTrackContextMenu($event, track)"
-                    @touchstart.passive="startTrackRowLongPress($event, track)"
-                    @touchmove.passive="moveTrackRowLongPress"
-                    @touchend="endTrackRowLongPress"
-                    @touchcancel="endTrackRowLongPress"
-                  >
-                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
-                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                    />
-                    <div class="track-info">
-                      <div class="track-title-row">
-                        <span class="track-title">{{ track.title || track.path }}</span>
-                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <AppIcon name="play" :size="12" />
-                        </span>
-                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <AppIcon name="play" :size="12" />
-                          <span class="track-playback-step">1</span>
-                        </span>
-                      </div>
-                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
-                    </div>
-                    <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
-                      <AppIcon name="list-plus" :size="16" />
-                    </button>
-                    <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
-                      <AppIcon name="heart" v-if="track.is_liked" :size="16" color="#1db954" filled />
-                      <AppIcon name="heart" v-else :size="16" />
-                    </button>
-                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
-                  </div>
+                    :track="track"
+                    show-year
+                    show-genre
+                    @play="playPlaylistTrack(searchRecentTracks, idx)"
+                  />
                 </div>
               </template>
 
@@ -5395,45 +5318,14 @@ onUnmounted(() => {
                 </div>
 
                 <div v-else class="track-list">
-                  <div
+                  <TrackRow
                     v-for="(track, idx) in searchResults"
                     :key="track.id"
-                    class="track-row"
-                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
-                    :style="rarityVars(track.rarity)"
-                    @click="playPlaylistTrack(searchResults, idx)"
-                    @contextmenu.prevent="openTrackContextMenu($event, track)"
-                    @touchstart.passive="startTrackRowLongPress($event, track)"
-                    @touchmove.passive="moveTrackRowLongPress"
-                    @touchend="endTrackRowLongPress"
-                    @touchcancel="endTrackRowLongPress"
-                  >
-                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
-                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                    />
-                    <div class="track-info">
-                      <div class="track-title-row">
-                        <span class="track-title">{{ track.title || track.path }}</span>
-                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <AppIcon name="play" :size="12" />
-                        </span>
-                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <AppIcon name="play" :size="12" />
-                          <span class="track-playback-step">1</span>
-                        </span>
-                      </div>
-                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}{{ track.year ? ' · ' + track.year : '' }}</span>
-                    </div>
-                    <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
-                      <AppIcon name="list-plus" :size="16" />
-                    </button>
-                    <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
-                      <AppIcon name="heart" v-if="track.is_liked" :size="16" color="#1db954" filled />
-                      <AppIcon name="heart" v-else :size="16" />
-                    </button>
-                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
-                  </div>
+                    :track="track"
+                    show-year
+                    show-genre
+                    @play="playPlaylistTrack(searchResults, idx)"
+                  />
                 </div>
                 <div v-if="searchResults.length" class="library-page-controls library-page-controls-bottom">
                   <span>{{ localSearchPageLabel }}</span>
@@ -5714,43 +5606,16 @@ onUnmounted(() => {
             <div v-if="historyLoading" class="library-empty">Loading...</div>
             <div v-else-if="historyEntries.length === 0" class="library-empty">No history yet.</div>
             <div v-else class="history-list">
-              <div
+              <TrackRow
                 v-for="(entry, idx) in historyEntries"
                 :key="idx"
-                class="track-row"
-                :class="[rarityClass(entry.track.rarity), { 'track-row-current': isCurrentTrack(entry.track.id), 'track-row-next': isNextTrack(entry.track.id) }]"
-                :style="rarityVars(entry.track.rarity)"
-                @click="playLibraryTrack(libraryFlatList.findIndex(t => t.id === entry.track.id))"
-                @contextmenu.prevent="openTrackContextMenu($event, entry.track)"
-                @touchstart.passive="startTrackRowLongPress($event, entry.track)"
-                @touchmove.passive="moveTrackRowLongPress"
-                @touchend="endTrackRowLongPress"
-                @touchcancel="endTrackRowLongPress"
+                :track="entry.track"
+                @play="playLibraryTrack(libraryFlatList.findIndex(t => t.id === entry.track.id))"
               >
-                <div class="track-cover-sm" :style="covers[entry.track.id]
-                  ? `background-image: url(${covers[entry.track.id]}); background-size: cover; background-position: center`
-                  : `background: linear-gradient(135deg, ${hashToColors(entry.track.file_hash)[0]}, ${hashToColors(entry.track.file_hash)[1]})`"
-                />
-                <div class="track-info">
-                  <div class="track-title-row">
-                    <span class="track-title">{{ entry.track.title || entry.track.path }}</span>
-                    <span v-if="isCurrentTrack(entry.track.id)" class="track-playback-badge current" title="Now playing">
-                      <AppIcon name="play" :size="12" />
-                    </span>
-                    <span v-else-if="isNextTrack(entry.track.id)" class="track-playback-badge next" title="Up next">
-                      <AppIcon name="play" :size="12" />
-                      <span class="track-playback-step">1</span>
-                    </span>
-                  </div>
-                  <span class="track-album">{{ entry.track.artist || 'Unknown' }}{{ entry.track.album ? ' · ' + entry.track.album : '' }}</span>
-                </div>
-                <span class="history-time" style="margin-right:12px;">{{ formatHistoryDate(entry.played_at) }}</span>
-                <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(entry.track)" style="margin-right:8px;">
-                  <AppIcon name="heart" v-if="entry.track.is_liked" :size="16" color="#1db954" filled />
-                  <AppIcon name="heart" v-else :size="16" />
-                </button>
-                <span class="track-dur">{{ formatDuration(entry.track.duration_secs) }}</span>
-              </div>
+                <template #extra>
+                  <span class="history-time">{{ formatHistoryDate(entry.played_at) }}</span>
+                </template>
+              </TrackRow>
             </div>
           </section>
         </template>
@@ -5772,41 +5637,19 @@ onUnmounted(() => {
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
-                  <div
+                  <TrackRow
                     v-for="(track, idx) in playlistView.tracks"
                     :key="track.id"
-                    class="track-row"
-                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
-                    :style="rarityVars(track.rarity)"
-                    @click="playRegularPlaylistTrack(idx)"
-                    @contextmenu.prevent="openTrackContextMenu($event, track, playlistView!.id)"
-                    @touchstart.passive="startTrackRowLongPress($event, track, playlistView!.id)"
-                    @touchmove.passive="moveTrackRowLongPress"
-                    @touchend="endTrackRowLongPress"
-                    @touchcancel="endTrackRowLongPress"
+                    :track="track"
+                    :playlist-id="playlistView.id"
+                    @play="playRegularPlaylistTrack(idx)"
                   >
-                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
-                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                    />
-                    <div class="track-info">
-                      <div class="track-title-row">
-                        <span class="track-title">{{ track.title || track.path }}</span>
-                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <AppIcon name="play" :size="12" />
-                        </span>
-                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <AppIcon name="play" :size="12" />
-                          <span class="track-playback-step">1</span>
-                        </span>
-                      </div>
-                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}</span>
-                    </div>
-                    <button class="icon-btn track-inline-action" style="margin-right:8px;" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
-                      <AppIcon name="minus" :size="16" />
-                    </button>
-                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
-                  </div>
+                    <template #extra>
+                      <button class="icon-btn track-inline-action" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
+                        <AppIcon name="minus" />
+                      </button>
+                    </template>
+                  </TrackRow>
                 </div>
                 <div v-if="playlistView.loadingMore" class="library-empty library-load-more"><div class="identify-mini-spinner" /></div>
               </template>
@@ -5876,11 +5719,13 @@ onUnmounted(() => {
                       <option value="title">Title</option>
                       <option value="artist">Artist</option>
                       <option value="album">Album</option>
+                      <option value="album_artist_or_artist">Album artist</option>
                       <option value="genre">Genre</option>
                       <option value="tags">Tags</option>
                       <option value="rarity">Rarity</option>
                       <option value="path">Path</option>
                       <option value="extension">Extension</option>
+                      <option value="disc_number">Disc #</option>
                       <option value="track_number">Track #</option>
                       <option value="duration_secs">Duration</option>
                       <option value="year">Year</option>
@@ -5944,38 +5789,14 @@ onUnmounted(() => {
                 <div v-else-if="editingSPLoading" class="library-empty">Updating preview…</div>
                 <div v-else-if="editingSPTotal === 0" class="library-empty">No tracks match the current rules.</div>
                 <div v-else class="track-list sp-preview">
-                  <div
+                  <TrackRow
                     v-for="track in editingSPTracks"
                     :key="track.id"
-                    class="track-row"
-                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
-                    :style="rarityVars(track.rarity)"
-                    @click="playLibraryTrack(libraryFlatList.findIndex(t => t.id === track.id))"
-                    @contextmenu.prevent="openTrackContextMenu($event, track)"
-                    @touchstart.passive="startTrackRowLongPress($event, track)"
-                    @touchmove.passive="moveTrackRowLongPress"
-                    @touchend="endTrackRowLongPress"
-                    @touchcancel="endTrackRowLongPress"
-                  >
-                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
-                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                    />
-                    <div class="track-info">
-                      <div class="track-title-row">
-                        <span class="track-title">{{ track.title || track.path }}</span>
-                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <AppIcon name="play" :size="12" />
-                        </span>
-                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <AppIcon name="play" :size="12" />
-                          <span class="track-playback-step">1</span>
-                        </span>
-                      </div>
-                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.year ? ' · ' + track.year : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
-                    </div>
-                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
-                  </div>
+                    :track="track"
+                    show-year
+                    show-genre
+                    @play="playLibraryTrack(libraryFlatList.findIndex(t => t.id === track.id))"
+                  />
                   <div v-if="editingSPTotal > editingSPTracks.length" class="library-empty" style="padding:12px 0;">… and {{ editingSPTotal - editingSPTracks.length }} more</div>
                 </div>
               </template>
@@ -5996,38 +5817,14 @@ onUnmounted(() => {
                 <div v-if="smartViewLoading" class="library-empty">Loading playlist…</div>
                 <div v-else-if="smartViewTotal === 0" class="library-empty">No tracks match this smart playlist.</div>
                 <div v-else class="track-list">
-                  <div
+                  <TrackRow
                     v-for="(track, idx) in smartViewTracks"
                     :key="track.id"
-                    class="track-row"
-                    :class="[rarityClass(track.rarity), { 'track-row-current': isCurrentTrack(track.id), 'track-row-next': isNextTrack(track.id) }]"
-                    :style="rarityVars(track.rarity)"
-                    @click="playSmartPlaylistTrack(idx)"
-                    @contextmenu.prevent="openTrackContextMenu($event, track)"
-                    @touchstart.passive="startTrackRowLongPress($event, track)"
-                    @touchmove.passive="moveTrackRowLongPress"
-                    @touchend="endTrackRowLongPress"
-                    @touchcancel="endTrackRowLongPress"
-                  >
-                    <div v-lazy-cover="track" class="track-cover-sm" :style="covers[track.id]
-                      ? `background-image: url(${covers[track.id]}); background-size: cover; background-position: center`
-                      : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`"
-                    />
-                    <div class="track-info">
-                      <div class="track-title-row">
-                        <span class="track-title">{{ track.title || track.path }}</span>
-                        <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <AppIcon name="play" :size="12" />
-                        </span>
-                        <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <AppIcon name="play" :size="12" />
-                          <span class="track-playback-step">1</span>
-                        </span>
-                      </div>
-                      <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.year ? ' · ' + track.year : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
-                    </div>
-                    <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
-                  </div>
+                    :track="track"
+                    show-year
+                    show-genre
+                    @play="playSmartPlaylistTrack(idx)"
+                  />
                   <div v-if="smartViewLoadingMore" class="library-load-more"><span class="identify-mini-spinner" aria-label="Loading more tracks" /></div>
                 </div>
               </template>
@@ -6140,7 +5937,7 @@ onUnmounted(() => {
                         <span v-else class="dedup-remove-badge">Duplicate</span>
                       </div>
                       <span class="track-album">
-                        {{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}
+                        {{ artistLabel(track.artist) }}{{ track.album ? ' · ' + track.album : '' }}
                       </span>
                       <span class="dedup-track-meta">
                         <span>{{ track.path }}</span>
@@ -6295,6 +6092,25 @@ onUnmounted(() => {
             </template>
           </SettingsView>
         </template>
+
+        <template v-else-if="activeNav === 'artist'">
+          <ArtistView
+            :name="navTarget"
+            :include-duplicates="showDuplicateTracks"
+            :library-version="libraryVersion"
+            @play="playPlaylistTrack"
+          />
+        </template>
+
+        <template v-else-if="activeNav === 'album'">
+          <AlbumView
+            :name="navTarget"
+            :album-artist-or-artist="navTargetArtist"
+            :include-duplicates="showDuplicateTracks"
+            :library-version="libraryVersion"
+            @play="playPlaylistTrack"
+          />
+        </template>
       </div>
     </main>
 
@@ -6310,6 +6126,8 @@ onUnmounted(() => {
       <template v-if="trackContextMenu">
         <div class="playlist-menu-header">Track actions</div>
         <button class="playlist-menu-item" @click="toggleLikeFromTrackContext">{{ trackContextMenu.track.is_liked ? 'Unlike' : 'Like' }}</button>
+        <button v-if="hasArtistPage(trackContextMenu.track.artist)" class="playlist-menu-item" @click="openArtist(trackContextMenu.track.artist); trackContextMenu = null">Go to artist</button>
+        <button v-if="trackContextMenu.track.album" class="playlist-menu-item" @click="openAlbum(trackContextMenu.track.album, trackContextMenu.track.album_artist_or_artist ?? ''); trackContextMenu = null">Go to album</button>
         <button class="playlist-menu-item" @click="openTrackReplaceDialogFromTrackContext">Search and replace</button>
         <button class="playlist-menu-item" @click="shareTrackFromTrackContext">Share</button>
         <button class="playlist-menu-item" @click="addTrackToPlaylistFromTrackContext">Add to playlist</button>
@@ -6419,8 +6237,16 @@ onUnmounted(() => {
               <input v-model="editForm.album" />
             </label>
             <label class="field">
+              <span>Album artist</span>
+              <input v-model="editForm.album_artist" :placeholder="albumArtistPlaceholder" />
+            </label>
+            <label class="field">
               <span>Track #</span>
               <input v-model.number="editForm.track_number" type="number" min="0" />
+            </label>
+            <label class="field">
+              <span>Disc #</span>
+              <input v-model.number="editForm.disc_number" type="number" min="1" />
             </label>
             <label class="field">
               <span>Year</span>
@@ -7517,11 +7343,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   transform: none;
 }
 .text-action-btn { font-size: var(--fs-button); font-weight: 600; }
-.track-play-count {
-  font-size: var(--fs-track-side);
-  color: #a7a7a7;
-  user-select: none;
-}
 .history-time {
   font-size: var(--fs-body-sm);
   color: #a7a7a7;
@@ -7672,6 +7493,8 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   padding-bottom: 8px; border-bottom: 1px solid #282828;
   margin-bottom: 4px;
 }
+.group-artist-link { color: inherit; text-decoration: none; }
+.group-artist-link:hover { color: var(--color-text, #fff); text-decoration: underline; }
 .track-row {
   display: flex; align-items: center; gap: 12px;
   padding: 8px 8px; border-radius: 4px;
@@ -7682,10 +7505,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .track-row.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
 .track-cover-sm {
   width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0;
-}
-.track-num {
-  width: 24px; text-align: right;
-  font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
 }
 .track-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .track-title-row {
@@ -7736,10 +7555,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .track-dur {
   font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
 }
-.edit-btn {
-  opacity: 0; transition: opacity .12s; flex-shrink: 0;
-}
-.track-row:hover .edit-btn { opacity: 1; }
 
 /* ── Edit modal ── */
 .modal-overlay {
@@ -7823,63 +7638,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   text-transform: uppercase;
   letter-spacing: .04em;
 }
-/* ── Rarity animations ── */
-.rarity-animated { position: relative; overflow: hidden; }
-.rarity-animated::before {
-  content: '';
-  position: absolute; inset: 0;
-  pointer-events: none;
-  border-radius: inherit;
-}
-
-/* Epic: diagonal moving stripes */
-.rarity-epic::before {
-  background: repeating-linear-gradient(
-    -45deg,
-    var(--rc) 48%,
-    var(--rc) 48%,
-    transparent 40px,
-    transparent 80px
-  );
-  background-size: 113px 113px;
-  opacity: .15;
-  animation: rarity-slide 3s linear infinite;
-  image-rendering: pixelated;
-}
-@keyframes rarity-slide {
-  from { background-position: 0 0; }
-  to   { background-position: 113px 113px; }
-}
-
-/* Legendary: pulsing glow that breathes */
-.rarity-legendary::before {
-  background: radial-gradient(ellipse at 30% 50%, var(--rc), transparent 70%);
-  opacity: 0;
-  animation: rarity-pulse 2.5s ease-in-out infinite;
-}
-@keyframes rarity-pulse {
-  0%, 100% { opacity: .06; transform: scale(1); }
-  50%      { opacity: .22; transform: scale(1.15); }
-}
-
-/* Mythic: repeating diagonal light streaks */
-.rarity-mythic::before {
-  inset: -10px 0 0 0;
-  background: repeating-linear-gradient(
-    105deg,
-    transparent 0px,
-    transparent 20px,
-    var(--rc) 20px,
-    var(--rc) 36px
-  );
-  opacity: .2;
-  animation: rarity-sweep 1.5s linear infinite;
-}
-@keyframes rarity-sweep {
-  from { background-position: 0 0; }
-  to   { background-position: 34.77px 9.32px; }
-}
-
 /* ── Identify progress ── */
 /* Activity tab tucked behind the bottom player bar on desktop. */
 .activity-dock {
@@ -8218,8 +7976,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .soulseek-speed { display: none; }
   .soulseek-download-btn { padding: 6px 12px; min-width: 92px; }
   .soulseek-progress-copy { white-space: normal; }
-  .track-num { display: none; }
-  .edit-btn { opacity: 1; }
   .track-inline-action { display: none !important; }
 
   .icon-btn { padding: 6px; }

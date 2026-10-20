@@ -5,6 +5,7 @@ import ResponsivePopup from "./ResponsivePopup.vue";
 import type { AudioDevice, Track } from "../types";
 import { formatDuration, formatSampleRate, formatTime } from "../utils/format";
 import { hashToColors } from "../utils/rarity";
+import { artistLabel } from "../utils/artists";
 
 interface CurrentTrackSummary {
   title: string;
@@ -511,7 +512,7 @@ onUnmounted(() => {
               : `background: linear-gradient(135deg, ${hashToColors(nowPlaying.file_hash)[0]}, ${hashToColors(nowPlaying.file_hash)[1]})`" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ nowPlaying.title || nowPlaying.path }}</span>
-              <span class="queue-item-artist">{{ nowPlaying.artist || "Unknown" }}</span>
+              <span class="queue-item-artist">{{ artistLabel(nowPlaying.artist) }}</span>
             </div>
             <span class="queue-item-dur">{{ formatDuration(nowPlaying.duration_secs) }}</span>
           </div>
@@ -529,7 +530,7 @@ onUnmounted(() => {
               : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ track.title || track.path }}</span>
-              <span class="queue-item-artist">{{ track.artist || "Unknown" }}</span>
+              <span class="queue-item-artist">{{ artistLabel(track.artist) }}</span>
             </div>
             <span class="queue-item-dur">{{ formatDuration(track.duration_secs) }}</span>
           </div>

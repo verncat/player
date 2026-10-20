@@ -1072,6 +1072,9 @@ fn start_output_stream(shared: Arc<Shared>, sample_rate: u32, channels: u16) -> 
             },
             move |err| {
                 eprintln!("[playback] stream error: {err}");
+                if matches!(err, cpal::StreamError::BufferUnderrun) {
+                    return;
+                }
                 if shared_err.active_stream_id.load(Ordering::SeqCst) != stream_id {
                     return;
                 }
