@@ -6,7 +6,6 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { marked } from "marked";
 import {
   TRACK_RARITY_OPTIONS,
   rarityColors,
@@ -35,10 +34,16 @@ import {
 } from "./utils/tracks";
 import { hashToColors, rarityClass, rarityVars } from "./utils/rarity";
 import AppSidebar from "./components/AppSidebar.vue";
+import AppIcon from "./components/AppIcon.vue";
 import AppTopbar from "./components/AppTopbar.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 import ResponsivePopup from "./components/ResponsivePopup.vue";
+import { useDiscordPresence } from "./composables/useDiscordPresence";
+import SettingsView from "./components/SettingsView.vue";
+import AboutPanel from "./components/AboutPanel.vue";
+import { useAppearance } from "./composables/useAppearance";
+import { SETTINGS_SECTIONS, type SettingsSection, type DeviceSettings, type AboutInfo, type AboutUpdateStatus } from "./types/settings";
 import ArtistView from "./components/ArtistView.vue";
 import AlbumView from "./components/AlbumView.vue";
 import TrackRow from "./components/TrackRow.vue";
@@ -49,8 +54,11 @@ import { artistLabel, hasArtistPage } from "./utils/artists";
 import { countAlbumTracks } from "./api";
 import { coverUrl } from "./utils/covers";
 
-// marked: no external links, open in browser via tauri
-marked.use({ gfm: true, breaks: true });
+const { preferences: appearance, reducedMotion } = useAppearance();
+watch([reducedMotion, () => appearance.rarityAnimations], ([reduce, rarity]) => {
+  document.documentElement.classList.toggle('player-reduced-motion', reduce);
+  document.documentElement.classList.toggle('player-no-rarity-motion', !rarity);
+}, { immediate: true });
 
 const madeForYou = [
   { id: 7,  title: "The Logic Gate Sh...", artist: "John von Neumann", colors: ["#4527a0", "#283593"] },
@@ -73,10 +81,24 @@ const showDeviceMenu = ref(false);
 const showMobileNav = ref(false);
 const outputDevices = ref<AudioDevice[]>([]);
 const currentDevice = ref<string | null>(null);
+const selectedOutputDevice = ref<string | null>(null);
+const audioLoading = ref(false);
+const audioBusy = ref(false);
 const currentSampleRate = ref<number | null>(null);
 const nativeSampleRate = ref<number | null>(null);
 const deviceMenuError = ref('');
 const activeNav = ref("home");
+const isSettingsNav = computed(() => activeNav.value === 'settings' || activeNav.value.startsWith('settings/'));
+const settingsSection = computed<SettingsSection | null>(() => {
+  const section = activeNav.value.split('/')[1];
+  return SETTINGS_SECTIONS.find((item) => item.id === section)?.id ?? null;
+});
+function openSettings(section: SettingsSection | null = null) {
+  activeNav.value = section ? `settings/${section}` : 'settings';
+  showMobileNav.value = false;
+  showDeviceMenu.value = false;
+  showQueueMenu.value = false;
+}
 const navTarget = ref('');
 const navTargetArtist = ref('');
 interface NavEntry { nav: string; target: string; targetArtist: string }
@@ -188,6 +210,7 @@ function scheduleBeatAnimation(delayMs: number) {
 }
 
 function startBeatAnimation(lagMs = 0) {
+  if (reducedMotion.value) return;
   if (lagMs < -8) {
     scheduleBeatAnimation(-lagMs);
     return;
@@ -330,6 +353,8 @@ async function applyDedup() {
 
 /* ── Index progress state ── */
 const indexRunning = ref(false);
+const libraryScanBusy = ref(false);
+const identifyPreparing = ref(false);
 const indexCurrent = ref(0);
 const indexTotal = ref(0);
 const indexAdded = ref(0);
@@ -375,6 +400,14 @@ const queuedPagedSource = ref<QueuedPagedSource | null>(null);
 const queuedPageLoading = ref(false);
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
+const discord = useDiscordPresence(() => nowPlaying.value ? {
+  title: nowPlaying.value.title || 'Unknown track',
+  artist: nowPlaying.value.artist || 'Unknown artist',
+  album: nowPlaying.value.album || '',
+  position: currentTime.value,
+  duration: duration.value,
+  playing: isPlaying.value,
+} : null);
 const recentTracks = ref<Track[]>([]);
 const showQueueMenu = ref(false);
 
@@ -382,31 +415,6 @@ interface PlayHistoryEntry {
   played_at: number; // unix timestamp (seconds)
   track: Track;
 }
-interface AboutChangelogEntry {
-  subject: string;
-  short_hash: string;
-  committed_at: string;
-}
-
-interface AboutInfo {
-  current_version: string;
-  platform: string;
-  build_commit: string | null;
-  release_repo: string | null;
-  changelog: AboutChangelogEntry[];
-}
-
-interface AboutUpdateStatus {
-  current_version: string;
-  latest_version: string | null;
-  has_update: boolean;
-  release_url: string | null;
-  release_notes: string | null;
-  asset_url: string | null;
-  checked_repo: string | null;
-  message: string;
-}
-
 const historyEntries = ref<PlayHistoryEntry[]>([]);
 const historyLoading = ref(false);
 const aboutInfo = ref<AboutInfo | null>(null);
@@ -1435,18 +1443,10 @@ const syncActive = computed(() => Object.values(syncProgress.value).some((progre
 )));
 const peerDeviceNames = ref<Record<string, string>>({});
 const deviceEmoji = ref('🎵');
-const EMOJI_OPTIONS = ['🎵', '🎶', '🎤', '🎧', '🎼', '🎹', '🎸', '🥁', '📱', '💻', '🖥️', '⌚', '📻', '📡', '🔊', '🎺', '🎻', '🪕', '🎷', '🍕'];
-const settingsOpen = ref(false);
-const soulseekSettingsOpen = ref(false);
-const settingsEmoji = ref('🎵');
-const settingsDeviceName = ref('');
-const settingsSoulseekEnabled = ref(false);
-const settingsSoulseekUsername = ref('');
-const settingsSoulseekPassword = ref('');
-const settingsSaving = ref(false);
-const settingsError = ref('');
-const soulseekSettingsSaving = ref(false);
-const soulseekSettingsError = ref('');
+const syncBusy = ref(false);
+const syncError = ref('');
+const settingsActionError = ref('');
+const settingsActionMessage = ref('');
 const soulseekStatus = ref<SoulseekStatus | null>(null);
 const soulseekResults = ref<SoulseekSearchResult[]>([]);
 const soulseekPreviews = ref<Record<string, SoulseekDownloadEvent>>({});
@@ -1494,85 +1494,10 @@ const tracksByHash = computed<Record<string, Track>>(() => {
 
 const remoteOutputDevices = computed(() => peers.value);
 
-interface DeviceSettings {
-  emoji: string;
-  device_name: string;
-  sync_enabled: boolean;
-  soulseek_enabled: boolean;
-  soulseek_username: string;
-  soulseek_password: string;
-}
-
-async function fetchDeviceSettings() {
-  return invoke<DeviceSettings>('get_device_settings');
-}
-
-async function openDeviceSettings() {
-  settingsError.value = '';
-  showQueueMenu.value = false;
-  showDeviceMenu.value = false;
-  showUserMenu.value = false;
-  soulseekSettingsOpen.value = false;
-  const cfg = await fetchDeviceSettings();
-  settingsEmoji.value = cfg.emoji || '🎵';
-  settingsDeviceName.value = cfg.device_name || '';
-  settingsOpen.value = true;
-}
-
-async function openSoulseekSettings() {
-  soulseekSettingsError.value = '';
-  showQueueMenu.value = false;
-  showDeviceMenu.value = false;
-  showUserMenu.value = false;
-  settingsOpen.value = false;
-  const cfg = await fetchDeviceSettings();
-  settingsSoulseekEnabled.value = !!cfg.soulseek_enabled;
-  settingsSoulseekUsername.value = cfg.soulseek_username || '';
-  settingsSoulseekPassword.value = cfg.soulseek_password || '';
-  soulseekSettingsOpen.value = true;
-}
-
-async function saveDeviceSettings() {
-  settingsSaving.value = true;
-  settingsError.value = '';
-  try {
-    const cfg = await fetchDeviceSettings();
-    await invoke('set_device_settings', {
-      emoji: settingsEmoji.value,
-      deviceName: settingsDeviceName.value,
-      soulseekEnabled: cfg.soulseek_enabled,
-      soulseekUsername: cfg.soulseek_username,
-      soulseekPassword: cfg.soulseek_password,
-    });
-    deviceEmoji.value = settingsEmoji.value;
-    await loadSoulseekStatus();
-    settingsOpen.value = false;
-  } catch (e: any) {
-    settingsError.value = String(e ?? 'Failed to save settings');
-  } finally {
-    settingsSaving.value = false;
-  }
-}
-
-async function saveSoulseekSettings() {
-  soulseekSettingsSaving.value = true;
-  soulseekSettingsError.value = '';
-  try {
-    const cfg = await fetchDeviceSettings();
-    await invoke('set_device_settings', {
-      emoji: cfg.emoji,
-      deviceName: cfg.device_name,
-      soulseekEnabled: settingsSoulseekEnabled.value,
-      soulseekUsername: settingsSoulseekUsername.value,
-      soulseekPassword: settingsSoulseekPassword.value,
-    });
-    await loadSoulseekStatus();
-    soulseekSettingsOpen.value = false;
-  } catch (e: any) {
-    soulseekSettingsError.value = String(e ?? 'Failed to save Soulseek settings');
-  } finally {
-    soulseekSettingsSaving.value = false;
-  }
+function openDeviceSettings() { openSettings('devices'); }
+function openSoulseekSettings() { openSettings('soulseek'); }
+function onDeviceSettingsSaved(config: DeviceSettings) {
+  deviceEmoji.value = config.emoji;
 }
 
 const soulseekReady = computed(() => !!soulseekStatus.value?.enabled && !!soulseekStatus.value?.configured);
@@ -2727,6 +2652,9 @@ async function replaceTrackWithSoulseekResult(track: Track, result: SoulseekSear
 }
 
 async function toggleSync() {
+  if (syncBusy.value) return;
+  syncBusy.value = true;
+  syncError.value = '';
   const nextEnabled = !syncEnabled.value;
   syncEnabled.value = nextEnabled;
   try {
@@ -2739,8 +2667,9 @@ async function toggleSync() {
     }
   } catch (error) {
     syncEnabled.value = !nextEnabled;
+    syncError.value = 'Could not change LAN sync. Please try again.';
     console.error('Failed to update sync setting:', error);
-  }
+  } finally { syncBusy.value = false; }
 }
 
 function syncPeer(peer: Peer) {
@@ -2977,7 +2906,7 @@ function resetSpectrum() {
 }
 
 async function refreshSpectrum(version = spectrumPollVersion) {
-  if (version !== spectrumPollVersion || spectrumPollPending || !showDetail.value || !nowPlaying.value) {
+  if (version !== spectrumPollVersion || spectrumPollPending || reducedMotion.value || !showDetail.value || !nowPlaying.value) {
     return;
   }
 
@@ -2997,7 +2926,7 @@ async function refreshSpectrum(version = spectrumPollVersion) {
 }
 
 function startSpectrumPolling() {
-  if (spectrumPollTimer || !showDetail.value || !nowPlaying.value) return;
+  if (spectrumPollTimer || reducedMotion.value || !showDetail.value || !nowPlaying.value) return;
   spectrumPollVersion += 1;
   const version = spectrumPollVersion;
   void refreshSpectrum(version);
@@ -3049,6 +2978,7 @@ function stopAmbient() {
 }
 
 function springBack() {
+  if (reducedMotion.value || !appearance.album3d) return;
   cancelAnimationFrame(cardSpringRaf);
   const FACTOR = 0.15;
   function tick() {
@@ -3090,6 +3020,7 @@ function _scheduleFlush() {
 let _mouseDown = false;
 
 function onCardMouseMove(e: MouseEvent) {
+  if (reducedMotion.value || !appearance.album3d) return;
   const el = e.currentTarget as HTMLElement;
   const r = el.getBoundingClientRect();
   const nx = (e.clientX - (r.left + r.width / 2)) / (r.width / 2);   // -1..1
@@ -3103,6 +3034,7 @@ function onCardMouseMove(e: MouseEvent) {
 }
 
 function onCardMouseDown() {
+  if (reducedMotion.value || !appearance.album3d) return;
   _mouseDown = true;
   cardDragging.value = true;
 }
@@ -3120,6 +3052,7 @@ function onCardMouseLeave() {
 }
 
 function onCardMouseEnter() {
+  if (reducedMotion.value || !appearance.album3d) return;
   cancelAnimationFrame(cardSpringRaf);
   cardInteracting.value = true;
 }
@@ -3128,6 +3061,7 @@ let cardTouchStartX = 0;
 let cardTouchStartY = 0;
 
 function onCardTouchStart(e: TouchEvent) {
+  if (reducedMotion.value || !appearance.album3d) return;
   cardInteracting.value = true;
   cardDragging.value = true;
   cancelAnimationFrame(cardSpringRaf);
@@ -3136,6 +3070,7 @@ function onCardTouchStart(e: TouchEvent) {
 }
 
 function onCardTouchMove(e: TouchEvent) {
+  if (reducedMotion.value || !appearance.album3d) return;
   e.preventDefault();
   const dx = e.touches[0].clientX - cardTouchStartX;
   const dy = e.touches[0].clientY - cardTouchStartY;
@@ -3152,19 +3087,30 @@ function onCardTouchEnd() {
   springBack();
 }
 
-watch(showDetail, (open) => {
-  if (open) {
-    cardRotX.value = 0;
-    cardRotY.value = 0;
-    cardTX.value = 0;
-    cardTY.value = 0;
-    startAmbient();
+watch([showDetail, reducedMotion, () => appearance.album3d], ([open, reduce, album3d]) => {
+  stopAmbient();
+  cancelAnimationFrame(cardSpringRaf);
+  if (_mouseRafId) cancelAnimationFrame(_mouseRafId);
+  _mouseRafId = 0;
+  cardRotX.value = 0;
+  cardRotY.value = 0;
+  cardTX.value = 0;
+  cardTY.value = 0;
+  _mouseDown = false;
+  cardInteracting.value = false;
+  cardDragging.value = false;
+  if (open && !reduce) {
+    if (album3d) startAmbient();
     startSpectrumPolling();
-  } else {
-    stopAmbient();
-    cancelAnimationFrame(cardSpringRaf);
-    stopSpectrumPolling();
-  }
+  } else stopSpectrumPolling();
+});
+watch(reducedMotion, (reduce) => {
+  if (!reduce) return;
+  if (beatRafId !== null) cancelAnimationFrame(beatRafId);
+  beatRafId = null;
+  beatScale.value = 1;
+  for (const id of scheduledBeatTimeoutIds) clearTimeout(id);
+  scheduledBeatTimeoutIds.clear();
 });
 
 watch(() => nowPlaying.value?.id, () => {
@@ -3873,28 +3819,29 @@ function setVolume(e: MouseEvent) {
   }
 }
 
+async function refreshOutputDevices() {
+  if (audioLoading.value) return;
+  audioLoading.value = true;
+  deviceMenuError.value = '';
+  try {
+    const res = await invoke<DeviceList>('get_output_devices');
+    outputDevices.value = res.devices;
+    currentDevice.value = res.current;
+    currentSampleRate.value = res.current_sample_rate;
+    const status = await invoke<PlaybackStatus>('playback_status');
+    nativeSampleRate.value = status.source_sample_rate ?? null;
+  } catch {
+    deviceMenuError.value = 'Could not load audio outputs. Please try again.';
+  } finally { audioLoading.value = false; }
+}
 async function toggleDeviceMenu() {
   const willOpen = !showDeviceMenu.value;
   if (willOpen) {
     showQueueMenu.value = false;
     showUserMenu.value = false;
-    settingsOpen.value = false;
-    soulseekSettingsOpen.value = false;
+    await refreshOutputDevices();
   }
-  if (!showDeviceMenu.value) {
-    deviceMenuError.value = '';
-    const res = await invoke<DeviceList>('get_output_devices');
-    outputDevices.value = res.devices;
-    currentDevice.value = res.current;
-    currentSampleRate.value = res.current_sample_rate;
-    try {
-      const status = await invoke<PlaybackStatus>('playback_status');
-      nativeSampleRate.value = status.source_sample_rate ?? null;
-    } catch (_) {
-      nativeSampleRate.value = null;
-    }
-  }
-  showDeviceMenu.value = !showDeviceMenu.value;
+  showDeviceMenu.value = willOpen;
 }
 
 function toggleQueueMenu() {
@@ -3902,59 +3849,47 @@ function toggleQueueMenu() {
   if (willOpen) {
     showDeviceMenu.value = false;
     showUserMenu.value = false;
-    settingsOpen.value = false;
-    soulseekSettingsOpen.value = false;
   }
   showQueueMenu.value = !showQueueMenu.value;
 }
 
-async function pickLocalDevice(name: string, sampleRate?: number | null, keepOpen = false) {
+async function applyLocalOutput(name: string | null, sampleRate: number | null, keepOpen = false) {
+  if (audioBusy.value) return;
+  audioBusy.value = true;
   deviceMenuError.value = '';
   try {
-    if (remoteOutputPeer.value) {
-      const previousRemotePeer = remoteOutputPeer.value;
-      const snapshot = await capturePlaybackSnapshot();
-      await invoke('set_output_device', { name, sampleRate: sampleRate ?? currentSampleRate.value });
-      currentDevice.value = name;
-      currentSampleRate.value = sampleRate ?? currentSampleRate.value;
-      if (snapshot.track) {
-        await playTrackLocally(snapshot.track, false, snapshot.position);
-      }
-      if (snapshot.playing) {
-        await invoke('remote_playback_pause', remotePeerArgs(previousRemotePeer));
-      }
+    const previousRemotePeer = remoteOutputPeer.value;
+    const snapshot = previousRemotePeer ? await capturePlaybackSnapshot() : null;
+    await invoke('set_output_device', { name, sampleRate });
+    selectedOutputDevice.value = name;
+    if (previousRemotePeer && snapshot) {
+      if (snapshot.track) await playTrackLocally(snapshot.track, false, snapshot.position);
+      if (snapshot.playing) await invoke('remote_playback_pause', remotePeerArgs(previousRemotePeer));
       remoteOutputPeer.value = null;
-      if (snapshot.playing && snapshot.track) {
-        await invoke('playback_resume');
-      }
-      const st = await refreshPlaybackState();
-      if (st.playing) startTicker(); else stopTicker();
+      if (snapshot.playing && snapshot.track) await invoke('playback_resume');
+      const state = await refreshPlaybackState();
+      if (state.playing) startTicker(); else stopTicker();
       syncAndroid();
-    } else {
-      const useDefault = name === currentDevice.value;
-      const nextName = useDefault && sampleRate === undefined ? null : name;
-      const nextSampleRate = sampleRate === undefined ? (useDefault ? null : currentSampleRate.value) : sampleRate;
-      await invoke('set_output_device', { name: nextName, sampleRate: nextSampleRate });
-      currentDevice.value = useDefault ? null : name;
-      currentSampleRate.value = nextSampleRate;
     }
-    if (!keepOpen) {
-      showDeviceMenu.value = false;
-    } else {
-      try {
-        const status = await invoke<PlaybackStatus>('playback_status');
-        nativeSampleRate.value = status.source_sample_rate ?? nativeSampleRate.value;
-      } catch (_) {}
-    }
-  } catch (e: any) {
-    deviceMenuError.value = String(e ?? 'Failed to switch output device');
-  }
+    await refreshOutputDevices();
+    if (!keepOpen) showDeviceMenu.value = false;
+  } catch {
+    deviceMenuError.value = 'Could not switch audio output. Please try again.';
+  } finally { audioBusy.value = false; }
 }
-
+async function pickLocalDevice(name: string, sampleRate?: number | null, keepOpen = false) {
+  const nextName = name === currentDevice.value && sampleRate === undefined && !remoteOutputPeer.value ? null : name;
+  await applyLocalOutput(nextName, sampleRate ?? null, keepOpen);
+}
 async function pickLocalSampleRate(device: AudioDevice, event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  const sampleRate = value ? Number(value) : null;
-  await pickLocalDevice(device.name, sampleRate, true);
+  await applyLocalOutput(device.name, value ? Number(value) : null, true);
+}
+function selectSettingsOutput(name: string) {
+  void applyLocalOutput(name || null, null, true);
+}
+function selectSettingsSampleRate(sampleRate: number | null) {
+  void applyLocalOutput(selectedOutputDevice.value, sampleRate, true);
 }
 
 async function pickRemoteDevice(peer: Peer) {
@@ -3999,12 +3934,6 @@ function onDocClick(e: MouseEvent) {
   if (!(e.target as HTMLElement).closest(".queue-menu-wrapper")) {
     showQueueMenu.value = false;
   }
-  if (!(e.target as HTMLElement).closest(".settings-menu-wrapper")) {
-    settingsOpen.value = false;
-  }
-  if (!(e.target as HTMLElement).closest(".soulseek-settings-menu-wrapper")) {
-    soulseekSettingsOpen.value = false;
-  }
   if (!(e.target as HTMLElement).closest(".track-context-menu-wrapper")) {
     trackContextMenu.value = null;
   }
@@ -4018,7 +3947,7 @@ function onDocClick(e: MouseEvent) {
 
 function onKeyDown(e: KeyboardEvent) {
   const target = e.target as HTMLElement | null;
-  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.closest('select, button, a, [role=switch]') || target.isContentEditable)) {
     return; // Don't trigger if typing
   }
 
@@ -4491,6 +4420,13 @@ async function saveTrack() {
   }
 }
 
+async function openSettingsFolder() {
+  settingsActionError.value = '';
+  try {
+    await ensureLibraryDataDir();
+    await openDataDir();
+  } catch { settingsActionError.value = 'Could not open the music folder. Please try again.'; }
+}
 // Editing a track on an album page can move it to another album (a new album
 // name or album artist).
 // The page stays while its album still has tracks; once it's empty, it
@@ -4534,12 +4470,38 @@ async function openDataDir() {
 }
 
 async function doReindex() {
-  invoke('reindex');
+  if (libraryScanBusy.value) return;
+  libraryScanBusy.value = true;
+  settingsActionError.value = '';
+  indexRunning.value = true;
+  indexDone.value = false;
+  indexCurrent.value = 0;
+  indexTotal.value = 0;
+  try { await invoke('reindex'); }
+  catch {
+    indexRunning.value = false;
+    libraryScanBusy.value = false;
+    settingsActionError.value = 'Could not start the library scan. Please try again.';
+  }
+}
+async function identifyFromSettings() {
+  settingsActionError.value = '';
+  settingsActionMessage.value = '';
+  try { await startIdentify(); }
+  catch { settingsActionError.value = 'Could not load library tracks for identification.'; }
 }
 
 async function startIdentify() {
-  const ids = libraryTracks.value.filter(t => !t.manually_edited).map(t => t.id);
-  if (!ids.length) return;
+  if (identifyPreparing.value || (identifyRunning.value && !identifyDone.value)) return;
+  identifyPreparing.value = true;
+  let tracks: Track[];
+  try { tracks = await invoke<Track[]>('get_all_tracks'); }
+  finally { identifyPreparing.value = false; }
+  const ids = tracks.filter(t => !t.manually_edited).map(t => t.id);
+  if (!ids.length) {
+    settingsActionMessage.value = 'There are no tracks to identify. Manually edited tracks are kept as they are.';
+    return;
+  }
   identifyResults.value = [];
   identifyCurrent.value = 0;
   identifyTotal.value = ids.length;
@@ -4590,13 +4552,41 @@ function identifyStatusIcon(status: string) {
 }
 
 watch(activeNav, (nav) => {
-  if (nav === 'about') {
+  if (nav === 'settings/playback') void refreshOutputDevices();
+  if (isSettingsNav.value) {
+    settingsActionError.value = '';
+    settingsActionMessage.value = '';
+    void ensureLibraryDataDir().catch(() => { settingsActionError.value = 'Could not load the music folder. Open it to try again.'; });
+    nextTick(() => { if (contentRef.value) contentRef.value.scrollTop = 0; });
+  }
+  if (nav === 'about' || nav === 'settings/about') {
     void loadAbout();
   }
   if (nav === 'library' && libraryPageSize.value !== LIBRARY_TRACK_PAGE_SIZE) {
     void loadLibraryPage({ offset: 0, limit: LIBRARY_TRACK_PAGE_SIZE });
   }
 });
+
+const pageTitle = computed(() => {
+  if (isSettingsNav.value || activeNav.value === 'about') return 'Settings';
+  switch (activeNav.value) {
+    case 'home': return 'Home';
+    case 'library': return 'Your Library';
+    case 'search': return 'Search';
+    case 'track-replace': return 'Search and replace';
+    case 'history': return 'Play History';
+    case 'playlists':
+      return playlistTab.value === 'regular'
+        ? playlistView.value?.name || 'Playlists'
+        : editingSP.value?.name || smartView.value?.name || 'Flexible Playlists';
+    case 'dedup': return 'Duplicates';
+    case 'discovery': return 'Devices on Network';
+    default: return undefined;
+  }
+});
+const pageSubtitle = computed(() => activeNav.value === 'track-replace' && trackReplaceDialog.value
+  ? `Replace ${trackReplaceDialog.value.track.title || trackReplaceDialog.value.track.path} with a Soulseek match.`
+  : undefined);
 
 onMounted(() => {
   document.addEventListener('click', onDocClick);
@@ -4918,6 +4908,7 @@ onMounted(() => {
       }
     };
     if (p.status === 'indexing' || p.status === 'scanning') {
+      libraryScanBusy.value = true;
       ensureLocalSession();
       indexCurrent.value = p.current;
       indexTotal.value = p.total;
@@ -4933,6 +4924,7 @@ onMounted(() => {
         indexLog.value = [...indexLog.value];
       }
     } else if (p.status === 'done') {
+      libraryScanBusy.value = false;
       indexAdded.value = p.added;
       indexDone.value = true;
       indexRunning.value = true;
@@ -4968,6 +4960,7 @@ onMounted(() => {
   });
 });
 onUnmounted(() => {
+  document.documentElement.classList.remove('player-reduced-motion', 'player-no-rarity-motion');
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('focus', onWindowFocus);
@@ -5016,23 +5009,24 @@ onUnmounted(() => {
       @navigate-playlists="activeNav = 'playlists'; playlistView = null; playlistTab = 'regular'; showMobileNav = false"
       @navigate-smart-playlists="activeNav = 'playlists'; playlistTab = 'smart'; playlistView = null; editingSP = null; smartView = null; showMobileNav = false"
       @navigate-discovery="activeNav = 'discovery'; showMobileNav = false"
-      @open-data-dir="openDataDir(); showMobileNav = false"
-      @reindex="doReindex(); showMobileNav = false"
-      @identify="startIdentify(); showMobileNav = false"
-      @open-dedup="activeNav = 'dedup'; showMobileNav = false; openDedup()"
-      @navigate-about="activeNav = 'about'; showMobileNav = false"
+      @navigate-settings="openSettings()"
     />
 
     <!-- Main -->
     <main class="main">
       <AppTopbar
-        v-model:show-duplicate-tracks="showDuplicateTracks"
+        :title="pageTitle"
+        :subtitle="pageSubtitle"
         :can-nav-back="canNavBack"
         :can-nav-forward="canNavForward"
         @open-menu="showMobileNav = true"
         @nav-back="navBack"
         @nav-forward="navForward"
-      />
+      >
+        <template v-if="activeNav === 'playlists' && playlistTab === 'smart' && editingSP" #title>
+          <input v-model="editingSP.name" class="page-title-input" aria-label="Playlist name" placeholder="Playlist name" @input="saveSP()" @click.stop />
+        </template>
+      </AppTopbar>
 
       <div ref="contentRef" class="content" @scroll.passive="maybeLoadMoreSoulseekResults">
         <!-- Home view -->
@@ -5050,13 +5044,9 @@ onUnmounted(() => {
             >
               <button type="button" class="card onboarding-music-card" @click="startOnboardingSync">
                 <div class="cover onboarding-action-cover onboarding-sync-cover">
-                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9z" />
-                    <path d="M9 17l3 3 3-3a4.237 4.237 0 0 0-6 0z" />
-                    <path d="M5 13l2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z" />
-                  </svg>
+                  <AppIcon name="wifi" />
                   <span class="hover-play">
-                    <span class="green-circle onboarding-card-go" aria-hidden="true">→</span>
+                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-right" :size="22" /></span>
                   </span>
                 </div>
                 <div class="card-title">Sync</div>
@@ -5065,11 +5055,9 @@ onUnmounted(() => {
 
               <button type="button" class="card onboarding-music-card" @click="openDataDir">
                 <div class="cover onboarding-action-cover onboarding-upload-cover">
-                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
-                  </svg>
+                  <AppIcon name="folder-open" />
                   <span class="hover-play">
-                    <span class="green-circle onboarding-card-go" aria-hidden="true">→</span>
+                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-right" :size="22" /></span>
                   </span>
                 </div>
                 <div class="card-title">Upload</div>
@@ -5092,8 +5080,8 @@ onUnmounted(() => {
                 <CoverImage class="cover" :src="coverUrl(track.cover_hash, 'medium')" :placeholder="hashToColors(track.file_hash)">
                   <div class="hover-play">
                     <button class="green-circle" type="button" @click.stop="toggleRecentCardPlayback(idx, track.id)">
-                      <svg v-if="!isTrackPlaying(track.id)" viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
-                      <svg v-else viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                      <AppIcon name="play" v-if="!isTrackPlaying(track.id)" :size="18" color="black" />
+                      <AppIcon name="pause" v-else :size="18" color="black" />
                     </button>
                   </div>
                 </CoverImage>
@@ -5128,11 +5116,11 @@ onUnmounted(() => {
                 <div class="cover" :style="homePinnedCoverStyle(item)">
                   <div class="hover-play">
                     <button v-if="item.trackCount" class="green-circle" type="button" @click.stop="playHomePinnedCard(item)">
-                      <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
+                      <AppIcon name="play" :size="18" color="black" />
                     </button>
                   </div>
-                  <svg v-if="item.kind === 'regular'" viewBox="0 0 24 24" fill="rgba(255,255,255,0.88)" width="30" height="30"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
-                  <svg v-else viewBox="0 0 24 24" fill="rgba(255,255,255,0.88)" width="30" height="30"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+                  <AppIcon name="list-music" v-if="item.kind === 'regular'" :size="30" color="rgba(255,255,255,0.88)" />
+                  <AppIcon name="list-filter" v-else :size="30" color="rgba(255,255,255,0.88)" />
                 </div>
                 <div class="card-title">{{ item.name }}</div>
                 <div class="card-artist">{{ item.subtitle }}</div>
@@ -5168,7 +5156,7 @@ onUnmounted(() => {
                 <div class="cover" :style="`background: linear-gradient(135deg, ${item.colors[0]}, ${item.colors[1]})`">
                   <div class="hover-play">
                     <button class="green-circle">
-                      <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
+                      <AppIcon name="play" :size="18" color="black" />
                     </button>
                   </div>
                 </div>
@@ -5182,8 +5170,7 @@ onUnmounted(() => {
         <!-- Library view -->
         <template v-else-if="activeNav === 'library'">
           <section>
-            <div class="library-header">
-              <h2>Your Library</h2>
+            <div class="library-header page-toolbar">
               <input
                 v-model="libraryQuery"
                 class="library-search"
@@ -5221,8 +5208,7 @@ onUnmounted(() => {
         <!-- Search view -->
         <template v-else-if="activeNav === 'search'">
           <section>
-            <div class="library-header">
-              <h2>Search</h2>
+            <div class="library-header page-toolbar">
               <input
                 v-model="searchQuery"
                 class="library-search"
@@ -5285,8 +5271,8 @@ onUnmounted(() => {
                 <div v-if="searchResults.length" class="library-page-controls library-page-controls-bottom">
                   <span>{{ localSearchPageLabel }}</span>
                   <div>
-                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage">← Previous</button>
-                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next →</button>
+                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage"><AppIcon name="arrow-left" /> Previous</button>
+                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next <AppIcon name="arrow-right" /></button>
                   </div>
                 </div>
               </template>
@@ -5302,66 +5288,9 @@ onUnmounted(() => {
                   >
                     {{ soulseekLoading ? 'Searching…' : 'Search' }}
                   </button>
-                  <ResponsivePopup
-                    :open="soulseekSettingsOpen"
-                    wrapper-class="soulseek-settings-menu-wrapper"
-                    panel-class="settings-dropdown soulseek-settings-dropdown"
-                    show-actions
-                    cancel-label="Cancel"
-                    :save-label="soulseekSettingsSaving ? 'Saving...' : 'Save'"
-                    :save-disabled="soulseekSettingsSaving"
-                    @close="soulseekSettingsOpen = false"
-                    @cancel="soulseekSettingsOpen = false"
-                    @save="saveSoulseekSettings"
-                  >
-                    <template #trigger>
-                      <button class="text-action-btn soulseek-settings-link" @click.stop="openSoulseekSettings">
-                        {{ soulseekStatus?.enabled ? 'Settings' : 'Enable' }}
-                      </button>
-                    </template>
-
-                    <div class="modal-header settings-popup-header">
-                      <h3>Soulseek settings</h3>
-                      <button class="icon-btn" title="Close" @click="soulseekSettingsOpen = false">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                      </button>
-                    </div>
-                    <div class="modal-body settings-body settings-popup-body">
-                      <div class="settings-toggle-row">
-                        <div>
-                          <span class="settings-toggle-title">Soulseek search</span>
-                          <span class="settings-toggle-copy">Search the Soulseek network and save selected files directly into your local library.</span>
-                        </div>
-                        <button
-                          type="button"
-                          class="sync-toggle settings-toggle-action"
-                          :class="{ active: settingsSoulseekEnabled }"
-                          :aria-pressed="settingsSoulseekEnabled"
-                          :title="settingsSoulseekEnabled ? 'Soulseek search on — click to disable' : 'Soulseek search off — click to enable'"
-                          @click="settingsSoulseekEnabled = !settingsSoulseekEnabled"
-                        >
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16a6.47 6.47 0 0 0 4.23-1.57l.27.28v.79L20 21.5 21.5 20l-6-6zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                          Search
-                        </button>
-                      </div>
-
-                      <template v-if="settingsSoulseekEnabled">
-                        <label class="field">
-                          <span>Soulseek username</span>
-                          <input v-model="settingsSoulseekUsername" autocomplete="username" placeholder="username" />
-                        </label>
-
-                        <label class="field">
-                          <span>Soulseek password</span>
-                          <input v-model="settingsSoulseekPassword" type="password" autocomplete="current-password" placeholder="password" />
-                        </label>
-
-                        <p class="settings-note">Downloaded Soulseek files are placed into the Soulseek folder inside your library.</p>
-                      </template>
-
-                      <div v-if="soulseekSettingsError" class="settings-error">{{ soulseekSettingsError }}</div>
-                    </div>
-                  </ResponsivePopup>
+                  <button class="text-action-btn soulseek-settings-link" @click="openSoulseekSettings">
+                    {{ soulseekStatus?.enabled ? 'Settings' : 'Enable' }}
+                  </button>
                 </div>
               </div>
 
@@ -5462,12 +5391,10 @@ onUnmounted(() => {
             <div class="library-header soulseek-replace-page-header">
               <div class="soulseek-replace-page-heading">
                 <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                  <AppIcon name="arrow-left" :size="20" />
                 </button>
                 <div>
-                  <h2 style="margin:0;">Search and replace</h2>
                   <p class="soulseek-replace-track-copy">
-                    Replace <strong>{{ trackReplaceDialog.track.title || trackReplaceDialog.track.path }}</strong> with a Soulseek match.
                     Filled metadata stays intact; empty fields are filled from the replacement file.
                   </p>
                 </div>
@@ -5578,8 +5505,8 @@ onUnmounted(() => {
                     :aria-label="soulseekDownloadActionLabel(result)"
                     @click.stop="downloadSoulseekResult(result)"
                   >
-                    <svg v-if="soulseekDownloadState(result)?.state === 'completed'" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                    <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.42 1.42L11 5.84V16h2V5.84l3.08 3.08 1.42-1.42L12 2z"/></svg>
+                    <AppIcon name="check" v-if="soulseekDownloadState(result)?.state === 'completed'" :size="16" />
+                    <AppIcon name="download" v-else :size="16" />
                   </button>
                   <button class="btn-primary soulseek-replace-btn" :disabled="!!trackReplaceApplyingKey" @click.stop="replaceTrackWithSoulseekResult(trackReplaceDialog.track, result)">
                     {{ trackReplaceActionLabel(result) }}
@@ -5595,9 +5522,8 @@ onUnmounted(() => {
             <div class="library-header soulseek-replace-page-header">
               <div class="soulseek-replace-page-heading">
                 <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                  <AppIcon name="arrow-left" :size="20" />
                 </button>
-                <h2 style="margin:0;">Search and replace</h2>
               </div>
             </div>
             <div class="library-empty">No track selected.</div>
@@ -5609,10 +5535,9 @@ onUnmounted(() => {
           <section>
             <div class="library-header">
               <div style="display:flex; align-items:center; gap:12px;">
-                <button class="icon-btn" style="padding:4px;" @click="activeNav = 'home'">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                <button class="icon-btn text-action-btn" style="padding:4px;" @click="activeNav = 'home'">
+                  <AppIcon name="arrow-left" :size="20" /> Home
                 </button>
-                <h2 style="margin:0;">Play History</h2>
               </div>
             </div>
             <div v-if="historyLoading" class="library-empty">Loading...</div>
@@ -5641,12 +5566,11 @@ onUnmounted(() => {
               <template v-if="playlistView">
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
+                      <AppIcon name="arrow-left" :size="20" /> Playlists
                     </button>
-                    <h2 style="margin:0;">{{ playlistView.name }}</h2>
                   </div>
-                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)">▶ Play</button>
+                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
@@ -5659,7 +5583,7 @@ onUnmounted(() => {
                   >
                     <template #extra>
                       <button class="icon-btn track-inline-action" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13H5v-2h14v2z"/></svg>
+                        <AppIcon name="minus" />
                       </button>
                     </template>
                   </TrackRow>
@@ -5668,8 +5592,7 @@ onUnmounted(() => {
               </template>
               <!-- Playlist list -->
               <template v-else>
-                <div class="library-header">
-                  <h2>Playlists</h2>
+                <div class="library-header page-toolbar">
                   <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
                 </div>
                 <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
@@ -5687,17 +5610,17 @@ onUnmounted(() => {
                 <div v-else class="track-list">
                   <div v-for="pl in playlists" :key="pl.id" class="track-row" style="cursor:pointer;" @click="openPlaylist(pl)">
                     <div class="track-cover-sm" style="background: linear-gradient(135deg, #333, #1a1a1a); display:flex; align-items:center; justify-content:center;">
-                      <svg viewBox="0 0 24 24" fill="#a7a7a7" width="20" height="20"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+                      <AppIcon name="list-music" :size="20" color="#a7a7a7" />
                     </div>
                     <div class="track-info">
                       <span class="track-title">{{ pl.name }}</span>
                       <span class="track-album">{{ pl.track_count }} track{{ pl.track_count !== 1 ? 's' : '' }}</span>
                     </div>
                     <button class="icon-btn" :class="{ green: pl.pinned }" style="margin-right:4px;" :title="pl.pinned ? 'Unpin from Home' : 'Pin to Home'" @click.stop="togglePlaylistPinned(pl)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v1h5v8h2v-8h5v-1l-2-2z"/></svg>
+                      <AppIcon name="pin" :size="15" />
                     </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete playlist" @click.stop="deletePlaylist(pl.id)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                      <AppIcon name="trash-2" :size="16" />
                     </button>
                   </div>
                 </div>
@@ -5710,16 +5633,9 @@ onUnmounted(() => {
               <template v-if="editingSP">
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
+                      <AppIcon name="arrow-left" :size="20" /> Flexible Playlists
                     </button>
-                    <input
-                      class="library-search smart-name-input"
-                      style="min-width:140px; max-width:260px;"
-                      v-model="editingSP.name"
-                      @input="saveSP()"
-                      @click.stop
-                    />
                   </div>
                   <span class="smart-track-count">{{ editingSPTotal }} tracks</span>
                 </div>
@@ -5798,7 +5714,7 @@ onUnmounted(() => {
                     </template>
 
                     <button class="icon-btn" style="margin-left:auto; flex-shrink:0;" @click="removeSPRule(rule.id)" title="Remove rule">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                      <AppIcon name="x" :size="14" />
                     </button>
                   </div>
                   <button class="sp-add-rule-btn" @click="addSPRule()">+ Add rule</button>
@@ -5826,14 +5742,13 @@ onUnmounted(() => {
               <template v-else-if="smartView">
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn" style="padding:4px;" @click="smartView = null">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="smartView = null">
+                      <AppIcon name="arrow-left" :size="20" /> Flexible Playlists
                     </button>
-                    <h2 style="margin:0;">{{ smartView.name }}</h2>
                   </div>
                   <div style="display:flex;gap:8px;">
                     <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
-                    <button v-if="smartViewTracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playSmartPlaylistTrack(0)">▶ Play</button>
+                    <button v-if="smartViewTracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playSmartPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                   </div>
                 </div>
                 <div v-if="smartViewLoading" class="library-empty">Loading playlist…</div>
@@ -5853,8 +5768,7 @@ onUnmounted(() => {
 
               <!-- Smart playlist list -->
               <template v-else>
-                <div class="library-header">
-                  <h2>Flexible Playlists</h2>
+                <div class="library-header page-toolbar">
                   <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewSPInput = !showNewSPInput">+ New</button>
                 </div>
                 <div v-if="showNewSPInput" style="display:flex; gap:8px; padding: 0 0 14px;">
@@ -5865,20 +5779,20 @@ onUnmounted(() => {
                 <div v-else class="track-list">
                   <div v-for="sp in smartPlaylists" :key="sp.id" class="track-row" style="cursor:pointer;" @click="smartView = sp">
                     <div class="track-cover-sm" style="background: linear-gradient(135deg, #1a2a3a, #0d1b2a); display:flex; align-items:center; justify-content:center;">
-                      <svg viewBox="0 0 24 24" fill="#4fc3f7" width="20" height="20"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+                      <AppIcon name="list-filter" :size="20" color="#4fc3f7" />
                     </div>
                     <div class="track-info">
                       <span class="track-title">{{ sp.name }}</span>
                       <span class="track-album">{{ sp.rules.length }} rule{{ sp.rules.length !== 1 ? 's' : '' }} · {{ smartPlaylistPreviews[sp.id]?.total ?? 0 }} tracks</span>
                     </div>
                     <button class="icon-btn" :class="{ green: sp.pinned }" style="margin-right:4px;" :title="sp.pinned ? 'Unpin from Home' : 'Pin to Home'" @click.stop="toggleSmartPlaylistPinned(sp)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v1h5v8h2v-8h5v-1l-2-2z"/></svg>
+                      <AppIcon name="pin" :size="15" />
                     </button>
                     <button class="icon-btn" style="margin-right:4px;" title="Edit" @click.stop="editingSP = { ...sp }; smartView = null">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
+                      <AppIcon name="pencil" :size="14" />
                     </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete" @click.stop="deleteSmartPlaylist(sp.id)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                      <AppIcon name="trash-2" :size="14" />
                     </button>
                   </div>
                 </div>
@@ -5890,8 +5804,7 @@ onUnmounted(() => {
         <!-- Duplicates view -->
         <template v-else-if="activeNav === 'dedup'">
           <section>
-            <div class="library-header">
-              <h2>Duplicates</h2>
+            <div class="library-header page-toolbar">
               <div class="dedup-toolbar">
                 <button
                   class="dedup-filter-btn"
@@ -5904,7 +5817,7 @@ onUnmounted(() => {
                   @click="dedupFilter = 'unresolved'"
                 >Unresolved</button>
                 <button class="btn-secondary dedup-rescan-btn" @click="openDedup()" :disabled="dedupLoading">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                  <AppIcon name="refresh-cw" :size="14" />
                   Rescan
                 </button>
               </div>
@@ -5916,7 +5829,7 @@ onUnmounted(() => {
 
             <template v-else-if="dedupGroups.length === 0">
               <p class="search-empty-copy dedup-clean-copy">
-                <svg viewBox="0 0 24 24" fill="#1db954" width="20" height="20"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                <AppIcon name="circle-check" :size="20" color="#1db954" />
                 No duplicates found. Your library looks clean!
               </p>
             </template>
@@ -5962,7 +5875,7 @@ onUnmounted(() => {
                       </span>
                       <span class="dedup-track-meta">
                         <span>{{ track.path }}</span>
-                        <span v-if="track.play_count > 0">▶ {{ track.play_count }}</span>
+                        <span v-if="track.play_count > 0"><AppIcon name="play" :size="12" /> {{ track.play_count }}</span>
                         <span v-if="track.manually_edited" class="dedup-edited-tag">edited</span>
                         <span v-if="track.is_duplicate" class="dedup-flagged-tag">flagged</span>
                       </span>
@@ -5994,62 +5907,16 @@ onUnmounted(() => {
         <!-- Discovery view -->
         <template v-else-if="activeNav === 'discovery'">
           <section>
-            <div class="library-header discovery-header">
-              <div class="discovery-header-copy">
-                <h2>Devices on Network</h2>
-              </div>
+            <div class="library-header discovery-header page-toolbar">
               <div class="discovery-toolbar">
-                <ResponsivePopup
-                  :open="settingsOpen"
-                  wrapper-class="settings-menu-wrapper"
-                  panel-class="settings-dropdown"
-                  show-actions
-                  cancel-label="Cancel"
-                  :save-label="settingsSaving ? 'Saving...' : 'Save'"
-                  :save-disabled="settingsSaving"
-                  @close="settingsOpen = false"
-                  @cancel="settingsOpen = false"
-                  @save="saveDeviceSettings"
-                >
-                  <template #trigger>
-                    <button class="sync-toggle" @click.stop="openDeviceSettings" title="Device settings">
-                      <span class="device-emoji">{{ deviceEmoji }}</span>
-                      Settings
-                    </button>
-                  </template>
-                  <div class="modal-header settings-popup-header">
-                    <h3>Device settings</h3>
-                    <button class="icon-btn" title="Close" @click="settingsOpen = false">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                    </button>
-                  </div>
-                  <div class="modal-body settings-body settings-popup-body">
-                    <label class="field">
-                      <span>Device name</span>
-                      <input v-model="settingsDeviceName" placeholder="My Player" />
-                    </label>
-
-                    <div class="settings-label">Emoji</div>
-                    <div class="emoji-grid">
-                      <button
-                        v-for="emoji in EMOJI_OPTIONS"
-                        :key="emoji"
-                        class="emoji-cell"
-                        :class="{ active: settingsEmoji === emoji }"
-                        @click="settingsEmoji = emoji"
-                      >{{ emoji }}</button>
-                    </div>
-
-                    <div v-if="settingsError" class="settings-error">{{ settingsError }}</div>
-                  </div>
-                </ResponsivePopup>
+                <button class="sync-toggle" @click="openDeviceSettings"><span class="device-emoji">{{ deviceEmoji }}</span> Settings</button>
                 <button
                   class="sync-toggle"
                   :class="{ active: syncEnabled }"
                   @click="toggleSync"
                   :title="syncEnabled ? 'Sync on — click to disable' : 'Sync off — click to enable'"
                 >
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                  <AppIcon name="refresh-cw" :size="14" />
                   Sync
                 </button>
               </div>
@@ -6072,9 +5939,9 @@ onUnmounted(() => {
                     <span v-if="isRemoteOutputPeer(peer)" class="track-playback-badge next discovery-output-pill">Output</span>
                     <span class="discovery-status-pill" :class="peerPlaybackClass(peer)">
                       <span class="peer-playback-icon" aria-hidden="true">
-                        <svg v-if="peer.playback?.state === 'playing'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
-                        <svg v-else-if="peer.playback?.state === 'paused'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
-                        <svg v-else viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M7 7h10v10H7z"/></svg>
+                        <AppIcon name="play" v-if="peer.playback?.state === 'playing'" :size="14" />
+                        <AppIcon name="pause" v-else-if="peer.playback?.state === 'paused'" :size="14" />
+                        <AppIcon name="square" v-else :size="14" />
                       </span>
                       {{ peerPlaybackLabel(peer) }}
                     </span>
@@ -6106,89 +5973,58 @@ onUnmounted(() => {
                   :disabled="['index','download','reindex','merging'].includes(syncProgress[peer.name]?.phase ?? '')"
                   title="Sync now"
                 >
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                  <AppIcon name="refresh-cw" :size="16" />
                 </button>
               </div>
             </div>
           </section>
         </template>
 
-        <template v-else-if="activeNav === 'about'">
-          <section>
-            <div v-if="aboutLoading && !aboutInfo" class="library-empty">Loading About data…</div>
-            <div v-else-if="aboutError && !aboutInfo" class="settings-error about-error">{{ aboutError }}</div>
-
-            <template v-else>
-              <div class="search-summary about-summary">
-                <span class="about-version-line"><strong>Version</strong> v{{ aboutInfo?.current_version || 'n/a' }}</span>
-                <button
-                  v-if="!aboutUpdateStatus?.has_update"
-                  class="sync-toggle"
-                  title="Check GitHub Releases"
-                  :disabled="aboutCheckingUpdates"
-                  @click="checkAboutUpdates()"
-                >
-                  {{ aboutCheckingUpdates ? 'Checking…' : 'Check updates' }}
-                </button>
-                <template v-if="aboutUpdateStatus?.has_update">
-                  <button
-                    class="btn-primary about-update-dl-btn"
-                    :style="aboutUpdateProgress !== null ? { '--dl-pct': aboutUpdateProgress + '%' } : {}"
-                    :disabled="aboutUpdating"
-                    @click="doAboutUpdate()"
-                  >
-                    <span class="about-update-dl-fill" v-if="aboutUpdating && aboutUpdateProgress !== null" />
-                    <span class="about-update-dl-label">
-                      {{ aboutUpdating
-                          ? (aboutUpdateProgress !== null ? `${aboutUpdateProgress}%` : 'Downloading…')
-                          : (aboutDesktopUpdateReady || aboutUpdateStatus.asset_url ? 'Update now' : 'View release') }}
-                    </span>
-                  </button>
-                  <a
-                    v-if="aboutUpdateStatus.release_url"
-                    class="about-download-link about-download-link-icon"
-                    href="#"
-                    title="Release page"
-                    @click.prevent="openAboutDownloadLink()"
-                  ><svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg></a>
-                </template>
-                <span v-if="aboutCheckingUpdates" class="about-update-inline">Checking updates…</span>
-                <span v-else-if="aboutUpdateError && !aboutUpdateStatus" class="about-update-inline about-update-inline-error">{{ aboutUpdateError }}</span>
-                <span v-else-if="aboutUpdateStatus && !aboutUpdateStatus.has_update" class="about-update-inline">
-                  {{ aboutUpdateStatus.latest_version ? `No updates. Latest: v${aboutUpdateStatus.latest_version}` : 'No updates' }}
-                </span>
-              </div>
-
-              <!-- Update available section -->
-              <template v-if="aboutUpdateStatus?.has_update">
-                <div class="about-update-banner">
-                  <div class="about-update-intro">
-                    <img
-                      class="about-update-zippy"
-                      src="/zippi-sprites/zippi-introduce.webp"
-                      alt=""
-                      aria-hidden="true"
-                    />
-                  </div>
-                  <template v-if="aboutUpdateStatus.release_notes">
-                    <h3 class="about-whats-new-title">What's new</h3>
-                    <div class="about-release-notes" v-html="marked(aboutUpdateStatus.release_notes)" />
-                  </template>
+        <template v-else-if="isSettingsNav || activeNav === 'about'">
+          <SettingsView
+            v-model:show-duplicate-tracks="showDuplicateTracks"
+            :section="activeNav === 'about' ? 'about' : settingsSection"
+            :data-dir="libraryDataDir"
+            :index-busy="libraryScanBusy"
+            :index-current="indexCurrent" :index-total="indexTotal" :index-done="indexDone" :index-added="indexAdded"
+            :identify-busy="identifyPreparing || (identifyRunning && !identifyDone)" :action-error="settingsActionError" :action-message="settingsActionMessage"
+            :output-devices="outputDevices" :current-device="currentDevice" :selected-device="selectedOutputDevice"
+            :current-sample-rate="currentSampleRate" :native-sample-rate="nativeSampleRate"
+            :audio-loading="audioLoading" :audio-busy="audioBusy" :audio-error="deviceMenuError"
+            :remote-output-label="remoteOutputPeer ? peerLabel(remoteOutputPeer) : ''"
+            :sync-enabled="syncEnabled" :sync-busy="syncBusy" :sync-error="syncError" :sync-active="syncActive" :peers-count="peers.length"
+            :update-available="hasAvailableUpdate"
+            :discord-enabled="discord.enabled.value" :discord-available="discord.available.value"
+            :discord-configured="discord.configured.value" :discord-ready="discord.ready.value" :discord-error="discord.error.value"
+            @toggle-discord="discord.setEnabled"
+            :cover-url="currentCoverUrl" :cover-colors="currentTrack.colors"
+            @navigate="openSettings" @open-folder="openSettingsFolder" @reindex="doReindex" @identify="identifyFromSettings"
+            @duplicates="activeNav = 'dedup'; openDedup()" @devices="activeNav = 'discovery'"
+            @refresh-audio="refreshOutputDevices" @select-output="selectSettingsOutput" @select-sample-rate="selectSettingsSampleRate"
+            @toggle-sync="toggleSync" @device-saved="onDeviceSettingsSaved" @soulseek-saved="loadSoulseekStatus"
+          >
+            <template #appearance-track>
+              <div v-for="(rarity, index) in ['Epic', 'Legendary', 'Mythic']" :key="rarity" class="track-row appearance-track-preview" :class="rarityClass(rarity)" :style="rarityVars(rarity)" role="listitem" :aria-label="`${rarity} track appearance preview`">
+                <div class="track-cover-sm" :style="currentCoverUrl
+                  ? { backgroundImage: `url(${currentCoverUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+                  : { background: `linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})` }" />
+                <span class="track-num">{{ index + 1 }}</span>
+                <div class="track-info">
+                  <div class="track-title-row"><span class="track-title">Preview track {{ index + 1 }}</span></div>
+                  <span class="track-album">{{ nowPlaying?.album || 'Your music library' }}</span>
                 </div>
-              </template>
-
-              <template v-if="!aboutUpdateStatus?.has_update">
-              <h2>Changelog</h2>
-
-              <div v-if="aboutInfo?.changelog.length">
-                <div v-for="entry in aboutInfo!.changelog" :key="`${entry.short_hash}:${entry.committed_at}`">
-                  {{ entry.subject }}
-                </div>
+                <span class="track-dur">{{ formatDuration(213 + index * 24) }}</span>
               </div>
-              <div v-else class="library-empty">No changelog entries were embedded into this build.</div>
-              </template>
             </template>
-          </section>
+            <template #about>
+              <AboutPanel :info="aboutInfo" :loading="aboutLoading" :error="aboutError" :status="aboutUpdateStatus"
+                :checking="aboutCheckingUpdates" :updating="aboutUpdating" :progress="aboutUpdateProgress"
+                :desktop-ready="aboutDesktopUpdateReady" :update-error="aboutUpdateError" :update-done="aboutUpdateDone"
+                @check="checkAboutUpdates" @update="doAboutUpdate" @open-release="openAboutDownloadLink"
+                @open-repository="openUrl('https://github.com/' + (aboutInfo?.release_repo || 'verncat/player'))"
+                @retry="loadAbout(true)" @open-external="openUrl" />
+            </template>
+          </SettingsView>
         </template>
 
         <template v-else-if="activeNav === 'artist'">
@@ -6299,7 +6135,7 @@ onUnmounted(() => {
       <div class="modal-header">
         <h3>Confirm marking</h3>
         <button class="icon-btn" @click="dedupConfirmOpen = false">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          <AppIcon name="x" :size="18" />
         </button>
       </div>
       <div class="modal-body">
@@ -6318,7 +6154,7 @@ onUnmounted(() => {
           <div class="modal-header">
             <h3>Edit Track</h3>
             <button class="icon-btn" @click="editingTrack = null">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+              <AppIcon name="x" :size="18" />
             </button>
           </div>
           <div class="modal-body edit-track-body">
@@ -6403,12 +6239,12 @@ onUnmounted(() => {
         </template>
         <template v-else-if="indexRunning">
           <div v-if="!indexDone" class="identify-mini-spinner" />
-          <svg v-else viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+          <AppIcon name="circle-check" v-else :size="16" color="#1db954" />
           <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
           <span v-else>+{{ indexAdded }}</span>
         </template>
         <template v-else>
-          <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2z"/></svg>
+          <AppIcon name="list" :size="15" />
         </template>
         <span v-if="!indexRunning" class="activity-mini-label">Activity</span>
       </button>
@@ -6420,7 +6256,7 @@ onUnmounted(() => {
       <div v-if="identifyRunning && identifyMinimized" class="identify-mini" @click="identifyMinimized = false">
         <div v-if="!identifyDone" class="identify-mini-spinner" />
         <span>{{ identifyCurrent }}/{{ identifyTotal }}</span>
-        <span v-if="identifyDone" class="identify-mini-done">✓</span>
+        <span v-if="identifyDone" class="identify-mini-done"><AppIcon name="check" /></span>
       </div>
     </div>
 
@@ -6432,10 +6268,10 @@ onUnmounted(() => {
             <h3>Identifying tracks <span class="powered-by">powered by <a href="https://acoustid.org" target="_blank">AcoustID</a></span></h3>
             <div style="display:flex;gap:8px">
               <button class="icon-btn" title="Minimize" @click="identifyMinimized = true">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M6 19h12v2H6z"/></svg>
+                <AppIcon name="minus" :size="18" />
               </button>
               <button v-if="identifyDone" class="icon-btn" title="Close" @click="identifyRunning = false">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                <AppIcon name="x" :size="18" />
               </button>
             </div>
           </div>
@@ -6465,7 +6301,7 @@ onUnmounted(() => {
           <div class="modal-header">
             <h3>Activity <span class="powered-by">library &amp; sync history</span></h3>
             <button class="icon-btn" title="Close" @click="indexLogOpen = false; indexRunning = false">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+              <AppIcon name="x" :size="18" />
             </button>
           </div>
           <div class="modal-body">
@@ -6494,12 +6330,12 @@ onUnmounted(() => {
                     <template v-else>scanning…</template>
                   </span>
                   <span class="ls-badge ls-badge-done" v-else-if="session.status === 'done'">
-                    <svg viewBox="0 0 24 24" fill="#1db954" width="12" height="12"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                    <AppIcon name="check" :size="12" color="#1db954" />
                     <template v-if="session.filesAdded > 0">+{{ session.filesAdded }} files</template>
                     <template v-else>up to date</template>
                   </span>
                   <span class="ls-badge ls-badge-err" v-else>
-                    <svg viewBox="0 0 24 24" fill="#ff5252" width="12" height="12"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    <AppIcon name="x" :size="12" color="#ff5252" />
                     error
                   </span>
                   <span class="ls-time">{{ new Date(session.finishedAt || session.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
@@ -6537,6 +6373,7 @@ onUnmounted(() => {
       </div>
     </div>
     <PlayerBar
+      :reduce-motion="reducedMotion"
       v-model:is-liked="isLiked"
       v-model:is-shuffled="isShuffled"
       v-model:repeat-mode="repeatMode"
@@ -6570,6 +6407,7 @@ onUnmounted(() => {
       @seek="seek"
       @toggle-queue-menu="toggleQueueMenu"
       @toggle-device-menu="toggleDeviceMenu"
+      @open-playback-settings="openSettings('playback')"
       @jump-to-queue-item="jumpToQueueItem"
       @pick-local-device="pickLocalDevice"
       @pick-local-sample-rate="pickLocalSampleRate"
@@ -6609,6 +6447,7 @@ onUnmounted(() => {
               <div class="detail-art-stage">
                 <WebGLAlbumRenderer
                   :cover-url="coverUrl(nowPlaying.cover_hash, 'medium')"
+                  v-if="appearance.album3d && !reducedMotion"
                   :colors="currentTrack.colors"
                   :rarity-color="currentRarityColor"
                   :beat-scale="beatScale"
@@ -6619,7 +6458,8 @@ onUnmounted(() => {
                   :offset-y="cardTY"
                   :dragging="cardDragging"
                 />
-                <div class="detail-spectrum-ring" :class="{ playing: isPlaying }" :style="detailSpectrumStyle" aria-hidden="true">
+                <div v-else class="detail-static-cover" :style="detailBackdropImageStyle" />
+                <div v-if="!reducedMotion" class="detail-spectrum-ring" :class="{ playing: isPlaying }" :style="detailSpectrumStyle" aria-hidden="true">
                   <div
                     v-for="segment in spectrumSegments"
                     :key="segment.index"
@@ -6640,8 +6480,8 @@ onUnmounted(() => {
                 <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
               </div>
               <button class="icon-btn" :class="{ green: nowPlaying.is_liked }" @click.stop="toggleLike(nowPlaying!)" style="margin-left:auto;">
-                <svg v-if="nowPlaying.is_liked" viewBox="0 0 24 24" fill="#1db954" width="22" height="22"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                <AppIcon name="heart" v-if="nowPlaying.is_liked" :size="22" color="#1db954" filled />
+                <AppIcon name="heart" v-else :size="22" />
               </button>
             </div>
             <!-- seek -->
@@ -6671,21 +6511,21 @@ onUnmounted(() => {
             <!-- controls -->
             <div class="detail-controls">
               <button class="icon-btn" :class="{ green: isShuffled }" @click="isShuffled = !isShuffled">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+                <AppIcon name="shuffle" :size="20" />
               </button>
               <button class="icon-btn" @click="playPrev">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+                <AppIcon name="skip-back" :size="32" />
               </button>
               <button class="detail-play-btn" @click="togglePlay">
-                <svg v-if="!isPlaying" viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><path d="M8 5v14l11-7z"/></svg>
-                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                <AppIcon name="play" v-if="!isPlaying" :size="28" />
+                <AppIcon name="pause" v-else :size="28" />
               </button>
               <button class="icon-btn" @click="playNext">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                <AppIcon name="skip-forward" :size="32" />
               </button>
               <button class="icon-btn" :class="{ green: repeatMode > 0 }" @click="repeatMode = (repeatMode + 1) % 3">
-                <svg v-if="repeatMode < 2" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2v-5h-1l-2 1v1h1.5v3H13z"/></svg>
+                <AppIcon name="repeat" v-if="repeatMode < 2" :size="20" />
+                <AppIcon name="repeat-1" v-else :size="20" />
               </button>
             </div>
           </div>
@@ -6706,6 +6546,10 @@ a, button, [role="button"] {
 </style>
 
 <style scoped>
+.detail-static-cover { position: absolute; inset: 15%; border-radius: 14px; box-shadow: 0 20px 50px #0006; }
+.page-title-input { width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
+.page-title-input:focus-visible { outline: 2px solid #1db954; outline-offset: -2px; }
+
 /* ── Layout ── */
 .app {
   display: grid;
@@ -6762,11 +6606,6 @@ a, button, [role="button"] {
 
 .discovery-header {
   align-items: flex-end;
-}
-.discovery-header-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 .discovery-toolbar {
   display: flex;
@@ -6857,72 +6696,6 @@ a, button, [role="button"] {
 .sync-toggle:hover { border-color: #fff; color: #fff; }
 .sync-toggle.active { background: #1db954; border-color: #1db954; color: #000; }
 
-.settings-body { gap: 12px; }
-.settings-menu-wrapper,
-.soulseek-settings-menu-wrapper {
-  position: relative;
-}
-.soulseek-settings-menu-wrapper {
-  display: inline-flex;
-}
-.settings-popup-header {
-  padding: 12px 14px 6px;
-}
-.settings-popup-header h3 {
-  color: #fff;
-}
-.settings-popup-body {
-  padding: 10px 16px 4px;
-}
-.settings-label { font-size: var(--fs-field-label); font-weight: 700; color: #a7a7a7; margin-top: 2px; }
-.settings-toggle-row {
-  padding: 0;
-  border: none;
-  background: none;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-.settings-toggle-title {
-  display: block;
-  color: #fff;
-  font-size: var(--fs-body-md);
-  font-weight: 700;
-}
-.settings-toggle-copy {
-  display: block;
-  margin-top: 4px;
-  color: #a7a7a7;
-  font-size: var(--fs-body-sm);
-  line-height: 1.45;
-}
-.settings-toggle-action {
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-.settings-note {
-  margin: -4px 0 0;
-  color: #a7a7a7;
-  font-size: var(--fs-body-sm);
-  line-height: 1.45;
-}
-.emoji-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
-}
-.emoji-cell {
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
-  height: 44px;
-  background: #181818;
-  color: #fff;
-  font-size: 24px;
-  cursor: pointer;
-}
-.emoji-cell:hover { border-color: #777; background: #242424; }
-.emoji-cell.active { border-color: #1db954; box-shadow: 0 0 0 1px #1db954 inset; }
 .settings-error { color: #e9283e; font-size: var(--fs-body-sm); }
 
 /* ── Duplicates view ── */
@@ -7076,6 +6849,7 @@ a, button, [role="button"] {
   background: linear-gradient(180deg, #4a2d8a 0%, #1f1b3a 30%, #121212 58%);
 }
 
+
 .user-menu-wrapper { position: relative; }
 .user-btn {
   display: flex; align-items: center; gap: 8px;
@@ -7103,7 +6877,8 @@ a, button, [role="button"] {
 
 /* ── Content ── */
 .content {
-  flex: 1; overflow-y: auto;
+  flex: 1; overflow-y: scroll;
+  scrollbar-gutter: stable;
   padding: 0 24px 32px;
 }
 .content::-webkit-scrollbar { width: 8px; }
@@ -7294,6 +7069,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 16px; gap: 16px;
 }
+.library-header.page-toolbar { justify-content: flex-end; }
 .library-page-controls {
   display: flex;
   align-items: center;
@@ -7304,6 +7080,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   font-size: 13px;
 }
 .library-page-controls > div { display: flex; gap: 6px; }
+.library-page-controls button { gap: 6px; }
 .library-page-controls-bottom { margin: 18px 0 0; justify-content: center; }
 .library-load-more { display: flex; justify-content: center; padding: 18px 0; }
 .library-search {
@@ -7315,234 +7092,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .library-search:focus { outline: 1px solid #555; }
 .library-empty {
   color: #a7a7a7; font-size: var(--fs-empty); padding: 32px 0;
-}
-.about-summary {
-  align-items: center;
-  gap: 12px 18px;
-  margin-bottom: 16px;
-}
-.about-error {
-  margin: 0 0 16px;
-}
-.about-version-line {
-  color: #fff;
-  font-size: 28px;
-  line-height: 1.15;
-}
-.about-version-line strong {
-  color: #d9dee8;
-  font-weight: 800;
-}
-.about-update-inline {
-  color: #a7a7a7;
-  font-size: var(--fs-body-md);
-}
-.about-update-inline-live {
-  color: #8cf7b0;
-}
-.about-update-inline-error {
-  color: #ff9d9d;
-}
-.about-update-dl-btn {
-  position: relative;
-  overflow: hidden;
-  min-width: 100px;
-}
-.about-update-dl-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 100%;
-  width: var(--dl-pct, 0%);
-  background: rgba(255, 255, 255, 0.22);
-  transition: width 0.25s ease;
-  pointer-events: none;
-  border-radius: inherit;
-}
-.about-update-dl-label {
-  position: relative;
-  z-index: 1;
-}
-.about-download-link {
-  color: #8cf7b0;
-  font-size: var(--fs-body-md);
-  text-decoration: none;
-}
-.about-download-link:hover {
-  text-decoration: underline;
-}
-.about-download-link-icon {
-  display: inline-flex;
-  align-items: center;
-  opacity: 0.6;
-  transition: opacity .15s;
-}
-.about-download-link-icon:hover {
-  opacity: 1;
-  text-decoration: none;
-}
-.about-update-banner {
-  margin-bottom: 24px;
-}
-.about-update-intro {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(130px, 24vw, 240px);
-  align-items: center;
-  min-height: 190px;
-  padding: 18px 22px;
-  max-width: 500px;
-  /* overflow: hidden; */
-}
-.about-update-intro-copy {
-  position: relative;
-  z-index: 1;
-  min-width: 0;
-}
-.about-update-zippy {
-  position: absolute;
-  right: clamp(-26px, -2vw, -10px);
-  bottom: -42px;
-  width: clamp(170px, 28vw, 280px);
-  max-height: 300px;
-  object-fit: contain;
-  object-position: right bottom;
-  pointer-events: none;
-  filter: drop-shadow(0 18px 24px rgba(0, 0, 0, 0.3));
-  transform-origin: center bottom;
-  animation:
-    about-zippy-introduce 650ms cubic-bezier(.18, .86, .28, 1.18) both,
-    about-zippy-float 3.2s ease-in-out 650ms infinite;
-}
-.about-update-available-text {
-  display: block;
-  max-width: 18ch;
-  font-size: clamp(20px, 3vw, 30px);
-  font-weight: 800;
-  line-height: 1.12;
-  color: #eafff4;
-  text-wrap: balance;
-}
-@keyframes about-zippy-introduce {
-  from {
-    opacity: 0;
-    transform: translate3d(36px, 28px, 0) rotate(3deg) scale(0.9);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) rotate(0) scale(1);
-  }
-}
-@keyframes about-zippy-float {
-  0%, 100% { transform: translateY(0) rotate(0); }
-  50% { transform: translateY(-5px) rotate(-0.8deg); }
-}
-.about-update-banner-actions {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 10px;
-}
-.about-update-btn {
-  background: #8cf7b0;
-  color: #111;
-  border: none;
-  border-radius: 6px;
-  padding: 7px 18px;
-  font-size: var(--fs-body-md);
-  font-weight: 700;
-  cursor: pointer;
-  transition: opacity .15s;
-}
-.about-update-btn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-.about-update-btn:hover:not(:disabled) {
-  opacity: 0.85;
-}
-.about-whats-new-title {
-  font-size: var(--fs-body-md);
-  font-weight: 700;
-  color: #a7a7a7;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin: 16px 0 8px;
-}
-.about-release-notes {
-  font-size: var(--fs-body-md);
-  color: #d0d0d0;
-  line-height: 1.6;
-  max-height: 400px;
-  overflow-y: auto;
-}
-.about-release-notes :deep(h1),
-.about-release-notes :deep(h2),
-.about-release-notes :deep(h3) {
-  font-size: var(--fs-body-md);
-  font-weight: 700;
-  color: #e8e8e8;
-  margin: 12px 0 4px;
-}
-.about-release-notes :deep(ul),
-.about-release-notes :deep(ol) {
-  padding-left: 18px;
-  margin: 4px 0;
-}
-.about-release-notes :deep(li) {
-  margin: 3px 0;
-}
-.about-release-notes :deep(p) {
-  margin: 4px 0;
-}
-.about-release-notes :deep(strong) {
-  color: #e8e8e8;
-  font-weight: 600;
-}
-.about-release-notes :deep(a) {
-  color: #8cf7b0;
-  text-decoration: none;
-}
-.about-release-notes :deep(a:hover) {
-  text-decoration: underline;
-}
-.about-release-notes :deep(code) {
-  background: rgba(255,255,255,0.08);
-  border-radius: 3px;
-  padding: 1px 5px;
-  font-size: 0.9em;
-}
-.about-update-done {
-  margin: 6px 0 10px;
-  font-size: var(--fs-body-sm);
-  color: #8cf7b0;
-}
-.about-update-done code {
-  word-break: break-all;
-  opacity: 0.85;
-}
-@media (max-width: 560px) {
-  .about-update-intro {
-    grid-template-columns: minmax(0, 1fr) 112px;
-    min-height: 158px;
-    padding: 16px;
-  }
-
-  .about-update-zippy {
-    right: -32px;
-    bottom: -30px;
-    width: 190px;
-    max-height: 220px;
-  }
-
-  .about-update-available-text {
-    font-size: 20px;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .about-update-zippy {
-    animation: none;
-  }
 }
 .search-empty-copy {
   color: #a7a7a7;
@@ -7732,11 +7281,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   color: #a7a7a7;
   white-space: nowrap;
 }
-.smart-name-input {
-  font-size: var(--fs-modal-title);
-  font-weight: 600;
-  padding: 4px 10px;
-}
 .smart-track-count {
   font-size: var(--fs-body-sm);
   color: #a7a7a7;
@@ -7838,7 +7382,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   min-height: 34px;
   line-height: 1.2;
   appearance: none; -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-image: url("./assets/icons/chevron-down.svg");
   background-repeat: no-repeat; background-position: right 12px center; background-size: 12px 12px;
   outline: none; transition: border-color .15s, color .15s;
 }
@@ -7890,6 +7434,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   cursor: pointer; user-select: none;
 }
 .track-row:hover { background: #282828 !important; }
+.appearance-track-preview { width: 100%; pointer-events: none; }
 .track-row.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
 .track-cover-sm {
   width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0;
@@ -7979,7 +7524,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23ffffff'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-image: url("./assets/icons/chevron-down-light.svg");
   background-repeat: no-repeat;
   background-position: right 12px center;
   background-size: 12px 12px;

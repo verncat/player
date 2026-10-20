@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIcon from './AppIcon.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import ResponsivePopup from "./ResponsivePopup.vue";
 import type { AudioDevice, Track } from "../types";
@@ -28,6 +29,7 @@ const props = defineProps<{
   nowPlaying: Track | null;
   currentTrack: CurrentTrackSummary;
   beatScale: number;
+  reduceMotion: boolean;
   isLiked: boolean;
   isShuffled: boolean;
   isPlaying: boolean;
@@ -66,6 +68,7 @@ const emit = defineEmits<{
   seek: [event: MouseEvent];
   toggleQueueMenu: [];
   toggleDeviceMenu: [];
+  openPlaybackSettings: [];
   jumpToQueueItem: [index: number];
   pickLocalDevice: [name: string, sampleRate?: number | null, keepOpen?: boolean];
   pickLocalSampleRate: [device: AudioDevice, event: Event];
@@ -317,6 +320,7 @@ function toggleZippyMode() {
 }
 
 function handlePlayToggle() {
+  if (props.reduceMotion) { emit('togglePlay'); return; }
   const now = performance.now();
   playToggleTimestamps.push(now);
   while (
@@ -333,6 +337,8 @@ function handlePlayToggle() {
 
   emit("togglePlay");
 }
+
+watch(() => props.reduceMotion, (reduce) => { if (reduce) disableZippyMode(); });
 
 onMounted(() => {
   for (const sprite of [
@@ -386,7 +392,7 @@ onUnmounted(() => {
 <template>
   <div class="player-shell" :class="{ 'zippy-active': zippyVisible }">
     <div
-      v-if="zippyVisible && zippyIntroActive && props.isPlaying && zippyPausePhase === 'idle'"
+      v-if="!reduceMotion && zippyVisible && zippyIntroActive && props.isPlaying && zippyPausePhase === 'idle'"
       :key="zippyAnimationRun"
       class="zippy-stage"
       aria-hidden="true"
@@ -406,7 +412,7 @@ onUnmounted(() => {
     </div>
 
     <div
-      v-if="zippyVisible && (!zippyIntroActive || !props.isPlaying || zippyPausePhase !== 'idle')"
+      v-if="!reduceMotion && zippyVisible && (!zippyIntroActive || !props.isPlaying || zippyPausePhase !== 'idle')"
       class="zippy-viewport-stage"
       :class="{ 'zippy-over-footer': zippyOverFooter }"
       aria-hidden="true"
@@ -447,28 +453,28 @@ onUnmounted(() => {
         <div class="track-artist">{{ currentTrack.artist }}</div>
       </div>
       <button class="icon-btn" :class="{ green: isLiked }" @click.stop="emit('update:isLiked', !isLiked)">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+        <AppIcon name="heart" :size="16" :filled="isLiked" />
       </button>
     </div>
 
     <div class="player-center">
       <div class="ctrl-row" :style="{ transform: `scale(${beatScale})`, transformOrigin: 'center', willChange: 'transform' }">
         <button class="icon-btn" :class="{ green: isShuffled, dot: isShuffled }" @click="emit('update:isShuffled', !isShuffled)" title="Shuffle">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+          <AppIcon name="shuffle" :size="16" />
         </button>
         <button class="icon-btn" title="Previous" @click="emit('playPrev')">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+          <AppIcon name="skip-back" :size="20" />
         </button>
         <button class="play-btn" @click="handlePlayToggle">
-          <svg v-if="!isPlaying" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
-          <svg v-else viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          <AppIcon name="play" v-if="!isPlaying" :size="20" />
+          <AppIcon name="pause" v-else :size="20" />
         </button>
         <button class="icon-btn" title="Next" @click="emit('playNext')">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          <AppIcon name="skip-forward" :size="20" />
         </button>
         <button class="icon-btn" :class="{ green: repeatMode > 0, dot: repeatMode > 0 }" @click="emit('update:repeatMode', (repeatMode + 1) % 3)" title="Repeat">
-          <svg v-if="repeatMode < 2" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-          <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2v-5h-1l-2 1v1h1.5v3H13z"/></svg>
+          <AppIcon name="repeat" v-if="repeatMode < 2" :size="16" />
+          <AppIcon name="repeat-1" v-else :size="16" />
         </button>
       </div>
       <div class="progress-row">
@@ -492,7 +498,7 @@ onUnmounted(() => {
       >
         <template #trigger>
           <button class="icon-btn" title="Queue" @click.stop="emit('toggleQueueMenu')">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+            <AppIcon name="list-music" :size="16" />
           </button>
         </template>
         <div class="dropdown-header">Queue · {{ QUEUE_SOURCE_LABELS[queueSource] ?? "Library" }}</div>
@@ -534,7 +540,7 @@ onUnmounted(() => {
       >
         <template #trigger>
           <button class="icon-btn" title="Output device" @click.stop="emit('toggleDeviceMenu')">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM12 20c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm5-12H7V5h10v3z"/></svg>
+            <AppIcon name="speaker" :size="16" />
           </button>
         </template>
         <div class="dropdown-header">Output device</div>
@@ -546,11 +552,11 @@ onUnmounted(() => {
             @click="emit('pickLocalDevice', dev.name, undefined, true)"
           >
             <div class="device-item-main">
-              <span class="device-check">{{ !remoteOutputPeer && dev.name === currentDevice ? "✓" : "" }}</span>
+              <span class="device-check"><AppIcon v-if="!remoteOutputPeer && dev.name === currentDevice" name="check" /></span>
               <span class="device-name">{{ dev.name }}</span>
               <select
                 v-if="!remoteOutputPeer && dev.name === currentDevice && dev.sample_rates.length"
-                class="device-sample-rate"
+                class="device-sample-rate audio-select"
                 :value="currentSampleRate ?? ''"
                 @click.stop
                 @change="emit('pickLocalSampleRate', dev, $event)"
@@ -570,19 +576,21 @@ onUnmounted(() => {
             class="device-item"
             @click.prevent="emit('pickRemoteDevice', peer)"
           >
-            <span class="device-check">{{ isRemoteOutputPeer(peer) ? "✓" : "" }}</span>
+            <span class="device-check"><AppIcon v-if="isRemoteOutputPeer(peer)" name="check" /></span>
             <span class="device-name">{{ peerLabel(peer) }}</span>
           </a>
         </div>
         <div v-if="deviceMenuError" class="device-error">{{ deviceMenuError }}</div>
+        <button type="button" class="device-settings" @click="emit('openPlaybackSettings')">
+          <AppIcon name="settings" />
+          Open settings
+          <AppIcon class="device-settings-arrow" name="chevron-right" />
+        </button>
       </ResponsivePopup>
 
       <div class="vol-wrap">
         <button class="icon-btn">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-            <path v-if="volume > 0" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-            <path v-else d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-          </svg>
+          <AppIcon :name="volume > 0 ? 'volume-2' : 'volume-x'" :size="16" />
         </button>
         <div class="bar vol" @click="emit('setVolume', $event)">
           <div class="bar-fill" :style="`width:${volume}%`">
@@ -1048,39 +1056,29 @@ onUnmounted(() => {
 .device-sample-rate {
   width: 178px;
   flex: 0 0 178px;
-  min-height: 30px;
-  padding: 5px 32px 5px 12px;
-  border: 1px solid #535353;
-  border-radius: 20px;
-  background-color: transparent;
-  color: #a7a7a7;
-  font-size: var(--fs-control);
-  font-weight: 600;
-  line-height: 1.2;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  background-size: 12px 12px;
-  outline: none;
-  transition: border-color .15s, color .15s, background-color .15s;
-}
-.device-sample-rate:hover,
-.device-sample-rate:focus {
-  border-color: #fff;
-  color: #fff;
-}
-.device-sample-rate option {
-  background: #282828;
-  color: #fff;
 }
 .device-error {
   padding: 0 16px 12px;
   color: #e9283e;
   font-size: var(--fs-body-sm);
 }
+.device-settings {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  border: 0;
+  border-top: 1px solid #3e3e3e;
+  background: transparent;
+  color: #fff;
+  font-size: var(--fs-dropdown-item);
+  text-align: left;
+  cursor: pointer;
+}
+.device-settings:hover { background: #3e3e3e; }
+.device-settings:focus-visible { outline: 2px solid #1db954; outline-offset: -3px; }
+.device-settings-arrow { margin-left: auto; }
 
 .queue-now-label,
 .queue-next-label {

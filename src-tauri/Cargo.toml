@@ -15,7 +15,8 @@ name = "player_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = []
+default = ["discord-rpc"]
+discord-rpc = ["dep:discord-rich-presence"]
 tracy = ["dep:tracing-tracy"]
 
 [build-dependencies]
@@ -52,5 +53,6 @@ tracing-tracy = { version = "0.11.4", optional = true, default-features = false,
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+discord-rich-presence = { version = "1.1", optional = true }
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"

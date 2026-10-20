@@ -278,6 +278,17 @@ file hashing, SQLite writes, CUE indexing, stale cleanup, and watcher batches.
 pnpm tauri build
 ```
 
+Frontend builds refresh the About contributor list from GitHub and bundle their
+avatars, so the credits also work offline. If GitHub is unavailable, the build
+uses the saved snapshot in `src/generated/contributors.json` and
+`public/generated/contributors/`. Keep these generated files in version control.
+
+Run `pnpm contributors:sync` to refresh the snapshot separately. The script uses
+`GITHUB_REPOSITORY` or the GitHub origin remote, and optionally accepts
+`GITHUB_TOKEN` or `GH_TOKEN` for authenticated API requests. Release builds pass
+the GitHub Actions token automatically. Tokens are never included in the credits
+or sent when downloading avatars.
+
 ### Android
 
 ```bash

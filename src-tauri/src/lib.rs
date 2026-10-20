@@ -3,6 +3,7 @@ pub mod audio;
 pub mod covers;
 pub mod demo;
 pub mod discovery;
+pub mod discord_presence;
 pub mod identify;
 pub mod import;
 pub mod library;
@@ -171,6 +172,7 @@ pub fn run() {
                 .sync_enabled;
             app.manage(library);
             app.manage(audio::AudioState::new());
+            app.manage(discord_presence::DiscordPresenceState::default());
             app.manage(playback::PlaybackState::new(app.handle().clone()));
             app.manage(discovery::DiscoveryState::new());
             app.manage(soulseek::SoulseekState::new());
@@ -244,6 +246,8 @@ pub fn run() {
             about::about_info,
             about::about_check_updates,
             about::about_do_update,
+            discord_presence::discord_availability,
+            discord_presence::discord_update_presence,
             playback::playback_play,
             playback::playback_play_track,
             playback::playback_play_absolute,
@@ -269,6 +273,12 @@ pub fn run() {
             sync::remote_playback_seek,
             sync::remote_playback_volume,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                use tauri::Manager;
+                app.state::<discord_presence::DiscordPresenceState>().shutdown();
+            }
+        });
 }
