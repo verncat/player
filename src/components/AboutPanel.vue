@@ -89,6 +89,9 @@ function openNoteLink(event: MouseEvent) {
         <ul v-if="info?.changelog.length"><li v-for="entry in info.changelog" :key="entry.short_hash">{{ entry.subject }}</li></ul>
         <p v-else>No changelog is available for this build.</p>
       </div>
+      <footer class="about-footer">
+        <button type="button" class="text-link" @click="emit('openExternal', 'https://github.com/' + (info?.release_repo || 'verncat/player') + '/blob/HEAD/public/licenses/third-party.txt')">Licenses <AppIcon name="external-link" :size="14" /></button>
+      </footer>
     </template>
   </div>
 </template>
@@ -124,6 +127,8 @@ button:focus-visible { outline: 2px solid #1db954; outline-offset: 3px; }
 .primary:enabled:is(:hover, :active) { background: #35cd6b; border-color: #35cd6b; }
 .error { color: #ff939b; overflow-wrap: anywhere; }
 .links { display: flex; flex-wrap: wrap; gap: 12px; }
+.about-footer { display: flex; padding-top: 16px; border-top: 1px solid rgb(255 255 255 / 8%); }
+.about-footer .text-link { font-size: 12px; font-weight: 400; color: #a7a7a7; }
 .text-link { display: inline-flex; align-items: center; gap: 6px; border: none; padding: 0; color: #b3b3b3; border-radius: 2px; }
 .text-link:enabled:is(:hover, :active) { background: transparent; color: #fff; text-decoration: underline; }
 .contributors-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 12px; list-style: none; padding: 0; margin: 16px 0 0; }
