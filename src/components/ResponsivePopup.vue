@@ -253,7 +253,7 @@ onUnmounted(() => {
 .responsive-popup-cancel,
 .responsive-popup-save {
   border-radius: 20px;
-  font-size: var(--fs-button, 13px);
+  font-size: var(--fs-button);
   font-weight: 700;
   padding: 8px 22px;
   cursor: pointer;

@@ -6534,17 +6534,6 @@ onUnmounted(() => {
   </Teleport>
 </template>
 
-<style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body, #app { height: 100%; overflow: hidden; }
-body { background: #000; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-button, input, select, textarea { font: inherit; }
-a, button, [role="button"] {
-  -webkit-tap-highlight-color: transparent;
-  outline: none;
-}
-</style>
-
 <style scoped>
 .detail-static-cover { position: absolute; inset: 15%; border-radius: 14px; box-shadow: 0 20px 50px #0006; }
 .page-title-input { width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
@@ -6558,40 +6547,6 @@ a, button, [role="button"] {
   height: 100vh;
   color: #fff;
   background: #000;
-  --fs-nav: 14px;
-  --fs-h2: 22px;
-  --fs-section-link: 11px;
-  --fs-card-title: 13px;
-  --fs-card-meta: 12px;
-  --fs-player-title: 13px;
-  --fs-player-meta: 11px;
-  --fs-input: 13px;
-  --fs-empty: 14px;
-  --fs-eyebrow: 11px;
-  --fs-group: 13px;
-  --fs-track-side: 13px;
-  --fs-track-title: 14px;
-  --fs-track-meta: 12px;
-  --fs-badge: 11px;
-  --fs-modal-title: 18px;
-  --fs-field-label: 12px;
-  --fs-field-input: 14px;
-  --fs-button: 13px;
-  --fs-dropdown-label: 12px;
-  --fs-dropdown-item: 14px;
-  --fs-queue-title: 13px;
-  --fs-queue-meta: 11px;
-  --fs-queue-dur: 12px;
-  --fs-status-pill: 13px;
-  --fs-powered-by: 11px;
-  --fs-body-sm: 12px;
-  --fs-body-md: 13px;
-  --fs-peer-title: 14px;
-  --fs-peer-meta: 12px;
-  --fs-control: 12px;
-  --fs-detail-title: 18px;
-  --fs-detail-artist: 14px;
-  --fs-detail-time: 12px;
 }
 
 .brand {
@@ -7839,40 +7794,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .app {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 1fr calc(130px + env(safe-area-inset-bottom));
-    --fs-nav: 15px;
-    --fs-h2: 20px;
-    --fs-section-link: 10px;
-    --fs-card-title: 12px;
-    --fs-card-meta: 11px;
-    --fs-player-title: 12px;
-    --fs-player-meta: 10px;
-    --fs-input: 12px;
-    --fs-empty: 13px;
-    --fs-eyebrow: 10px;
-    --fs-group: 12px;
-    --fs-track-side: 12px;
-    --fs-track-title: 13px;
-    --fs-track-meta: 11px;
-    --fs-badge: 10px;
-    --fs-modal-title: 16px;
-    --fs-field-label: 11px;
-    --fs-field-input: 13px;
-    --fs-button: 12px;
-    --fs-dropdown-label: 11px;
-    --fs-dropdown-item: 13px;
-    --fs-queue-title: 12px;
-    --fs-queue-meta: 10px;
-    --fs-queue-dur: 11px;
-    --fs-status-pill: 12px;
-    --fs-powered-by: 10px;
-    --fs-body-sm: 11px;
-    --fs-body-md: 12px;
-    --fs-peer-title: 13px;
-    --fs-peer-meta: 11px;
-    --fs-control: 11px;
-    --fs-detail-title: 17px;
-    --fs-detail-artist: 13px;
-    --fs-detail-time: 11px;
   }
 
   /* Dark overlay */
