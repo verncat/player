@@ -6458,7 +6458,7 @@ onUnmounted(() => {
                   :offset-y="cardTY"
                   :dragging="cardDragging"
                 />
-                <div v-else class="detail-static-cover" :style="detailBackdropImageStyle" />
+                <CoverImage v-else class="detail-static-cover" :src="currentCoverUrl" :placeholder="currentTrack.colors" />
                 <div v-if="!reducedMotion" class="detail-spectrum-ring" :class="{ playing: isPlaying }" :style="detailSpectrumStyle" aria-hidden="true">
                   <div
                     v-for="segment in spectrumSegments"
