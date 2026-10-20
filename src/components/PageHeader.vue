@@ -55,7 +55,7 @@ const previewOpen = ref(false);
   height: 180px;
   flex-shrink: 0;
   border-radius: var(--radius-cover, 6px);
-  background-color: var(--color-surface, #282828);
+  background-color: var(--color-surface);
   background-size: cover;
   background-position: center;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
@@ -72,17 +72,17 @@ const previewOpen = ref(false);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .04em;
-  color: var(--color-text-muted, #a7a7a7);
+  color: var(--color-text-muted);
 }
 .page-title {
   font-size: 32px;
   font-weight: 800;
-  color: var(--color-text, #fff);
+  color: var(--color-text);
   overflow-wrap: anywhere;
 }
 .page-details {
   font-size: 14px;
-  color: var(--color-text-muted, #a7a7a7);
+  color: var(--color-text-muted);
 }
 .page-actions {
   display: flex;
@@ -91,8 +91,8 @@ const previewOpen = ref(false);
 }
 .page-actions:empty { display: none; }
 :slotted(.play-button) {
-  background: var(--color-accent, #1db954);
-  color: var(--color-on-accent, #000);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
   border: none;
   border-radius: 999px;
   padding: 8px 28px;

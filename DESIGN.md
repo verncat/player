@@ -52,6 +52,7 @@ Frontend:
 - [src/api.ts](src/api.ts): the start of a frontend API layer (artist and album queries).
 - [src/utils/](src/utils/): formatting, rarity colors, special artist names, cover URLs.
 - [src/icons.ts](src/icons.ts) and [src/types/settings.ts](src/types/settings.ts): the icon registry, and the settings sections and types.
+- [src/theme.ts](src/theme.ts) and [src/styles/](src/styles/): theme colors, applied as CSS variables, and the global stylesheets (static size tokens, element defaults, shared component styles).
 
 Backend, one module per subsystem:
 
@@ -224,6 +225,8 @@ On Android there is also a direct JS bridge surface:
 ### 5.7 Visual design
 
 Interface icons use the official `@lucide/vue` package through [src/components/AppIcon.vue](src/components/AppIcon.vue), with an explicit icon registry in [src/icons.ts](src/icons.ts). Icons share a 24px viewBox and a stroke width of 2. Liked hearts use a filled state. Native select arrows use bundled SVG exports of Lucide ChevronDown. The Lucide license is included in [public/licenses/lucide.txt](public/licenses/lucide.txt). Application artwork and device emoji remain separate assets.
+
+Colors come from a theme defined in [src/theme.ts](src/theme.ts): a palette for the mode (only dark so far) plus an accent color. `applyTheme` sets them on the document root as `--color-<name>` variables before the app mounts. Shades of the accent are mixed from `--color-accent` in CSS, and the text color on accent backgrounds is black or white by contrast, so a new accent needs no other changes. Sizes that don't change with the theme (font sizes and their phone overrides, radii, the body font) are variables on `:root` in [src/styles/tokens.css](src/styles/tokens.css). Both are defined on the root rather than inside the app element, so content teleported to `<body>` (popups, the image preview, the now-playing detail view) resolves them too. Many component styles still use literal colors; they are being moved to the tokens.
 
 The current visual system combines music metadata with generated decoration:
 

@@ -1,5 +1,6 @@
 import { createApp, type Directive } from "vue";
 import App from "./App.vue";
+import { applyTheme, DEFAULT_THEME } from "./theme";
 import "./styles/appearance.css";
 import "./styles/audio-select.css";
 import "./styles/base.css";
@@ -18,6 +19,8 @@ const horizontalScroll: Directive = {
     }, { passive: false });
   },
 };
+
+applyTheme(DEFAULT_THEME);
 
 createApp(App)
   .directive("horizontal-scroll", horizontalScroll)

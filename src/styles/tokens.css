@@ -1,4 +1,4 @@
-/* Sizes shared by the whole app. */
+/* Sizes shared by all themes. Theme colors (--color-*) are set from src/theme.ts. */
 :root {
   --font-body: 'Helvetica Neue', Helvetica, Arial, sans-serif;
 

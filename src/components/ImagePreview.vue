@@ -55,7 +55,7 @@ useTransientHistoryEntry(() => !!props.src, () => emit('close'));
   align-items: center;
   justify-content: center;
   padding: 32px;
-  background: var(--color-backdrop, rgba(0, 0, 0, .85));
+  background: var(--color-backdrop);
   cursor: zoom-out;
 }
 img {

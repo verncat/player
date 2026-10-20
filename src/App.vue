@@ -6545,8 +6545,8 @@ onUnmounted(() => {
   grid-template-columns: 220px 1fr;
   grid-template-rows: 1fr 90px;
   height: 100vh;
-  color: #fff;
-  background: #000;
+  color: var(--color-text);
+  background: var(--color-bg);
 }
 
 .brand {
@@ -7382,7 +7382,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   margin-bottom: 4px;
 }
 .group-artist-link { color: inherit; text-decoration: none; }
-.group-artist-link:hover { color: var(--color-text, #fff); text-decoration: underline; }
+.group-artist-link:hover { color: var(--color-text); text-decoration: underline; }
 .track-row {
   display: flex; align-items: center; gap: 12px;
   padding: 8px 8px; border-radius: 4px;

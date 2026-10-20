@@ -107,14 +107,14 @@ const coverGradient = computed(() => hashToColors(tracks.value[0]?.file_hash ?? 
 
 <style scoped>
 .artist-link {
-  color: var(--color-text, #fff);
+  color: var(--color-text);
   font-weight: 700;
   text-decoration: none;
 }
 .artist-link:hover { text-decoration: underline; }
 
 .status {
-  color: var(--color-text-muted, #a7a7a7);
+  color: var(--color-text-muted);
   padding: 16px 0;
 }
 .tracklist {
@@ -126,9 +126,9 @@ const coverGradient = computed(() => hashToColors(tracks.value[0]?.file_hash ?? 
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .04em;
-  color: var(--color-text-muted, #a7a7a7);
+  color: var(--color-text-muted);
   padding: 8px 8px;
-  border-bottom: 1px solid var(--color-border, #282828);
+  border-bottom: 1px solid var(--color-border);
   margin: 16px 0 4px;
 }
 .disc-heading:first-child { margin-top: 0; }
