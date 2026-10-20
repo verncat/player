@@ -63,8 +63,9 @@ export interface Track {
   /** Who the album is by: the album artist tag, or the track artist when the
    *  album has none (see library_tracks in library.rs). */
   album_artist_or_artist: string | null;
-  /** Whether get_track_cover has an image for this track. */
-  has_cover: boolean;
+  /** Names the track's cover for coverUrl() in utils/covers.ts; null when it
+   *  has none. */
+  cover_hash: string | null;
   local_preview_path?: string | null;
   preview_growing?: boolean;
   soulseek_preview?: boolean;
@@ -78,7 +79,8 @@ export interface AlbumSummary {
   album_artist_or_artist: string;
   year: number | null;
   track_count: number;
-  cover_track_id: number;
+  /** The cover of the album's first track (in album order) that has one. */
+  cover_hash: string | null;
 }
 
 export interface TrackPage {

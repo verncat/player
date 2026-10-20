@@ -136,7 +136,7 @@ Frontend state is stored in Vue refs and computed values rather than a dedicated
 
 - Playback presentation state: `isPlaying`, `currentTime`, `duration`, `volume`.
 - Queue state: `queueSource`, `queueSourceIndex`, `queue`, `nowPlaying`, `queuePlaylistTracks`.
-- Library state: `libraryTracks`, `recentTracks`, `historyEntries`, `covers`.
+- Library state: `libraryTracks`, `recentTracks`, `historyEntries`.
 - Playlist state: `playlists`, `playlistView`, smart playlist editing/view state.
 - Discovery/sync state: `peers`, `syncEnabled`, `syncProgress`, device identity state.
 - Visual state: detail card transforms, beat animation, spectrum levels.
@@ -252,7 +252,6 @@ Library commands:
 - `search_tracks`
 - `get_all_tracks`
 - `reindex`
-- `get_track_cover`
 - `update_track`
 - `toggle_like`
 - `get_data_dir`
@@ -325,7 +324,7 @@ Persistence is centered around a single SQLite file: `app.db` under the data dir
 
 Main tables:
 
-- `tracks`: core metadata, path, duration, cover blob, hash, rarity, manual edits, likes, play count, year, genre, date added.
+- `tracks`: core metadata, path, duration, cover hash, file hash, rarity, manual edits, likes, play count, year, genre, date added.
 - `play_history`: playback history tied to track IDs.
 - `device_config`: local device emoji and user-visible device name.
 - `playlists`: regular playlists.
@@ -335,7 +334,7 @@ Main tables:
 Design notes:
 
 - Schema migration is handled inline with additive `ALTER TABLE` statements, not with a separate migration framework.
-- Covers are stored in SQLite as embedded image blobs extracted during indexing.
+- Covers are extracted during indexing and kept once per distinct image as small resized files (`covers.rs`); tracks reference them by `cover_hash`.
 - Local track identity is the SQLite row ID.
 - Cross-device identity is the file hash.
 

@@ -91,7 +91,7 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
     for track in demo_tracks() {
         let abs_path = data_dir.join(track.rel_path);
         let file_hash = hash_file(&abs_path)?;
-        let cover_data = build_cover_svg(track).into_bytes();
+        let cover_hash = crate::covers::store(data_dir, build_cover_svg(track).as_bytes());
         let date_added = now.saturating_sub(track.date_added_days_ago.saturating_mul(86_400));
 
         let rows = conn.execute(
@@ -103,6 +103,7 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
                     duration_secs = ?5,
                     cover_data = NULL,
                     cover_mime = 'image/svg+xml',
+                    cover_hash = ?15,
                     cover_source_path = NULL,
                     cover_source_mtime = 0,
                     file_hash = ?6,
@@ -131,6 +132,7 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
                 date_added,
                 track.tags,
                 track.rel_path,
+                cover_hash,
             ],
         )?;
 
@@ -143,9 +145,6 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
             params![track.rel_path],
             |row| row.get(0),
         )?;
-        let covers_dir = data_dir.join(".covers");
-        fs::create_dir_all(&covers_dir)?;
-        fs::write(covers_dir.join(format!("{id}.svg")), cover_data)?;
         track_ids.insert(track.rel_path, id);
     }
 

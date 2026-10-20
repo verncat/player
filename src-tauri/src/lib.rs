@@ -1,5 +1,6 @@
 pub mod about;
 pub mod audio;
+pub mod covers;
 mod audio_codecs;
 pub mod demo;
 pub mod discovery;
@@ -127,7 +128,9 @@ pub fn run() {
     init_tracing();
     let demo_mode = demo::is_demo_mode_enabled();
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .register_asynchronous_uri_scheme_protocol(covers::SCHEME, covers::handle_request);
 
     #[cfg(desktop)]
     let builder = builder
@@ -198,7 +201,6 @@ pub fn run() {
             library::get_smart_playlist_values,
             library::index_track_by_path,
             library::reindex,
-            library::get_track_cover,
             library::update_track,
             library::replace_track_with_file,
             library::toggle_like,
