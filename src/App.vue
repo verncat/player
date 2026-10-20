@@ -5044,9 +5044,9 @@ onUnmounted(() => {
             >
               <button type="button" class="card onboarding-music-card" @click="startOnboardingSync">
                 <div class="cover onboarding-action-cover onboarding-sync-cover">
-                  <AppIcon name="wifi" />
+                  <AppIcon name="network" />
                   <span class="hover-play">
-                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-right" :size="22" /></span>
+                    <span class="green-circle onboarding-card-go"><AppIcon name="go" :size="22" /></span>
                   </span>
                 </div>
                 <div class="card-title">Sync</div>
@@ -5055,9 +5055,9 @@ onUnmounted(() => {
 
               <button type="button" class="card onboarding-music-card" @click="openDataDir">
                 <div class="cover onboarding-action-cover onboarding-upload-cover">
-                  <AppIcon name="folder-open" />
+                  <AppIcon name="folder" />
                   <span class="hover-play">
-                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-right" :size="22" /></span>
+                    <span class="green-circle onboarding-card-go"><AppIcon name="go" :size="22" /></span>
                   </span>
                 </div>
                 <div class="card-title">Upload</div>
@@ -5119,8 +5119,8 @@ onUnmounted(() => {
                       <AppIcon name="play" :size="18" color="black" />
                     </button>
                   </div>
-                  <AppIcon name="list-music" v-if="item.kind === 'regular'" :size="30" color="rgba(255,255,255,0.88)" />
-                  <AppIcon name="list-filter" v-else :size="30" color="rgba(255,255,255,0.88)" />
+                  <AppIcon name="playlist" v-if="item.kind === 'regular'" :size="30" color="rgba(255,255,255,0.88)" />
+                  <AppIcon name="smart-playlist" v-else :size="30" color="rgba(255,255,255,0.88)" />
                 </div>
                 <div class="card-title">{{ item.name }}</div>
                 <div class="card-artist">{{ item.subtitle }}</div>
@@ -5271,8 +5271,8 @@ onUnmounted(() => {
                 <div v-if="searchResults.length" class="library-page-controls library-page-controls-bottom">
                   <span>{{ localSearchPageLabel }}</span>
                   <div>
-                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage"><AppIcon name="arrow-left" /> Previous</button>
-                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next <AppIcon name="arrow-right" /></button>
+                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage"><AppIcon name="page-previous" /> Previous</button>
+                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next <AppIcon name="page-next" /></button>
                   </div>
                 </div>
               </template>
@@ -5391,7 +5391,7 @@ onUnmounted(() => {
             <div class="library-header soulseek-replace-page-header">
               <div class="soulseek-replace-page-heading">
                 <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
-                  <AppIcon name="arrow-left" :size="20" />
+                  <AppIcon name="back" :size="20" />
                 </button>
                 <div>
                   <p class="soulseek-replace-track-copy">
@@ -5505,7 +5505,7 @@ onUnmounted(() => {
                     :aria-label="soulseekDownloadActionLabel(result)"
                     @click.stop="downloadSoulseekResult(result)"
                   >
-                    <AppIcon name="check" v-if="soulseekDownloadState(result)?.state === 'completed'" :size="16" />
+                    <AppIcon name="done" v-if="soulseekDownloadState(result)?.state === 'completed'" :size="16" />
                     <AppIcon name="download" v-else :size="16" />
                   </button>
                   <button class="btn-primary soulseek-replace-btn" :disabled="!!trackReplaceApplyingKey" @click.stop="replaceTrackWithSoulseekResult(trackReplaceDialog.track, result)">
@@ -5522,7 +5522,7 @@ onUnmounted(() => {
             <div class="library-header soulseek-replace-page-header">
               <div class="soulseek-replace-page-heading">
                 <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
-                  <AppIcon name="arrow-left" :size="20" />
+                  <AppIcon name="back" :size="20" />
                 </button>
               </div>
             </div>
@@ -5536,7 +5536,7 @@ onUnmounted(() => {
             <div class="library-header">
               <div style="display:flex; align-items:center; gap:12px;">
                 <button class="icon-btn text-action-btn" style="padding:4px;" @click="activeNav = 'home'">
-                  <AppIcon name="arrow-left" :size="20" /> Home
+                  <AppIcon name="back" :size="20" /> Home
                 </button>
               </div>
             </div>
@@ -5567,7 +5567,7 @@ onUnmounted(() => {
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
                     <button class="icon-btn text-action-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
-                      <AppIcon name="arrow-left" :size="20" /> Playlists
+                      <AppIcon name="back" :size="20" /> Playlists
                     </button>
                   </div>
                   <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
@@ -5583,7 +5583,7 @@ onUnmounted(() => {
                   >
                     <template #extra>
                       <button class="icon-btn track-inline-action" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
-                        <AppIcon name="minus" />
+                        <AppIcon name="remove" />
                       </button>
                     </template>
                   </TrackRow>
@@ -5610,7 +5610,7 @@ onUnmounted(() => {
                 <div v-else class="track-list">
                   <div v-for="pl in playlists" :key="pl.id" class="track-row" style="cursor:pointer;" @click="openPlaylist(pl)">
                     <div class="track-cover-sm" style="background: linear-gradient(135deg, #333, #1a1a1a); display:flex; align-items:center; justify-content:center;">
-                      <AppIcon name="list-music" :size="20" color="#a7a7a7" />
+                      <AppIcon name="playlist" :size="20" color="#a7a7a7" />
                     </div>
                     <div class="track-info">
                       <span class="track-title">{{ pl.name }}</span>
@@ -5620,7 +5620,7 @@ onUnmounted(() => {
                       <AppIcon name="pin" :size="15" />
                     </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete playlist" @click.stop="deletePlaylist(pl.id)">
-                      <AppIcon name="trash-2" :size="16" />
+                      <AppIcon name="delete" :size="16" />
                     </button>
                   </div>
                 </div>
@@ -5634,7 +5634,7 @@ onUnmounted(() => {
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
                     <button class="icon-btn text-action-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
-                      <AppIcon name="arrow-left" :size="20" /> Flexible Playlists
+                      <AppIcon name="back" :size="20" /> Flexible Playlists
                     </button>
                   </div>
                   <span class="smart-track-count">{{ editingSPTotal }} tracks</span>
@@ -5714,7 +5714,7 @@ onUnmounted(() => {
                     </template>
 
                     <button class="icon-btn" style="margin-left:auto; flex-shrink:0;" @click="removeSPRule(rule.id)" title="Remove rule">
-                      <AppIcon name="x" :size="14" />
+                      <AppIcon name="remove" :size="14" />
                     </button>
                   </div>
                   <button class="sp-add-rule-btn" @click="addSPRule()">+ Add rule</button>
@@ -5743,7 +5743,7 @@ onUnmounted(() => {
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
                     <button class="icon-btn text-action-btn" style="padding:4px;" @click="smartView = null">
-                      <AppIcon name="arrow-left" :size="20" /> Flexible Playlists
+                      <AppIcon name="back" :size="20" /> Flexible Playlists
                     </button>
                   </div>
                   <div style="display:flex;gap:8px;">
@@ -5779,7 +5779,7 @@ onUnmounted(() => {
                 <div v-else class="track-list">
                   <div v-for="sp in smartPlaylists" :key="sp.id" class="track-row" style="cursor:pointer;" @click="smartView = sp">
                     <div class="track-cover-sm" style="background: linear-gradient(135deg, #1a2a3a, #0d1b2a); display:flex; align-items:center; justify-content:center;">
-                      <AppIcon name="list-filter" :size="20" color="#4fc3f7" />
+                      <AppIcon name="smart-playlist" :size="20" color="#4fc3f7" />
                     </div>
                     <div class="track-info">
                       <span class="track-title">{{ sp.name }}</span>
@@ -5789,10 +5789,10 @@ onUnmounted(() => {
                       <AppIcon name="pin" :size="15" />
                     </button>
                     <button class="icon-btn" style="margin-right:4px;" title="Edit" @click.stop="editingSP = { ...sp }; smartView = null">
-                      <AppIcon name="pencil" :size="14" />
+                      <AppIcon name="edit" :size="14" />
                     </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete" @click.stop="deleteSmartPlaylist(sp.id)">
-                      <AppIcon name="trash-2" :size="14" />
+                      <AppIcon name="delete" :size="14" />
                     </button>
                   </div>
                 </div>
@@ -5817,7 +5817,7 @@ onUnmounted(() => {
                   @click="dedupFilter = 'unresolved'"
                 >Unresolved</button>
                 <button class="btn-secondary dedup-rescan-btn" @click="openDedup()" :disabled="dedupLoading">
-                  <AppIcon name="refresh-cw" :size="14" />
+                  <AppIcon name="refresh" :size="14" />
                   Rescan
                 </button>
               </div>
@@ -5829,7 +5829,7 @@ onUnmounted(() => {
 
             <template v-else-if="dedupGroups.length === 0">
               <p class="search-empty-copy dedup-clean-copy">
-                <AppIcon name="circle-check" :size="20" color="#1db954" />
+                <AppIcon name="success" :size="20" color="#1db954" />
                 No duplicates found. Your library looks clean!
               </p>
             </template>
@@ -5875,7 +5875,7 @@ onUnmounted(() => {
                       </span>
                       <span class="dedup-track-meta">
                         <span>{{ track.path }}</span>
-                        <span v-if="track.play_count > 0"><AppIcon name="play" :size="12" /> {{ track.play_count }}</span>
+                        <span v-if="track.play_count > 0"><AppIcon name="play-count" :size="12" /> {{ track.play_count }}</span>
                         <span v-if="track.manually_edited" class="dedup-edited-tag">edited</span>
                         <span v-if="track.is_duplicate" class="dedup-flagged-tag">flagged</span>
                       </span>
@@ -5916,7 +5916,7 @@ onUnmounted(() => {
                   @click="toggleSync"
                   :title="syncEnabled ? 'Sync on — click to disable' : 'Sync off — click to enable'"
                 >
-                  <AppIcon name="refresh-cw" :size="14" />
+                  <AppIcon name="sync" :size="14" />
                   Sync
                 </button>
               </div>
@@ -5941,7 +5941,7 @@ onUnmounted(() => {
                       <span class="peer-playback-icon" aria-hidden="true">
                         <AppIcon name="play" v-if="peer.playback?.state === 'playing'" :size="14" />
                         <AppIcon name="pause" v-else-if="peer.playback?.state === 'paused'" :size="14" />
-                        <AppIcon name="square" v-else :size="14" />
+                        <AppIcon name="stop" v-else :size="14" />
                       </span>
                       {{ peerPlaybackLabel(peer) }}
                     </span>
@@ -5973,7 +5973,7 @@ onUnmounted(() => {
                   :disabled="['index','download','reindex','merging'].includes(syncProgress[peer.name]?.phase ?? '')"
                   title="Sync now"
                 >
-                  <AppIcon name="refresh-cw" :size="16" />
+                  <AppIcon name="sync" :size="16" />
                 </button>
               </div>
             </div>
@@ -6135,7 +6135,7 @@ onUnmounted(() => {
       <div class="modal-header">
         <h3>Confirm marking</h3>
         <button class="icon-btn" @click="dedupConfirmOpen = false">
-          <AppIcon name="x" :size="18" />
+          <AppIcon name="close" :size="18" />
         </button>
       </div>
       <div class="modal-body">
@@ -6154,7 +6154,7 @@ onUnmounted(() => {
           <div class="modal-header">
             <h3>Edit Track</h3>
             <button class="icon-btn" @click="editingTrack = null">
-              <AppIcon name="x" :size="18" />
+              <AppIcon name="close" :size="18" />
             </button>
           </div>
           <div class="modal-body edit-track-body">
@@ -6239,12 +6239,12 @@ onUnmounted(() => {
         </template>
         <template v-else-if="indexRunning">
           <div v-if="!indexDone" class="identify-mini-spinner" />
-          <AppIcon name="circle-check" v-else :size="16" color="#1db954" />
+          <AppIcon name="success" v-else :size="16" color="#1db954" />
           <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
           <span v-else>+{{ indexAdded }}</span>
         </template>
         <template v-else>
-          <AppIcon name="list" :size="15" />
+          <AppIcon name="activity" :size="15" />
         </template>
         <span v-if="!indexRunning" class="activity-mini-label">Activity</span>
       </button>
@@ -6256,7 +6256,7 @@ onUnmounted(() => {
       <div v-if="identifyRunning && identifyMinimized" class="identify-mini" @click="identifyMinimized = false">
         <div v-if="!identifyDone" class="identify-mini-spinner" />
         <span>{{ identifyCurrent }}/{{ identifyTotal }}</span>
-        <span v-if="identifyDone" class="identify-mini-done"><AppIcon name="check" /></span>
+        <span v-if="identifyDone" class="identify-mini-done"><AppIcon name="done" /></span>
       </div>
     </div>
 
@@ -6268,10 +6268,10 @@ onUnmounted(() => {
             <h3>Identifying tracks <span class="powered-by">powered by <a href="https://acoustid.org" target="_blank">AcoustID</a></span></h3>
             <div style="display:flex;gap:8px">
               <button class="icon-btn" title="Minimize" @click="identifyMinimized = true">
-                <AppIcon name="minus" :size="18" />
+                <AppIcon name="minimize" :size="18" />
               </button>
               <button v-if="identifyDone" class="icon-btn" title="Close" @click="identifyRunning = false">
-                <AppIcon name="x" :size="18" />
+                <AppIcon name="close" :size="18" />
               </button>
             </div>
           </div>
@@ -6301,7 +6301,7 @@ onUnmounted(() => {
           <div class="modal-header">
             <h3>Activity <span class="powered-by">library &amp; sync history</span></h3>
             <button class="icon-btn" title="Close" @click="indexLogOpen = false; indexRunning = false">
-              <AppIcon name="x" :size="18" />
+              <AppIcon name="close" :size="18" />
             </button>
           </div>
           <div class="modal-body">
@@ -6330,12 +6330,12 @@ onUnmounted(() => {
                     <template v-else>scanning…</template>
                   </span>
                   <span class="ls-badge ls-badge-done" v-else-if="session.status === 'done'">
-                    <AppIcon name="check" :size="12" color="#1db954" />
+                    <AppIcon name="done" :size="12" color="#1db954" />
                     <template v-if="session.filesAdded > 0">+{{ session.filesAdded }} files</template>
                     <template v-else>up to date</template>
                   </span>
                   <span class="ls-badge ls-badge-err" v-else>
-                    <AppIcon name="x" :size="12" color="#ff5252" />
+                    <AppIcon name="error" :size="12" color="#ff5252" />
                     error
                   </span>
                   <span class="ls-time">{{ new Date(session.finishedAt || session.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
@@ -6480,8 +6480,8 @@ onUnmounted(() => {
                 <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
               </div>
               <button class="icon-btn" :class="{ green: nowPlaying.is_liked }" @click.stop="toggleLike(nowPlaying!)" style="margin-left:auto;">
-                <AppIcon name="heart" v-if="nowPlaying.is_liked" :size="22" color="#1db954" filled />
-                <AppIcon name="heart" v-else :size="22" />
+                <AppIcon name="liked" v-if="nowPlaying.is_liked" :size="22" color="#1db954" />
+                <AppIcon name="like" v-else :size="22" />
               </button>
             </div>
             <!-- seek -->
@@ -6514,18 +6514,18 @@ onUnmounted(() => {
                 <AppIcon name="shuffle" :size="20" />
               </button>
               <button class="icon-btn" @click="playPrev">
-                <AppIcon name="skip-back" :size="32" />
+                <AppIcon name="previous" :size="32" />
               </button>
               <button class="detail-play-btn" @click="togglePlay">
                 <AppIcon name="play" v-if="!isPlaying" :size="28" />
                 <AppIcon name="pause" v-else :size="28" />
               </button>
               <button class="icon-btn" @click="playNext">
-                <AppIcon name="skip-forward" :size="32" />
+                <AppIcon name="next" :size="32" />
               </button>
               <button class="icon-btn" :class="{ green: repeatMode > 0 }" @click="repeatMode = (repeatMode + 1) % 3">
                 <AppIcon name="repeat" v-if="repeatMode < 2" :size="20" />
-                <AppIcon name="repeat-1" v-else :size="20" />
+                <AppIcon name="repeat-one" v-else :size="20" />
               </button>
             </div>
           </div>

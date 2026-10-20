@@ -453,7 +453,7 @@ onUnmounted(() => {
         <div class="track-artist">{{ currentTrack.artist }}</div>
       </div>
       <button class="icon-btn" :class="{ green: isLiked }" @click.stop="emit('update:isLiked', !isLiked)">
-        <AppIcon name="heart" :size="16" :filled="isLiked" />
+        <AppIcon :name="isLiked ? 'liked' : 'like'" :size="16" />
       </button>
     </div>
 
@@ -463,18 +463,18 @@ onUnmounted(() => {
           <AppIcon name="shuffle" :size="16" />
         </button>
         <button class="icon-btn" title="Previous" @click="emit('playPrev')">
-          <AppIcon name="skip-back" :size="20" />
+          <AppIcon name="previous" :size="20" />
         </button>
         <button class="play-btn" @click="handlePlayToggle">
           <AppIcon name="play" v-if="!isPlaying" :size="20" />
           <AppIcon name="pause" v-else :size="20" />
         </button>
         <button class="icon-btn" title="Next" @click="emit('playNext')">
-          <AppIcon name="skip-forward" :size="20" />
+          <AppIcon name="next" :size="20" />
         </button>
         <button class="icon-btn" :class="{ green: repeatMode > 0, dot: repeatMode > 0 }" @click="emit('update:repeatMode', (repeatMode + 1) % 3)" title="Repeat">
           <AppIcon name="repeat" v-if="repeatMode < 2" :size="16" />
-          <AppIcon name="repeat-1" v-else :size="16" />
+          <AppIcon name="repeat-one" v-else :size="16" />
         </button>
       </div>
       <div class="progress-row">
@@ -498,7 +498,7 @@ onUnmounted(() => {
       >
         <template #trigger>
           <button class="icon-btn" title="Queue" @click.stop="emit('toggleQueueMenu')">
-            <AppIcon name="list-music" :size="16" />
+            <AppIcon name="queue" :size="16" />
           </button>
         </template>
         <div class="dropdown-header">Queue · {{ QUEUE_SOURCE_LABELS[queueSource] ?? "Library" }}</div>
@@ -540,7 +540,7 @@ onUnmounted(() => {
       >
         <template #trigger>
           <button class="icon-btn" title="Output device" @click.stop="emit('toggleDeviceMenu')">
-            <AppIcon name="speaker" :size="16" />
+            <AppIcon name="output-device" :size="16" />
           </button>
         </template>
         <div class="dropdown-header">Output device</div>
@@ -552,7 +552,7 @@ onUnmounted(() => {
             @click="emit('pickLocalDevice', dev.name, undefined, true)"
           >
             <div class="device-item-main">
-              <span class="device-check"><AppIcon v-if="!remoteOutputPeer && dev.name === currentDevice" name="check" /></span>
+              <span class="device-check"><AppIcon v-if="!remoteOutputPeer && dev.name === currentDevice" name="selected" /></span>
               <span class="device-name">{{ dev.name }}</span>
               <select
                 v-if="!remoteOutputPeer && dev.name === currentDevice && dev.sample_rates.length"
@@ -576,7 +576,7 @@ onUnmounted(() => {
             class="device-item"
             @click.prevent="emit('pickRemoteDevice', peer)"
           >
-            <span class="device-check"><AppIcon v-if="isRemoteOutputPeer(peer)" name="check" /></span>
+            <span class="device-check"><AppIcon v-if="isRemoteOutputPeer(peer)" name="selected" /></span>
             <span class="device-name">{{ peerLabel(peer) }}</span>
           </a>
         </div>
@@ -584,13 +584,13 @@ onUnmounted(() => {
         <button type="button" class="device-settings" @click="emit('openPlaybackSettings')">
           <AppIcon name="settings" />
           Open settings
-          <AppIcon class="device-settings-arrow" name="chevron-right" />
+          <AppIcon class="device-settings-arrow" name="disclosure" />
         </button>
       </ResponsivePopup>
 
       <div class="vol-wrap">
         <button class="icon-btn">
-          <AppIcon :name="volume > 0 ? 'volume-2' : 'volume-x'" :size="16" />
+          <AppIcon :name="volume > 0 ? 'volume' : 'muted'" :size="16" />
         </button>
         <div class="bar vol" @click="emit('setVolume', $event)">
           <div class="bar-fill" :style="`width:${volume}%`">

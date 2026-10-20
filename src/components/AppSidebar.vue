@@ -25,13 +25,13 @@ const emit = defineEmits<{
   <aside class="sidebar" :class="{ 'sidebar-open': open }">
     <div class="sidebar-mobile-header">
       <button class="icon-btn sidebar-close-btn" @click="emit('close')" aria-label="Close menu">
-        <AppIcon name="x" :size="22" />
+        <AppIcon name="close" :size="22" />
       </button>
     </div>
 
     <nav>
       <a class="nav-item" :class="{ active: activeNav === 'home' }" @click.prevent="emit('navigateHome')" href="#">
-        <AppIcon name="house" :size="22" />
+        <AppIcon name="home" :size="22" />
         Home
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'search' }" @click.prevent="emit('navigateSearch')" href="#">
@@ -39,15 +39,15 @@ const emit = defineEmits<{
         Search
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'library' }" @click.prevent="emit('navigateLibrary')" href="#">
-        <AppIcon name="library-big" :size="22" />
+        <AppIcon name="library" :size="22" />
         Your Library
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="emit('navigatePlaylists')" href="#">
-        <AppIcon name="list-music" :size="22" />
+        <AppIcon name="playlist" :size="22" />
         Playlists
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'playlists' && playlistTab === 'smart' }" @click.prevent="emit('navigateSmartPlaylists')" href="#">
-        <AppIcon name="list-filter" :size="22" />
+        <AppIcon name="smart-playlist" :size="22" />
         Flexible Playlists
       </a>
     </nav>
@@ -56,7 +56,7 @@ const emit = defineEmits<{
 
     <nav>
       <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="emit('navigateDiscovery')" href="#">
-        <AppIcon name="wifi" :size="22" />
+        <AppIcon name="network" :size="22" />
         Devices
         <span v-if="syncActive" class="nav-sync-spinner" aria-label="Sync in progress" />
         <span v-else-if="peersCount" class="peer-badge">{{ peersCount }}</span>
@@ -66,7 +66,7 @@ const emit = defineEmits<{
       <a class="nav-item" :class="{ active: activeNav === 'settings' || activeNav.startsWith('settings/') || activeNav === 'about' }" href="#" @click.prevent="emit('navigateSettings')">
         <AppIcon name="settings" :size="22" />
         Settings
-        <span v-if="updateAvailable" class="peer-badge" aria-label="Update available"><AppIcon name="plus" :size="12" /></span>
+        <span v-if="updateAvailable" class="peer-badge" aria-label="Update available"><AppIcon name="update-available" :size="12" /></span>
       </a>
     </nav>
   </aside>

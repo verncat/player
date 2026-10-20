@@ -21,8 +21,8 @@ const emit = defineEmits<{
       <AppIcon name="menu" :size="24" />
     </button>
     <div class="nav-arrows">
-      <button class="arrow-btn" aria-label="Back" :disabled="!canNavBack" @click="emit('navBack')"><AppIcon name="chevron-left" :size="22" /></button>
-      <button class="arrow-btn" aria-label="Forward" :disabled="!canNavForward" @click="emit('navForward')"><AppIcon name="chevron-right" :size="22" /></button>
+      <button class="arrow-btn" aria-label="Back" :disabled="!canNavBack" @click="emit('navBack')"><AppIcon name="history-back" :size="22" /></button>
+      <button class="arrow-btn" aria-label="Forward" :disabled="!canNavForward" @click="emit('navForward')"><AppIcon name="history-forward" :size="22" /></button>
     </div>
     <div v-if="title" class="page-heading">
       <h1 :title="title"><slot name="title">{{ title }}</slot></h1>

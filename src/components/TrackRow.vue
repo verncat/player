@@ -103,10 +103,10 @@ function onClick() {
       <div class="track-title-row">
         <span class="track-title">{{ track.title || track.path }}</span>
         <span v-if="actions.isCurrent(track.id)" class="track-playback-badge current" title="Now playing">
-          <AppIcon name="play" :size="12" />
+          <AppIcon name="now-playing" :size="12" />
         </span>
         <span v-else-if="actions.isNext(track.id)" class="track-playback-badge next" title="Up next">
-          <AppIcon name="play" :size="12" />
+          <AppIcon name="up-next" :size="12" />
           <span class="track-playback-step">1</span>
         </span>
       </div>
@@ -124,13 +124,13 @@ function onClick() {
     <slot name="extra" />
 
     <button v-if="shows('identify')" class="icon-btn hover-action inline-action" title="Identify" @click.stop="actions.identify(track)">
-      <AppIcon name="wand-sparkles" :size="14" />
+      <AppIcon name="identify" :size="14" />
     </button>
     <button v-if="shows('edit')" class="icon-btn hover-action inline-action" title="Edit" @click.stop="actions.edit(track)">
-      <AppIcon name="pencil" :size="14" />
+      <AppIcon name="edit" :size="14" />
     </button>
     <span v-if="shows('playCount')" class="play-count" :title="track.play_count > 0 ? 'Play count' : undefined">
-      <template v-if="track.play_count > 0"><AppIcon name="play" :size="12" /> {{ track.play_count }}</template>
+      <template v-if="track.play_count > 0"><AppIcon name="play-count" :size="12" /> {{ track.play_count }}</template>
     </span>
     <button
       v-if="shows('like')"
@@ -138,7 +138,7 @@ function onClick() {
       :title="track.is_liked ? 'Unlike' : 'Like'"
       @click.stop="actions.toggleLike(track)"
     >
-      <AppIcon name="heart" :size="16" :filled="track.is_liked" :color="track.is_liked ? '#1db954' : 'currentColor'" />
+      <AppIcon :name="track.is_liked ? 'liked' : 'like'" :size="16" :color="track.is_liked ? '#1db954' : 'currentColor'" />
     </button>
     <button
       v-if="shows('addToPlaylist')"
@@ -146,7 +146,7 @@ function onClick() {
       title="Add to playlist"
       @click.stop="actions.openAddToPlaylist(track, $event.clientX, $event.clientY)"
     >
-      <AppIcon name="list-plus" :size="16" />
+      <AppIcon name="add-to-playlist" :size="16" />
     </button>
     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
   </div>
