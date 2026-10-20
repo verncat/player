@@ -19,6 +19,7 @@ jobs:
     name: Build Desktop (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     env:
+      DISCORD_CLIENT_ID: ${{ vars.DISCORD_CLIENT_ID }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -103,12 +104,14 @@ jobs:
         if: matrix.name != 'macos'
         env:
           CI: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm tauri build
 
       - name: Build Tauri universal macOS bundles
         if: matrix.name == 'macos'
         env:
           CI: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm tauri build --target universal-apple-darwin
 
       - name: Upload desktop bundles
@@ -211,6 +214,7 @@ jobs:
       - name: Build Android bundle
         env:
           CI: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm tauri android build
 
       - name: Prepare Android release assets

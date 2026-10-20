@@ -7,6 +7,7 @@ import { useCovers } from "../composables/useCovers";
 import { useOnVisible } from "../composables/useOnVisible";
 import { useTrackActions, type TrackButton } from "../composables/useTrackActions";
 import TrackMeta from "./TrackMeta.vue";
+import AppIcon from "./AppIcon.vue";
 
 // Everything except "play" goes through the injected TrackActions, because
 // only the list knows which queue a click should play.
@@ -111,10 +112,10 @@ function onClick() {
       <div class="track-title-row">
         <span class="track-title">{{ track.title || track.path }}</span>
         <span v-if="actions.isCurrent(track.id)" class="track-playback-badge current" title="Now playing">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+          <AppIcon name="play" :size="12" />
         </span>
         <span v-else-if="actions.isNext(track.id)" class="track-playback-badge next" title="Up next">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+          <AppIcon name="play" :size="12" />
           <span class="track-playback-step">1</span>
         </span>
       </div>
@@ -132,13 +133,13 @@ function onClick() {
     <slot name="extra" />
 
     <button v-if="shows('identify')" class="icon-btn hover-action inline-action" title="Identify" @click.stop="actions.identify(track)">
-      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
+      <AppIcon name="wand-sparkles" :size="14" />
     </button>
     <button v-if="shows('edit')" class="icon-btn hover-action inline-action" title="Edit" @click.stop="actions.edit(track)">
-      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
+      <AppIcon name="pencil" :size="14" />
     </button>
     <span v-if="shows('playCount')" class="play-count" :title="track.play_count > 0 ? 'Play count' : undefined">
-      <template v-if="track.play_count > 0">▶ {{ track.play_count }}</template>
+      <template v-if="track.play_count > 0"><AppIcon name="play" :size="12" /> {{ track.play_count }}</template>
     </span>
     <button
       v-if="shows('like')"
@@ -146,8 +147,7 @@ function onClick() {
       :title="track.is_liked ? 'Unlike' : 'Like'"
       @click.stop="actions.toggleLike(track)"
     >
-      <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-      <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+      <AppIcon name="heart" :size="16" :filled="track.is_liked" :color="track.is_liked ? '#1db954' : 'currentColor'" />
     </button>
     <button
       v-if="shows('addToPlaylist')"
@@ -155,7 +155,7 @@ function onClick() {
       title="Add to playlist"
       @click.stop="actions.openAddToPlaylist(track, $event.clientX, $event.clientY)"
     >
-      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
+      <AppIcon name="list-plus" :size="16" />
     </button>
     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
   </div>
@@ -239,6 +239,7 @@ function onClick() {
 .track-row:hover .hover-action,
 .hover-action:focus-visible { opacity: 1; }
 .play-count {
+  display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px;
   min-width: 36px;
   text-align: right;
   font-size: var(--fs-track-side);

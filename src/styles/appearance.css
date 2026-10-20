@@ -1,0 +1,11 @@
+html.player-reduced-motion *,
+html.player-reduced-motion *::before,
+html.player-reduced-motion *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+html.player-reduced-motion .rarity-animated::before,
+html.player-no-rarity-motion .rarity-animated::before {
+  display: none;
+}
