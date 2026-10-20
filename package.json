@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "pnpm contributors:sync && vue-tsc --noEmit && vite build",
+    "build": "pnpm licenses:generate && pnpm contributors:sync && vue-tsc --noEmit && vite build",
+    "licenses:generate": "node ./scripts/generate-licenses.mjs",
+    "test:licenses": "node --test ./scripts/generate-licenses.test.mjs",
     "contributors:sync": "node ./scripts/sync-contributors.mjs",
     "test:contributors": "node --test ./scripts/sync-contributors.test.mjs",
     "preview": "vite preview",
@@ -33,6 +35,7 @@
     "@tauri-apps/cli": "^2",
     "@types/three": "^0.184.0",
     "@vitejs/plugin-vue": "^5.2.1",
+    "spdx-license-list": "^6.12.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vue-tsc": "^2.1.10"

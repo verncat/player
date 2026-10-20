@@ -2,7 +2,7 @@ import {
   ArrowLeft, ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight,
   CircleCheck, Download, ExternalLink, FolderOpen, Headphones, Heart, House,
   Info, LibraryBig, List, ListFilter, ListMusic, ListPlus, Menu, Minus,
-  Palette, Pause, Pencil, Pin, Play, Plus, RefreshCw, Repeat, Repeat1, Search,
+  Palette, Pause, Pencil, Pin, Play, Plus, Radio, RefreshCw, Repeat, Repeat1, Search,
   Settings, Shuffle, SkipBack, SkipForward, Speaker, Square, Trash2,
   Volume2, VolumeX, WandSparkles, Wifi, X,
 } from '@lucide/vue';
@@ -35,6 +35,7 @@ export const icons = {
   pin: Pin,
   play: Play,
   plus: Plus,
+  radio: Radio,
   'refresh-cw': RefreshCw,
   repeat: Repeat,
   'repeat-1': Repeat1,

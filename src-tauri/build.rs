@@ -14,6 +14,7 @@ struct ChangelogEntry {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=DISCORD_CLIENT_ID");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap_or(&manifest_dir).to_path_buf();

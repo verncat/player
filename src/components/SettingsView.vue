@@ -36,6 +36,11 @@ const props = defineProps<{
   syncActive: boolean;
   peersCount: number;
   updateAvailable: boolean;
+  discordEnabled: boolean;
+  discordAvailable: boolean;
+  discordConfigured: boolean;
+  discordReady: boolean;
+  discordError: string;
   coverUrl: string | null;
   coverColors: [string, string];
 }>();
@@ -51,11 +56,13 @@ const emit = defineEmits<{
   selectOutput: [name: string];
   selectSampleRate: [sampleRate: number | null];
   toggleSync: [];
+  toggleDiscord: [enabled: boolean];
   deviceSaved: [settings: DeviceSettings];
   soulseekSaved: [];
 }>();
 
 const selected = computed(() => props.section ?? 'library');
+const sections = computed(() => SETTINGS_SECTIONS.filter((item) => item.id !== 'discord' || (props.discordReady && props.discordAvailable)));
 const sectionInfo = computed(() => SETTINGS_SECTIONS.find((section) => section.id === selected.value)!);
 const panel = ref<HTMLElement | null>(null);
 watch(() => props.section, async () => { await nextTick(); panel.value?.focus({ preventScroll: true }); });
@@ -172,7 +179,7 @@ onMounted(() => { void loadConfig(); });
     <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="arrow-left" :size="18" /> Settings</button>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
-        <button v-for="item in SETTINGS_SECTIONS" :key="item.id" :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
+        <button v-for="item in sections" :key="item.id" :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
           <AppIcon :name="item.icon" />
           <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
           <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
@@ -222,6 +229,16 @@ onMounted(() => { void loadConfig(); });
             <p v-if="nativeSampleRate" class="help">Current track: {{ formatSampleRate(nativeSampleRate) }}</p>
             <p v-if="audioBusy" role="status">Switching audio output...</p>
             <p v-if="audioError" class="error" role="alert">{{ audioError }}</p>
+          </div>
+        </template>
+
+        <template v-else-if="selected === 'discord'">
+          <p v-if="!discordReady" role="status">Loading Discord settings...</p>
+          <p v-else-if="!discordAvailable">Discord Rich Presence is not available in this build.</p>
+          <div v-else class="settings-group">
+            <div class="setting-row"><div><h4>Discord Rich Presence</h4><p>Show the track and artist you are listening to on your Discord profile.</p></div><SettingsToggle :model-value="discordEnabled" label="Discord Rich Presence" :disabled="!discordConfigured" @update:model-value="emit('toggleDiscord', $event)" /></div>
+            <p class="help">{{ discordConfigured ? 'Requires the Discord desktop app. Your activity is hidden while paused.' : 'Discord integration is not configured in this build.' }}</p>
+            <p v-if="discordError" class="error" role="alert">{{ discordError }}</p>
           </div>
         </template>
 

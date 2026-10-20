@@ -38,6 +38,7 @@ import AppTopbar from "./components/AppTopbar.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 import ResponsivePopup from "./components/ResponsivePopup.vue";
+import { useDiscordPresence } from "./composables/useDiscordPresence";
 import SettingsView from "./components/SettingsView.vue";
 import AboutPanel from "./components/AboutPanel.vue";
 import { useAppearance } from "./composables/useAppearance";
@@ -373,6 +374,14 @@ const queuedPagedSource = ref<QueuedPagedSource | null>(null);
 const queuedPageLoading = ref(false);
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
+const discord = useDiscordPresence(() => nowPlaying.value ? {
+  title: nowPlaying.value.title || 'Unknown track',
+  artist: nowPlaying.value.artist || 'Unknown artist',
+  album: nowPlaying.value.album || '',
+  position: currentTime.value,
+  duration: duration.value,
+  playing: isPlaying.value,
+} : null);
 const recentTracks = ref<Track[]>([]);
 const showQueueMenu = ref(false);
 
@@ -6254,6 +6263,9 @@ onUnmounted(() => {
             :remote-output-label="remoteOutputPeer ? peerLabel(remoteOutputPeer) : ''"
             :sync-enabled="syncEnabled" :sync-busy="syncBusy" :sync-error="syncError" :sync-active="syncActive" :peers-count="peers.length"
             :update-available="hasAvailableUpdate"
+            :discord-enabled="discord.enabled.value" :discord-available="discord.available.value"
+            :discord-configured="discord.configured.value" :discord-ready="discord.ready.value" :discord-error="discord.error.value"
+            @toggle-discord="discord.setEnabled"
             :cover-url="currentCoverUrl" :cover-colors="currentTrack.colors"
             @navigate="openSettings" @open-folder="openSettingsFolder" @reindex="doReindex" @identify="identifyFromSettings"
             @duplicates="activeNav = 'dedup'; openDedup()" @devices="activeNav = 'discovery'"

@@ -5,6 +5,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'playback', label: 'Playback', description: 'Audio output and sample rate', icon: 'headphones' },
   { id: 'devices', label: 'Devices & Sync', description: 'Device identity and local network', icon: 'wifi' },
   { id: 'soulseek', label: 'Soulseek', description: 'Search connection and downloads', icon: 'search' },
+  { id: 'discord', label: 'Discord RPC', description: 'Share your listening activity', icon: 'radio' },
   { id: 'appearance', label: 'Appearance', description: 'Motion and now playing visuals', icon: 'palette' },
   { id: 'about', label: 'About', description: 'Version, updates and release notes', icon: 'info' },
 ] as const satisfies readonly { id: string; label: string; description: string; icon: AppIconName }[];
