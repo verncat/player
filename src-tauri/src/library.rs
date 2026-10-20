@@ -1601,20 +1601,21 @@ fn backfill_album_tags(conn: &Mutex<Connection>, data_dir: &Path) -> Result<usiz
         rows
     };
 
-    let mut cue_sheet_tags: HashMap<String, AlbumTags> = HashMap::new();
+    let mut cue_sheet_tags: HashMap<String, Option<AlbumTags>> = HashMap::new();
     let mut updated = 0;
     for (id, source_rel, cue_rel) in pending {
         let source_abs = data_dir.join(cue_rel.as_deref().unwrap_or(&source_rel));
-        // Rows of removed files are dropped by the watcher or the next reindex.
-        if !source_abs.exists() {
-            continue;
-        }
-        let (album_artist, disc_number) = match cue_rel {
+        let tags = match cue_rel {
             Some(cue_rel) => cue_sheet_tags
                 .entry(cue_rel)
                 .or_insert_with(|| cue_sheet_album_tags(&source_abs))
                 .clone(),
             None => audio_file_album_tags(&source_abs),
+        };
+        // Files that can't be opened stay NULL so the next start retries them.
+        // Rows of removed files are dropped by the watcher or the next reindex.
+        let Some((album_artist, disc_number)) = tags else {
+            continue;
         };
         // Skips tracks edited since the SELECT.
         updated += conn.lock().unwrap().execute(
@@ -1629,25 +1630,41 @@ fn backfill_album_tags(conn: &Mutex<Connection>, data_dir: &Path) -> Result<usiz
 type AlbumTags = (Option<String>, Option<i64>);
 
 /// The same values `read_audio_meta` reads, without decoding the cover art.
-fn audio_file_album_tags(path: &Path) -> AlbumTags {
-    let tagged = Probe::open(path)
-        .map(|probe| probe.options(ParseOptions::new().read_cover_art(false)))
-        .and_then(|probe| probe.read())
-        .ok();
+/// `None` if the file can't be opened. A file lofty can't parse has no tags, as when indexing.
+fn audio_file_album_tags(path: &Path) -> Option<AlbumTags> {
+    let probe = match Probe::open(path) {
+        Ok(probe) => probe.options(ParseOptions::new().read_cover_art(false)),
+        Err(e) => {
+            eprintln!(
+                "[library] album tag backfill: can't open {}: {e}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    let tagged = probe.read().ok();
     let tag = tagged
         .as_ref()
         .and_then(|t| t.primary_tag().or_else(|| t.first_tag()));
-    match tag {
+    let tags = match tag {
         Some(tag) => (tag_album_artist(tag), tag.disk().map(i64::from)),
         None => (None, None),
-    }
+    };
+    Some(tags)
 }
 
-/// The same values `index_cue_file` stores.
-fn cue_sheet_album_tags(path: &Path) -> AlbumTags {
-    parse_cue_sheet(path)
-        .map(|sheet| (sheet.performer, sheet.disc_number))
-        .unwrap_or_default()
+/// The same values `index_cue_file` stores. `None` if the sheet can't be read.
+fn cue_sheet_album_tags(path: &Path) -> Option<AlbumTags> {
+    match parse_cue_sheet(path) {
+        Ok(sheet) => Some((sheet.performer, sheet.disc_number)),
+        Err(e) => {
+            eprintln!(
+                "[library] album tag backfill: can't read {}: {e}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 /// Synchronous version for startup (no events available yet).
@@ -4969,7 +4986,7 @@ FILE "Тени Свободы - 2015 - Тени Свободы.flac" WAVE
     }
 
     #[test]
-    fn album_tag_backfill_fills_only_rows_indexed_before_the_columns() {
+    fn album_tag_backfill_fills_only_readable_rows_indexed_before_the_columns() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -4982,6 +4999,7 @@ FILE "Тени Свободы - 2015 - Тени Свободы.flac" WAVE
         )
         .unwrap();
         std::fs::write(data_dir.join("untagged.mp3"), b"not audio").unwrap();
+        std::fs::create_dir(data_dir.join("unreadable.cue")).unwrap();
 
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
@@ -4990,6 +5008,7 @@ FILE "Тени Свободы - 2015 - Тени Свободы.flac" WAVE
                  ('album.cue#01', 'album.cue', NULL, NULL),
                  ('untagged.mp3', NULL, NULL, 5),
                  ('missing.mp3', NULL, NULL, NULL),
+                 ('unreadable.cue#01', 'unreadable.cue', NULL, NULL),
                  ('edited.cue#01', 'album.cue', '', NULL);",
         )
         .unwrap();
@@ -5014,6 +5033,7 @@ FILE "Тени Свободы - 2015 - Тени Свободы.flac" WAVE
         );
         assert_eq!(tags("untagged.mp3"), (Some(String::new()), None));
         assert_eq!(tags("missing.mp3"), (None, None));
+        assert_eq!(tags("unreadable.cue#01"), (None, None));
         assert_eq!(tags("edited.cue#01"), (Some(String::new()), None));
     }
 }
