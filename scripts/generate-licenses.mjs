@@ -71,17 +71,29 @@ export function standardLicenseTexts(expression) {
     : `\nNo bundled or standard SPDX text is available for ${id}.`);
 }
 
+export function collectCargo(target, run = execFileSync) {
+  // Tauri's universal target combines two Rust targets; rustc cannot query it directly.
+  const targets = target === 'universal-apple-darwin'
+    ? ['aarch64-apple-darwin', 'x86_64-apple-darwin'] : [target];
+  const packages = new Map();
+  for (const platform of targets) {
+    const metadata = JSON.parse(run('cargo', [
+      'metadata', '--locked', '--format-version', '1', '--filter-platform', platform,
+      '--manifest-path', join(root, 'src-tauri/Cargo.toml'),
+    ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+    for (const pkg of metadata.packages) {
+      if (!metadata.workspace_members.includes(pkg.id)) packages.set(pkg.id, pkg);
+    }
+  }
+  return [...packages.values()];
+}
+
 export function generateLicenses() {
   const target = process.env.LICENSES_TARGET || process.env.TAURI_ENV_TARGET_TRIPLE || process.env.CARGO_BUILD_TARGET
     || execFileSync('rustc', ['-vV'], { encoding: 'utf8' }).match(/^host: (.+)$/m)?.[1];
   if (!target) throw new Error('Could not determine Rust target for license generation');
-  const metadata = JSON.parse(execFileSync('cargo', [
-    'metadata', '--locked', '--format-version', '1', '--filter-platform', target,
-    '--manifest-path', join(root, 'src-tauri/Cargo.toml'),
-  ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
   const packages = collectNpm(root);
-  for (const pkg of metadata.packages) {
-    if (metadata.workspace_members.includes(pkg.id)) continue;
+  for (const pkg of collectCargo(target)) {
     packages.push({ ecosystem: 'Cargo', name: pkg.name, version: pkg.version,
       license: pkg.license, files: readLicenseFiles(dirname(pkg.manifest_path), pkg.license_file) });
   }

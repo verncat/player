@@ -3,7 +3,33 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { collectNpm, readLicenseFiles, renderLicenses, standardLicenseTexts } from './generate-licenses.mjs';
+import { collectCargo, collectNpm, readLicenseFiles, renderLicenses, standardLicenseTexts } from './generate-licenses.mjs';
+
+test('universal macOS licenses include both architectures without duplicate packages or workspace members', () => {
+  const queried = [];
+  const packages = collectCargo('universal-apple-darwin', (command, args) => {
+    assert.equal(command, 'cargo');
+    assert.ok(args.includes('--locked'));
+    const platform = args[args.indexOf('--filter-platform') + 1];
+    queried.push(platform);
+    return JSON.stringify({
+      workspace_members: ['app'],
+      packages: [{ id: 'app' }, { id: 'common' }, { id: platform }],
+    });
+  });
+  assert.deepEqual(queried, ['aarch64-apple-darwin', 'x86_64-apple-darwin']);
+  assert.deepEqual(packages.map((pkg) => pkg.id), ['common', ...queried]);
+});
+
+test('ordinary Rust targets pass through unchanged and metadata failures propagate', () => {
+  collectCargo('x86_64-pc-windows-msvc', (command, args) => {
+    assert.equal(args[args.indexOf('--filter-platform') + 1], 'x86_64-pc-windows-msvc');
+    return JSON.stringify({ workspace_members: [], packages: [] });
+  });
+  assert.throws(() => collectCargo('universal-apple-darwin', () => {
+    throw new Error('metadata failed');
+  }), /metadata failed/);
+});
 
 function fixture(t) {
   const path = mkdtempSync(join(tmpdir(), 'player-licenses-'));
