@@ -36,6 +36,7 @@ base64 = "0.22"
 blake3 = "1"
 encoding_rs = "0.8"
 symphonia = { version = "0.5", features = ["all"] }
+opus = "0.4"
 rustfft = "6"
 rusty-chromaprint = "0.3"
 flate2 = "1"
@@ -56,3 +57,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 discord-rich-presence = { version = "1.1", optional = true }
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+
+[patch.crates-io]
+# Symphonia 0.5's Opus granule positions omit pre-skip normalization and single-page end padding.
+symphonia-format-ogg = { path = "vendor/symphonia-format-ogg" }

@@ -1,6 +1,7 @@
 pub mod about;
 pub mod audio;
 pub mod covers;
+mod audio_codecs;
 pub mod demo;
 pub mod discovery;
 pub mod discord_presence;
