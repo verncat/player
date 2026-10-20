@@ -20,6 +20,7 @@
     "android:build-deploy": "pnpm android:build && pnpm android:deploy"
   },
   "dependencies": {
+    "@lucide/vue": "^1.59.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",

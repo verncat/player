@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIcon from './AppIcon.vue';
 defineProps<{
   activeNav: string;
   playlistTab: "regular" | "smart";
@@ -24,29 +25,29 @@ const emit = defineEmits<{
   <aside class="sidebar" :class="{ 'sidebar-open': open }">
     <div class="sidebar-mobile-header">
       <button class="icon-btn sidebar-close-btn" @click="emit('close')" aria-label="Close menu">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        <AppIcon name="x" :size="22" />
       </button>
     </div>
 
     <nav>
       <a class="nav-item" :class="{ active: activeNav === 'home' }" @click.prevent="emit('navigateHome')" href="#">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+        <AppIcon name="house" :size="22" />
         Home
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'search' }" @click.prevent="emit('navigateSearch')" href="#">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <AppIcon name="search" :size="22" />
         Search
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'library' }" @click.prevent="emit('navigateLibrary')" href="#">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
+        <AppIcon name="library-big" :size="22" />
         Your Library
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="emit('navigatePlaylists')" href="#">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+        <AppIcon name="list-music" :size="22" />
         Playlists
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'playlists' && playlistTab === 'smart' }" @click.prevent="emit('navigateSmartPlaylists')" href="#">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+        <AppIcon name="list-filter" :size="22" />
         Flexible Playlists
       </a>
     </nav>
@@ -55,7 +56,7 @@ const emit = defineEmits<{
 
     <nav>
       <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="emit('navigateDiscovery')" href="#">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8 3 3 3-3a4.237 4.237 0 0 0-6 0zm-4-4 2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+        <AppIcon name="wifi" :size="22" />
         Devices
         <span v-if="syncActive" class="nav-sync-spinner" aria-label="Sync in progress" />
         <span v-else-if="peersCount" class="peer-badge">{{ peersCount }}</span>
@@ -63,9 +64,9 @@ const emit = defineEmits<{
     </nav>
     <nav class="sidebar-settings">
       <a class="nav-item" :class="{ active: activeNav === 'settings' || activeNav.startsWith('settings/') || activeNav === 'about' }" href="#" @click.prevent="emit('navigateSettings')">
-        <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22" aria-hidden="true"><path d="m19.4 13 .1-1-.1-1 2.1-1.6-2-3.4-2.5 1a8 8 0 0 0-1.7-1L15 3h-4l-.4 2.9-1.7 1-2.5-1-2 3.4L6.5 11l-.1 1 .1 1-2.1 1.6 2 3.4 2.5-1 1.7 1L11 21h4l.4-2.9 1.7-1 2.5 1 2-3.4zM13 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8z" /></svg>
+        <AppIcon name="settings" :size="22" />
         Settings
-        <span v-if="updateAvailable" class="peer-badge" aria-label="Update available">+</span>
+        <span v-if="updateAvailable" class="peer-badge" aria-label="Update available"><AppIcon name="plus" :size="12" /></span>
       </a>
     </nav>
   </aside>
@@ -207,14 +208,14 @@ const emit = defineEmits<{
     flex-shrink: 0;
     border-radius: 6px;
   }
-  .nav-item svg {
+  .nav-item > svg {
     width: 20px;
     height: 20px;
   }
 }
 
 @media (max-width: 480px) {
-  .nav-item svg {
+  .nav-item > svg {
     width: 18px;
     height: 18px;
   }

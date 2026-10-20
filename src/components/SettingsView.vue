@@ -11,6 +11,7 @@ import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 
 const props = defineProps<{
   section: SettingsSection | null;
+  showDuplicateTracks: boolean;
   dataDir: string | null;
   indexBusy: boolean;
   indexCurrent: number;
@@ -40,6 +41,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   navigate: [section: SettingsSection | null];
+  'update:showDuplicateTracks': [value: boolean];
   openFolder: [];
   reindex: [];
   identify: [];
@@ -167,11 +169,11 @@ onMounted(() => { void loadConfig(); });
 
 <template>
   <section class="settings-page" :class="{ 'has-section': section !== null }">
-    <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="arrow-back" :size="18" /> Settings</button>
+    <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="arrow-left" :size="18" /> Settings</button>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
         <button v-for="item in SETTINGS_SECTIONS" :key="item.id" :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path :d="item.icon" /></svg>
+          <AppIcon :name="item.icon" />
           <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
           <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
           <AppIcon class="nav-chevron" name="chevron-right" :size="20" />
@@ -183,10 +185,11 @@ onMounted(() => { void loadConfig(); });
           <div class="settings-group">
             <h3>Music folder</h3>
             <p>Your files are the source of your library.</p>
-            <div class="folder-card"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8z" /></svg><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="open-in-new" /></button></div>
+            <div class="folder-card"><AppIcon name="folder-open" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button></div>
           </div>
           <div class="settings-group">
             <h3>Library maintenance</h3>
+            <div class="setting-row"><div><h4>Show duplicates</h4><p>Include tracks marked as duplicates in your library and playlists.</p></div><SettingsToggle :model-value="showDuplicateTracks" label="Show duplicates" @update:model-value="emit('update:showDuplicateTracks', $event)" /></div>
             <div class="setting-row"><div><h4>Reindex library</h4><p>Scan your music folder for new or changed files.</p></div><button :disabled="indexBusy" @click="emit('reindex')">{{ indexBusy ? 'Scanning...' : 'Reindex' }}</button></div>
             <div v-if="indexBusy" class="scan-progress" role="status"><progress :value="indexTotal ? indexCurrent : undefined" :max="indexTotal || 1" aria-label="Library scanning progress" /><p>{{ indexTotal ? `${indexCurrent} of ${indexTotal} files scanned` : 'Looking for music files...' }}</p></div>
             <p v-else-if="indexDone" class="success" role="status">Scan complete. {{ indexAdded }} files added or updated.</p>
@@ -235,7 +238,7 @@ onMounted(() => { void loadConfig(); });
                 <p v-if="identityError" class="error" role="alert">{{ identityError }}</p><p v-if="identitySaved && !identityDirty" class="success" role="status">Device identity saved.</p>
                 <div class="form-actions"><button type="button" :disabled="!identityDirty || identitySaving" @click="resetIdentity">Cancel</button><button class="primary" :disabled="!identityDirty || identitySaving || soulseekSaving" type="submit">{{ identitySaving ? 'Saving...' : 'Save' }}</button></div>
               </form>
-              <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="icon-label" @click="emit('devices')">Open devices <AppIcon name="arrow-forward" /></button></div></div>
+              <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="icon-label" @click="emit('devices')">Open devices <AppIcon name="arrow-right" /></button></div></div>
             </template>
             <template v-else>
               <div class="settings-group"><div class="setting-row"><div><h3>Soulseek search</h3><p>Search the Soulseek network and download music into your library.</p></div><SettingsToggle :model-value="soulseekEnabled" label="Soulseek search" :disabled="soulseekSaving || identitySaving" @update:model-value="toggleSoulseek" /></div></div>
@@ -247,15 +250,15 @@ onMounted(() => { void loadConfig(); });
                 <div class="form-actions"><button type="button" :disabled="!soulseekDirty || soulseekSaving" @click="resetSoulseek">Cancel</button><button class="primary" type="submit" :disabled="!soulseekDirty || soulseekSaving || identitySaving || !username.trim() || !password">{{ soulseekSaving ? 'Saving...' : 'Save' }}</button></div>
               </form>
               <p v-if="soulseekError" class="error" role="alert">{{ soulseekError }}</p><p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
-              <div class="settings-group"><h3>Downloads</h3><p>Downloaded files are saved in the Soulseek folder inside your music library.</p><div class="folder-card"><span>{{ dataDir ? `${dataDir.replace(/[\\/]$/, '')}/Soulseek` : 'Loading folder...' }}</span><button class="icon-label" :disabled="!dataDir" @click="emit('openFolder')">Open music folder <AppIcon name="open-in-new" /></button></div></div>
+              <div class="settings-group"><h3>Downloads</h3><p>Downloaded files are saved in the Soulseek folder inside your music library.</p><div class="folder-card"><span>{{ dataDir ? `${dataDir.replace(/[\\/]$/, '')}/Soulseek` : 'Loading folder...' }}</span><button class="icon-label" :disabled="!dataDir" @click="emit('openFolder')">Open music folder <AppIcon name="external-link" /></button></div></div>
             </template>
           </template>
         </template>
 
         <template v-else-if="selected === 'appearance'">
-          <div class="appearance-preview" :class="{ 'preview-flat': !preferences.album3d || reducedMotion }" aria-label="Now playing appearance preview">
+          <div class="appearance-preview" :class="{ 'preview-flat': !preferences.album3d || reducedMotion }" aria-label="Appearance preview">
             <div class="preview-art"><WebGLAlbumRenderer v-if="preferences.album3d && !reducedMotion" :cover-url="coverUrl" :colors="coverColors" rarity-color="#ff8000" :beat-scale="1" :is-playing="false" :tilt-x="4" :tilt-y="-12" :offset-x="0" :offset-y="0" :dragging="false" /><div v-else class="flat-art" :style="coverUrl ? { backgroundImage: `url(${coverUrl})` } : { background: `linear-gradient(135deg, ${coverColors[0]}, ${coverColors[1]})` }" /></div>
-            <div class="preview-caption"><span>NOW PLAYING</span><strong>Your music, your way</strong><span>Preview of your visual preferences</span><div class="rarity-preview" :class="{ animated: preferences.rarityAnimations && !reducedMotion }">Legendary</div></div>
+            <div class="preview-track" role="list" aria-label="Track rarity previews"><slot name="appearance-track" /></div>
           </div>
           <div class="settings-group"><div class="setting-row"><div><h4>Reduce motion</h4><p>{{ systemReducedMotion ? 'Enabled by your system preferences.' : 'Keep covers still and turn off decorative animations.' }}</p></div><SettingsToggle :model-value="reducedMotion" label="Reduce motion" :disabled="systemReducedMotion" @update:model-value="setPreference('reduceMotion', $event)" /></div><div class="setting-row"><div><h4>3D album cover</h4><p>{{ reducedMotion ? 'A still cover is used while reduced motion is on.' : 'Show the interactive album cover in now playing.' }}</p></div><SettingsToggle :model-value="preferences.album3d" label="3D album cover" :disabled="reducedMotion" @update:model-value="setPreference('album3d', $event)" /></div><div class="setting-row"><div><h4>Rarity animations</h4><p>{{ reducedMotion ? 'Animations are paused while reduced motion is on.' : 'Animate rare tracks while keeping their rarity colors.' }}</p></div><SettingsToggle :model-value="preferences.rarityAnimations" label="Rarity animations" :disabled="reducedMotion" @update:model-value="setPreference('rarityAnimations', $event)" /></div><p v-if="storageError" class="error" role="alert">{{ storageError }}</p></div>
         </template>
@@ -271,14 +274,14 @@ p { color: #a7a7a7; font-size: 13px; line-height: 1.65; margin: 0; }
 .settings-layout { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 44px; align-items: start; }
 .settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; }
 .settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: #a7a7a7; background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
-.settings-nav > button:hover { background: #181818; color: #fff; }
+.settings-nav > button:where(:hover, :active) { background: rgb(255 255 255 / 6%); color: #fff; }
 .settings-nav > button.selected { background: #1b2920; color: #81dfa2; }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
 .nav-copy { flex: 1; }
 .nav-description, .nav-chevron { display: none; }
 .local-note { font-size: 11px; padding: 20px 12px 0; }
 .update-dot { width: 6px; height: 6px; border-radius: 50%; background: #1db954; }
-.settings-panel { min-width: 0; max-width: 700px; }
+.settings-panel { min-width: 0; max-width: 700px; background: transparent; }
 .settings-panel:focus { outline: none; }
 h3 { font-size: 15px; margin: 0 0 7px; font-weight: 700; }
 h4 { font-size: 14px; margin: 0 0 5px; font-weight: 500; }
@@ -287,25 +290,25 @@ h4 { font-size: 14px; margin: 0 0 5px; font-weight: 500; }
 .setting-row > div { min-width: 0; }
 .setting-row p { max-width: 390px; }
 button, input { font: inherit; }
-.settings-panel button, .mobile-back { border: 1px solid #505050; background: transparent; color: #fff; border-radius: 99px; padding: 9px 16px; font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
+.settings-panel button:where(:not(.settings-switch)), .mobile-back { border: 1px solid #505050; background: transparent; color: #fff; border-radius: 99px; padding: 9px 16px; font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
 .settings-panel .icon-label { display: inline-flex; align-items: center; gap: 6px; }
-.settings-panel button:not(.settings-switch):hover { background: #282828; border-color: #777; }
+.settings-panel button:where(:not(.settings-switch):enabled):is(:hover, :active) { background: rgb(255 255 255 / 6%); border-color: #777; }
 .settings-panel button:not(.settings-switch):disabled { opacity: .45; cursor: default; }
 button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #1db954; outline-offset: 3px; }
 .settings-panel :deep(.settings-switch) { padding: 3px; border-radius: 99px; }
 .settings-panel .primary { background: #1db954; border-color: #1db954; color: #061d0e; padding-inline: 24px; }
-.settings-panel .primary:hover { background: #35cd6b; border-color: #35cd6b; }
-.folder-card { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 18px; padding: 18px; border: 1px solid #303030; background: #181818; border-radius: 8px; }
+.settings-panel .primary:enabled:is(:hover, :active) { background: #35cd6b; border-color: #35cd6b; }
+.folder-card { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 18px; padding: 18px; border-radius: 8px; }
 .folder-card svg { width: 24px; height: 24px; color: #a7a7a7; flex-shrink: 0; }
 .folder-card > span { flex: 1; min-width: 120px; overflow-wrap: anywhere; font-size: 13px; color: #d3d3d3; }
 .field { display: flex; flex-direction: column; gap: 9px; margin-top: 22px; font-size: 13px; font-weight: 600; }
-.field input { border: 1px solid #505050; background: #181818; color: #fff; border-radius: 5px; padding: 12px; width: 100%; min-height: 44px; font-size: 14px; }
+.field input { border: 1px solid #505050; background: transparent; color: #fff; border-radius: 5px; padding: 12px; width: 100%; min-height: 44px; font-size: 14px; }
 .field input:disabled { opacity: .5; }
 .field .audio-select { width: 100%; min-height: 44px; }
 .help { font-size: 12px; margin-top: 12px; }
-.notice { background: #181e1a; border: 1px solid #334b3c; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+.notice { border-radius: 8px; padding: 16px; margin-bottom: 24px; }
 .notice strong { font-size: 13px; display: block; margin-bottom: 6px; }
-.device-preview { display: flex; align-items: center; gap: 16px; padding: 20px; margin-top: 20px; background: #181818; border: 1px solid #282828; border-radius: 8px; }
+.device-preview { display: flex; align-items: center; gap: 16px; padding: 20px; margin-top: 20px; border-radius: 8px; }
 .device-preview strong { font-size: 15px; overflow-wrap: anywhere; }
 .device-emoji { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 8px; background: #262626; font-size: 26px; flex-shrink: 0; }
 fieldset { border: 0; padding: 0; margin: 22px 0 0; }
@@ -316,26 +319,51 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 .error { color: #ff939b; margin-top: 14px; overflow-wrap: anywhere; }
 .success { color: #81dfa2; margin-top: 14px; }
-.password-field { display: flex; border: 1px solid #505050; border-radius: 5px; background: #181818; }
+.password-field { display: flex; border: 1px solid #505050; border-radius: 5px; background: transparent; }
 .password-field input { border: 0; background: transparent; min-width: 0; }
 .settings-panel .password-field button { border: 0; border-radius: 0 4px 4px 0; }
 .scan-progress { padding-top: 16px; }
-progress { display: block; width: 100%; accent-color: #1db954; height: 5px; margin-bottom: 8px; }
-.appearance-preview { display: flex; align-items: center; justify-content: center; gap: 28px; min-height: 225px; margin-bottom: 18px; padding: 20px; background: radial-gradient(ellipse at 25% 80%, #1c302c, transparent 70%), #181818; border: 1px solid #303030; border-radius: 8px; overflow: hidden; }
-.preview-art { position: relative; width: 170px; height: 170px; flex-shrink: 0; }
-.preview-art :deep(.webgl-album-renderer) { top: -30px; }
-.flat-art { position: absolute; inset: 12px; border-radius: 8px; background-size: cover; background-position: center; box-shadow: 0 10px 24px #0006; }
-.preview-caption { display: flex; flex-direction: column; gap: 9px; }
-.preview-caption > span:first-child { font-size: 10px; letter-spacing: 1.5px; color: #a7a7a7; }
-.preview-caption strong { font-size: 16px; }
-.preview-caption > span { font-size: 12px; color: #a7a7a7; }
-.rarity-preview { align-self: flex-start; padding: 5px 10px; border-radius: 4px; font-size: 11px; color: #ffa64d; background: #ff80001a; }
-.rarity-preview.animated { animation: rarity-preview-glow 2.5s ease-in-out infinite; }
-@keyframes rarity-preview-glow { 50% { box-shadow: 0 0 20px #ff80005c; background: #ff800035; } }
+.scan-progress p { color: #a7a7a7; font-size: 12px; font-variant-numeric: tabular-nums; }
+.scan-progress progress {
+  display: block;
+  width: 100%;
+  height: 4px;
+  margin-bottom: 10px;
+  border: 0;
+  border-radius: 99px;
+  overflow: hidden;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgb(255 255 255 / 12%);
+  color: #1db954;
+}
+.scan-progress progress::-webkit-progress-bar { background: rgb(255 255 255 / 12%); border-radius: 99px; }
+.scan-progress progress::-webkit-progress-value { background: #1db954; border-radius: 99px; }
+.scan-progress progress::-moz-progress-bar { background: #1db954; border-radius: 99px; }
+.scan-progress progress:indeterminate {
+  background: linear-gradient(90deg, transparent, #1db954, transparent) -100% 0 / 50% 100% no-repeat, rgb(255 255 255 / 12%);
+  animation: scan-search 1.6s ease-in-out infinite;
+}
+.scan-progress progress:indeterminate::-webkit-progress-bar { background: transparent; }
+.scan-progress progress:indeterminate::-moz-progress-bar { background: transparent; }
+@keyframes scan-search { to { background-position: 200% 0, 0 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .scan-progress progress:indeterminate { animation: none; background-position: 50% 0, 0 0; }
+}
+:global(.player-reduced-motion) .scan-progress progress:indeterminate { animation: none; background-position: 50% 0, 0 0; }
+.appearance-preview { display: grid; grid-template-columns: clamp(88px, 32%, 208px) minmax(0, 1fr); align-items: center; gap: 24px; margin-bottom: 18px; padding: 24px 0; background: inherit; border-radius: 6px; overflow: hidden; container: appearance-preview / inline-size; }
+.preview-track { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
+.preview-art { position: relative; justify-self: start; width: 100%; max-width: 208px; aspect-ratio: 1; }
+.preview-art :deep(.webgl-album-renderer) { top: 0; }
+.flat-art { position: absolute; inset: 16%; border-radius: 4px; background-size: cover; background-position: center; }
 .mobile-back { display: none; }
-@media (max-width: 1080px) { .settings-layout { grid-template-columns: 160px minmax(0, 1fr); gap: 24px; } .setting-row { gap: 16px; } .appearance-preview { flex-direction: column; gap: 0; } .preview-caption { text-align: center; align-items: center; } .rarity-preview { align-self: center; } }
+@media (max-width: 1080px) { .settings-layout { grid-template-columns: 160px minmax(0, 1fr); gap: 24px; } .setting-row { gap: 16px; } .appearance-preview { gap: 16px; padding: 16px 0; } }
+@container appearance-preview (max-width: 360px) {
+  .preview-track :deep(.track-num), .preview-track :deep(.track-dur) { display: none; }
+}
 @media (max-width: 768px) {
   .settings-page { padding: 8px 0 32px; }
+  .appearance-preview { grid-template-columns: minmax(0, 1fr); }
   .settings-layout { display: block; }
   .settings-nav { position: static; gap: 0; }
   .settings-nav > button { padding: 18px 4px; border-bottom: 1px solid #282828; border-radius: 0; gap: 16px; min-height: 76px; }

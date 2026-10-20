@@ -43,7 +43,7 @@ function openNoteLink(event: MouseEvent) {
           <img class="app-mark" :src="appIconUrl" alt="" width="64" height="64" />
           <div><h3>Player</h3><p>Local-first music player with native playback, smart playlists, Soulseek search, and LAN sync.</p></div>
         </div>
-        <button v-if="info?.release_repo" class="text-link repository-link" @click="emit('openRepository')">GitHub repository <AppIcon name="open-in-new" /></button>
+        <button v-if="info?.release_repo" class="text-link repository-link" @click="emit('openRepository')">GitHub repository <AppIcon name="external-link" /></button>
       </div>
       <div class="info-row"><span>Version</span><strong>{{ info?.current_version || 'Unavailable' }}</strong></div>
       <div class="info-row"><span>Platform</span><span>{{ info?.platform || 'Unavailable' }}</span></div>
@@ -62,7 +62,7 @@ function openNoteLink(event: MouseEvent) {
       <p v-if="updateError" class="error" role="alert">{{ updateError }}</p>
       <p v-if="updateDone" role="status">{{ updateDone }}</p>
       <div v-if="status?.release_url" class="links">
-        <button class="text-link" @click="emit('openRelease')">Release page <AppIcon name="open-in-new" /></button>
+        <button class="text-link" @click="emit('openRelease')">Release page <AppIcon name="external-link" /></button>
       </div>
       <div v-if="contributors.length" class="contributors" aria-labelledby="contributors-heading">
         <h3 id="contributors-heading">Contributors</h3>
@@ -75,7 +75,7 @@ function openNoteLink(event: MouseEvent) {
                 <template v-else>{{ contributor.login[0].toUpperCase() }}</template>
               </span>
               <span class="contributor-info"><strong>{{ contributor.login }}</strong><span>GitHub profile</span></span>
-              <AppIcon class="contributor-arrow" name="open-in-new" />
+              <AppIcon class="contributor-arrow" name="external-link" />
             </a>
           </li>
         </ul>
@@ -104,21 +104,31 @@ h3 { color: #fff; font-size: 16px; margin: 0 0 8px; }
 p { line-height: 1.6; margin: 0; }
 .info-row { display: flex; justify-content: space-between; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid #282828; }
 strong { color: #fff; }
-.update-card { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px; padding: 20px; background: #181818; border: 1px solid #282828; border-radius: 8px; }
+.update-card {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 20px;
+}
+.update-card, .contributor-link {
+  border-radius: 8px;
+}
 button { border: 1px solid #505050; background: transparent; color: #fff; padding: 9px 16px; border-radius: 99px; cursor: pointer; font-size: 13px; font-weight: 600; }
-button:hover { background: #282828; }
+button:enabled:is(:hover, :active) { background: rgb(255 255 255 / 6%); border-color: #777; }
 button:disabled { opacity: .5; cursor: default; }
 button:focus-visible { outline: 2px solid #1db954; outline-offset: 3px; }
 .contributor-link:focus-visible { outline: 2px solid #1db954; outline-offset: 3px; }
 .primary { background: #1db954; color: #061d0e; border-color: #1db954; }
-.primary:hover { background: #35cd6b; }
+.primary:enabled:is(:hover, :active) { background: #35cd6b; border-color: #35cd6b; }
 .error { color: #ff939b; overflow-wrap: anywhere; }
 .links { display: flex; flex-wrap: wrap; gap: 12px; }
 .text-link { display: inline-flex; align-items: center; gap: 6px; border: none; padding: 0; color: #b3b3b3; border-radius: 2px; }
-.text-link:hover { background: transparent; color: #fff; text-decoration: underline; }
+.text-link:enabled:is(:hover, :active) { background: transparent; color: #fff; text-decoration: underline; }
 .contributors-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 12px; list-style: none; padding: 0; margin: 16px 0 0; }
-.contributor-link { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid #282828; border-radius: 8px; background: #181818; color: #b3b3b3; text-decoration: none; }
-.contributor-link:hover { background: #222; border-color: #505050; color: #fff; }
+.contributor-link { display: flex; align-items: center; gap: 12px; padding: 16px; color: #b3b3b3; text-decoration: none; }
+.contributor-link:is(:hover, :active) { color: #fff; }
 .contributor-avatar { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: #253a2d; color: #81dfa2; font-size: 16px; font-weight: 700; flex-shrink: 0; }
 .contributor-avatar img { display: block; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .contributor-info { display: flex; flex-direction: column; gap: 5px; min-width: 0; }

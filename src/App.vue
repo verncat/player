@@ -4595,6 +4595,27 @@ watch(activeNav, (nav) => {
   }
 });
 
+const pageTitle = computed(() => {
+  if (isSettingsNav.value || activeNav.value === 'about') return 'Settings';
+  switch (activeNav.value) {
+    case 'home': return 'Home';
+    case 'library': return 'Your Library';
+    case 'search': return 'Search';
+    case 'track-replace': return 'Search and replace';
+    case 'history': return 'Play History';
+    case 'playlists':
+      return playlistTab.value === 'regular'
+        ? playlistView.value?.name || 'Playlists'
+        : editingSP.value?.name || smartView.value?.name || 'Flexible Playlists';
+    case 'dedup': return 'Duplicates';
+    case 'discovery': return 'Devices on Network';
+    default: return undefined;
+  }
+});
+const pageSubtitle = computed(() => activeNav.value === 'track-replace' && trackReplaceDialog.value
+  ? `Replace ${trackReplaceDialog.value.track.title || trackReplaceDialog.value.track.path} with a Soulseek match.`
+  : undefined);
+
 onMounted(() => {
   document.addEventListener('click', onDocClick);
   document.addEventListener('keydown', onKeyDown);
@@ -5024,17 +5045,20 @@ onUnmounted(() => {
     />
 
     <!-- Main -->
-    <main class="main" :class="{ 'settings-main': isSettingsNav || activeNav === 'about' }">
+    <main class="main">
       <AppTopbar
-        :title="isSettingsNav || activeNav === 'about' ? 'Settings' : undefined"
-        v-model:show-duplicate-tracks="showDuplicateTracks"
-        :show-duplicate-toggle="!isSettingsNav && activeNav !== 'about'"
+        :title="pageTitle"
+        :subtitle="pageSubtitle"
         :can-nav-back="canNavBack"
         :can-nav-forward="canNavForward"
         @open-menu="showMobileNav = true"
         @nav-back="navBack"
         @nav-forward="navForward"
-      />
+      >
+        <template v-if="activeNav === 'playlists' && playlistTab === 'smart' && editingSP" #title>
+          <input v-model="editingSP.name" class="page-title-input" aria-label="Playlist name" placeholder="Playlist name" @input="saveSP()" @click.stop />
+        </template>
+      </AppTopbar>
 
       <div ref="contentRef" class="content" @scroll.passive="maybeLoadMoreSoulseekResults">
         <!-- Home view -->
@@ -5052,13 +5076,9 @@ onUnmounted(() => {
             >
               <button type="button" class="card onboarding-music-card" @click="startOnboardingSync">
                 <div class="cover onboarding-action-cover onboarding-sync-cover">
-                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9z" />
-                    <path d="M9 17l3 3 3-3a4.237 4.237 0 0 0-6 0z" />
-                    <path d="M5 13l2 2a7.074 7.074 0 0 1 10 0l2-2C15.14 9.14 8.87 9.14 5 13z" />
-                  </svg>
+                  <AppIcon name="wifi" />
                   <span class="hover-play">
-                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-forward" :size="22" /></span>
+                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-right" :size="22" /></span>
                   </span>
                 </div>
                 <div class="card-title">Sync</div>
@@ -5067,11 +5087,9 @@ onUnmounted(() => {
 
               <button type="button" class="card onboarding-music-card" @click="openDataDir">
                 <div class="cover onboarding-action-cover onboarding-upload-cover">
-                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
-                  </svg>
+                  <AppIcon name="folder-open" />
                   <span class="hover-play">
-                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-forward" :size="22" /></span>
+                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-right" :size="22" /></span>
                   </span>
                 </div>
                 <div class="card-title">Upload</div>
@@ -5096,8 +5114,8 @@ onUnmounted(() => {
                   : `background: linear-gradient(135deg, ${hashToColors(track.file_hash)[0]}, ${hashToColors(track.file_hash)[1]})`">
                   <div class="hover-play">
                     <button class="green-circle" type="button" @click.stop="toggleRecentCardPlayback(idx, track.id)">
-                      <svg v-if="!isTrackPlaying(track.id)" viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
-                      <svg v-else viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                      <AppIcon name="play" v-if="!isTrackPlaying(track.id)" :size="18" color="black" />
+                      <AppIcon name="pause" v-else :size="18" color="black" />
                     </button>
                   </div>
                 </div>
@@ -5132,11 +5150,11 @@ onUnmounted(() => {
                 <div class="cover" :style="homePinnedCoverStyle(item)">
                   <div class="hover-play">
                     <button v-if="item.trackCount" class="green-circle" type="button" @click.stop="playHomePinnedCard(item)">
-                      <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
+                      <AppIcon name="play" :size="18" color="black" />
                     </button>
                   </div>
-                  <svg v-if="item.kind === 'regular'" viewBox="0 0 24 24" fill="rgba(255,255,255,0.88)" width="30" height="30"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
-                  <svg v-else viewBox="0 0 24 24" fill="rgba(255,255,255,0.88)" width="30" height="30"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+                  <AppIcon name="list-music" v-if="item.kind === 'regular'" :size="30" color="rgba(255,255,255,0.88)" />
+                  <AppIcon name="list-filter" v-else :size="30" color="rgba(255,255,255,0.88)" />
                 </div>
                 <div class="card-title">{{ item.name }}</div>
                 <div class="card-artist">{{ item.subtitle }}</div>
@@ -5172,10 +5190,10 @@ onUnmounted(() => {
                   <div class="track-title-row">
                     <span class="track-title">{{ track.title || track.path }}</span>
                     <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                      <AppIcon name="play" :size="12" />
                     </span>
                     <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                      <AppIcon name="play" :size="12" />
                       <span class="track-playback-step">1</span>
                     </span>
                   </div>
@@ -5197,7 +5215,7 @@ onUnmounted(() => {
                 <div class="cover" :style="`background: linear-gradient(135deg, ${item.colors[0]}, ${item.colors[1]})`">
                   <div class="hover-play">
                     <button class="green-circle">
-                      <svg viewBox="0 0 24 24" fill="black" width="18" height="18"><path d="M8 5v14l11-7z"/></svg>
+                      <AppIcon name="play" :size="18" color="black" />
                     </button>
                   </div>
                 </div>
@@ -5211,8 +5229,7 @@ onUnmounted(() => {
         <!-- Library view -->
         <template v-else-if="activeNav === 'library'">
           <section>
-            <div class="library-header">
-              <h2>Your Library</h2>
+            <div class="library-header page-toolbar">
               <input
                 v-model="libraryQuery"
                 class="library-search"
@@ -5250,30 +5267,30 @@ onUnmounted(() => {
                     <div class="track-title-row">
                       <span class="track-title">{{ track.title || track.path }}</span>
                       <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        <AppIcon name="play" :size="12" />
                       </span>
                       <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                        <AppIcon name="play" :size="12" />
                         <span class="track-playback-step">1</span>
                       </span>
                     </div>
                     <span class="track-album">{{ track.album || '' }}</span>
                   </div>
                   <button class="icon-btn edit-btn track-inline-action" title="Identify" @click.stop="identifySingle(track)">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="m22 2-2.5 1.4L17.1 2l1.4 2.5L17.1 7l2.4-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zM5.21 19.38l-1.59-1.59 8.93-8.93 1.59 1.59-8.93 8.93z"/></svg>
+                    <AppIcon name="wand-sparkles" :size="14" />
                   </button>
                   <button class="icon-btn edit-btn track-inline-action" title="Edit" @click.stop="openEditor(track)">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
+                    <AppIcon name="pencil" :size="14" />
                   </button>
                   <span title="Play Count" v-if="track.play_count > 0" class="track-play-count" style="margin-right: 8px;">
-                    ▶ {{ track.play_count }}
+                    <AppIcon name="play" :size="12" /> {{ track.play_count }}
                   </span>
                   <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
-                    <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                    <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                    <AppIcon name="heart" v-if="track.is_liked" :size="16" color="#1db954" filled />
+                    <AppIcon name="heart" v-else :size="16" />
                   </button>
                   <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
+                    <AppIcon name="list-plus" :size="16" />
                   </button>
                   <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                 </div>
@@ -5287,8 +5304,7 @@ onUnmounted(() => {
         <!-- Search view -->
         <template v-else-if="activeNav === 'search'">
           <section>
-            <div class="library-header">
-              <h2>Search</h2>
+            <div class="library-header page-toolbar">
               <input
                 v-model="searchQuery"
                 class="library-search"
@@ -5330,21 +5346,21 @@ onUnmounted(() => {
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>
                         <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                         </span>
                         <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                           <span class="track-playback-step">1</span>
                         </span>
                       </div>
                       <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}</span>
                     </div>
                     <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
+                      <AppIcon name="list-plus" :size="16" />
                     </button>
                     <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
-                      <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                      <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                      <AppIcon name="heart" v-if="track.is_liked" :size="16" color="#1db954" filled />
+                      <AppIcon name="heart" v-else :size="16" />
                     </button>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                   </div>
@@ -5391,21 +5407,21 @@ onUnmounted(() => {
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>
                         <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                         </span>
                         <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                           <span class="track-playback-step">1</span>
                         </span>
                       </div>
                       <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}{{ track.genre ? ' · ' + track.genre : '' }}{{ track.year ? ' · ' + track.year : '' }}</span>
                     </div>
                     <button class="icon-btn edit-btn track-inline-action" title="Add to playlist" style="margin-right: 8px;" @click.stop="openAddToPlaylistMenu($event, track)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm11.41-2.83L13 14.59 11.59 13 10 14.59l3 3.01 4-4.01-1.59-1.42z"/></svg>
+                      <AppIcon name="list-plus" :size="16" />
                     </button>
                     <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(track)" style="margin-right: 8px;">
-                      <svg v-if="track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                      <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                      <AppIcon name="heart" v-if="track.is_liked" :size="16" color="#1db954" filled />
+                      <AppIcon name="heart" v-else :size="16" />
                     </button>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                   </div>
@@ -5413,8 +5429,8 @@ onUnmounted(() => {
                 <div v-if="searchResults.length" class="library-page-controls library-page-controls-bottom">
                   <span>{{ localSearchPageLabel }}</span>
                   <div>
-                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage"><AppIcon name="arrow-back" /> Previous</button>
-                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next <AppIcon name="arrow-forward" /></button>
+                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage"><AppIcon name="arrow-left" /> Previous</button>
+                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next <AppIcon name="arrow-right" /></button>
                   </div>
                 </div>
               </template>
@@ -5535,12 +5551,10 @@ onUnmounted(() => {
             <div class="library-header soulseek-replace-page-header">
               <div class="soulseek-replace-page-heading">
                 <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                  <AppIcon name="arrow-left" :size="20" />
                 </button>
                 <div>
-                  <h2 style="margin:0;">Search and replace</h2>
                   <p class="soulseek-replace-track-copy">
-                    Replace <strong>{{ trackReplaceDialog.track.title || trackReplaceDialog.track.path }}</strong> with a Soulseek match.
                     Filled metadata stays intact; empty fields are filled from the replacement file.
                   </p>
                 </div>
@@ -5653,8 +5667,8 @@ onUnmounted(() => {
                     :aria-label="soulseekDownloadActionLabel(result)"
                     @click.stop="downloadSoulseekResult(result)"
                   >
-                    <svg v-if="soulseekDownloadState(result)?.state === 'completed'" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                    <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.42 1.42L11 5.84V16h2V5.84l3.08 3.08 1.42-1.42L12 2z"/></svg>
+                    <AppIcon name="check" v-if="soulseekDownloadState(result)?.state === 'completed'" :size="16" />
+                    <AppIcon name="download" v-else :size="16" />
                   </button>
                   <button class="btn-primary soulseek-replace-btn" :disabled="!!trackReplaceApplyingKey" @click.stop="replaceTrackWithSoulseekResult(trackReplaceDialog.track, result)">
                     {{ trackReplaceActionLabel(result) }}
@@ -5670,9 +5684,8 @@ onUnmounted(() => {
             <div class="library-header soulseek-replace-page-header">
               <div class="soulseek-replace-page-heading">
                 <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                  <AppIcon name="arrow-left" :size="20" />
                 </button>
-                <h2 style="margin:0;">Search and replace</h2>
               </div>
             </div>
             <div class="library-empty">No track selected.</div>
@@ -5684,10 +5697,9 @@ onUnmounted(() => {
           <section>
             <div class="library-header">
               <div style="display:flex; align-items:center; gap:12px;">
-                <button class="icon-btn" style="padding:4px;" @click="activeNav = 'home'">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                <button class="icon-btn text-action-btn" style="padding:4px;" @click="activeNav = 'home'">
+                  <AppIcon name="arrow-left" :size="20" /> Home
                 </button>
-                <h2 style="margin:0;">Play History</h2>
               </div>
             </div>
             <div v-if="historyLoading" class="library-empty">Loading...</div>
@@ -5714,10 +5726,10 @@ onUnmounted(() => {
                   <div class="track-title-row">
                     <span class="track-title">{{ entry.track.title || entry.track.path }}</span>
                     <span v-if="isCurrentTrack(entry.track.id)" class="track-playback-badge current" title="Now playing">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                      <AppIcon name="play" :size="12" />
                     </span>
                     <span v-else-if="isNextTrack(entry.track.id)" class="track-playback-badge next" title="Up next">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                      <AppIcon name="play" :size="12" />
                       <span class="track-playback-step">1</span>
                     </span>
                   </div>
@@ -5725,8 +5737,8 @@ onUnmounted(() => {
                 </div>
                 <span class="history-time" style="margin-right:12px;">{{ formatHistoryDate(entry.played_at) }}</span>
                 <button class="icon-btn like-btn track-inline-action" @click.stop="toggleLike(entry.track)" style="margin-right:8px;">
-                  <svg v-if="entry.track.is_liked" viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                  <svg v-else viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                  <AppIcon name="heart" v-if="entry.track.is_liked" :size="16" color="#1db954" filled />
+                  <AppIcon name="heart" v-else :size="16" />
                 </button>
                 <span class="track-dur">{{ formatDuration(entry.track.duration_secs) }}</span>
               </div>
@@ -5743,12 +5755,11 @@ onUnmounted(() => {
               <template v-if="playlistView">
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
+                      <AppIcon name="arrow-left" :size="20" /> Playlists
                     </button>
-                    <h2 style="margin:0;">{{ playlistView.name }}</h2>
                   </div>
-                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)">▶ Play</button>
+                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
@@ -5773,17 +5784,17 @@ onUnmounted(() => {
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>
                         <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                         </span>
                         <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                           <span class="track-playback-step">1</span>
                         </span>
                       </div>
                       <span class="track-album">{{ track.artist || 'Unknown' }}{{ track.album ? ' · ' + track.album : '' }}</span>
                     </div>
                     <button class="icon-btn track-inline-action" style="margin-right:8px;" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 13H5v-2h14v2z"/></svg>
+                      <AppIcon name="minus" :size="16" />
                     </button>
                     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
                   </div>
@@ -5792,8 +5803,7 @@ onUnmounted(() => {
               </template>
               <!-- Playlist list -->
               <template v-else>
-                <div class="library-header">
-                  <h2>Playlists</h2>
+                <div class="library-header page-toolbar">
                   <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
                 </div>
                 <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
@@ -5811,17 +5821,17 @@ onUnmounted(() => {
                 <div v-else class="track-list">
                   <div v-for="pl in playlists" :key="pl.id" class="track-row" style="cursor:pointer;" @click="openPlaylist(pl)">
                     <div class="track-cover-sm" style="background: linear-gradient(135deg, #333, #1a1a1a); display:flex; align-items:center; justify-content:center;">
-                      <svg viewBox="0 0 24 24" fill="#a7a7a7" width="20" height="20"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+                      <AppIcon name="list-music" :size="20" color="#a7a7a7" />
                     </div>
                     <div class="track-info">
                       <span class="track-title">{{ pl.name }}</span>
                       <span class="track-album">{{ pl.track_count }} track{{ pl.track_count !== 1 ? 's' : '' }}</span>
                     </div>
                     <button class="icon-btn" :class="{ green: pl.pinned }" style="margin-right:4px;" :title="pl.pinned ? 'Unpin from Home' : 'Pin to Home'" @click.stop="togglePlaylistPinned(pl)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v1h5v8h2v-8h5v-1l-2-2z"/></svg>
+                      <AppIcon name="pin" :size="15" />
                     </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete playlist" @click.stop="deletePlaylist(pl.id)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                      <AppIcon name="trash-2" :size="16" />
                     </button>
                   </div>
                 </div>
@@ -5834,16 +5844,9 @@ onUnmounted(() => {
               <template v-if="editingSP">
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
+                      <AppIcon name="arrow-left" :size="20" /> Flexible Playlists
                     </button>
-                    <input
-                      class="library-search smart-name-input"
-                      style="min-width:140px; max-width:260px;"
-                      v-model="editingSP.name"
-                      @input="saveSP()"
-                      @click.stop
-                    />
                   </div>
                   <span class="smart-track-count">{{ editingSPTotal }} tracks</span>
                 </div>
@@ -5920,7 +5923,7 @@ onUnmounted(() => {
                     </template>
 
                     <button class="icon-btn" style="margin-left:auto; flex-shrink:0;" @click="removeSPRule(rule.id)" title="Remove rule">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                      <AppIcon name="x" :size="14" />
                     </button>
                   </div>
                   <button class="sp-add-rule-btn" @click="addSPRule()">+ Add rule</button>
@@ -5953,10 +5956,10 @@ onUnmounted(() => {
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>
                         <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                         </span>
                         <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                           <span class="track-playback-step">1</span>
                         </span>
                       </div>
@@ -5972,14 +5975,13 @@ onUnmounted(() => {
               <template v-else-if="smartView">
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn" style="padding:4px;" @click="smartView = null">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="smartView = null">
+                      <AppIcon name="arrow-left" :size="20" /> Flexible Playlists
                     </button>
-                    <h2 style="margin:0;">{{ smartView.name }}</h2>
                   </div>
                   <div style="display:flex;gap:8px;">
                     <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
-                    <button v-if="smartViewTracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playSmartPlaylistTrack(0)">▶ Play</button>
+                    <button v-if="smartViewTracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playSmartPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                   </div>
                 </div>
                 <div v-if="smartViewLoading" class="library-empty">Loading playlist…</div>
@@ -6006,10 +6008,10 @@ onUnmounted(() => {
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>
                         <span v-if="isCurrentTrack(track.id)" class="track-playback-badge current" title="Now playing">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                         </span>
                         <span v-else-if="isNextTrack(track.id)" class="track-playback-badge next" title="Up next">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M8 5v14l11-7z"/></svg>
+                          <AppIcon name="play" :size="12" />
                           <span class="track-playback-step">1</span>
                         </span>
                       </div>
@@ -6023,8 +6025,7 @@ onUnmounted(() => {
 
               <!-- Smart playlist list -->
               <template v-else>
-                <div class="library-header">
-                  <h2>Flexible Playlists</h2>
+                <div class="library-header page-toolbar">
                   <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewSPInput = !showNewSPInput">+ New</button>
                 </div>
                 <div v-if="showNewSPInput" style="display:flex; gap:8px; padding: 0 0 14px;">
@@ -6035,20 +6036,20 @@ onUnmounted(() => {
                 <div v-else class="track-list">
                   <div v-for="sp in smartPlaylists" :key="sp.id" class="track-row" style="cursor:pointer;" @click="smartView = sp">
                     <div class="track-cover-sm" style="background: linear-gradient(135deg, #1a2a3a, #0d1b2a); display:flex; align-items:center; justify-content:center;">
-                      <svg viewBox="0 0 24 24" fill="#4fc3f7" width="20" height="20"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+                      <AppIcon name="list-filter" :size="20" color="#4fc3f7" />
                     </div>
                     <div class="track-info">
                       <span class="track-title">{{ sp.name }}</span>
                       <span class="track-album">{{ sp.rules.length }} rule{{ sp.rules.length !== 1 ? 's' : '' }} · {{ smartPlaylistPreviews[sp.id]?.total ?? 0 }} tracks</span>
                     </div>
                     <button class="icon-btn" :class="{ green: sp.pinned }" style="margin-right:4px;" :title="sp.pinned ? 'Unpin from Home' : 'Pin to Home'" @click.stop="toggleSmartPlaylistPinned(sp)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M16 9V4l1-1V2H7v1l1 1v5l-2 2v1h5v8h2v-8h5v-1l-2-2z"/></svg>
+                      <AppIcon name="pin" :size="15" />
                     </button>
                     <button class="icon-btn" style="margin-right:4px;" title="Edit" @click.stop="editingSP = { ...sp }; smartView = null">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.33a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>
+                      <AppIcon name="pencil" :size="14" />
                     </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete" @click.stop="deleteSmartPlaylist(sp.id)">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                      <AppIcon name="trash-2" :size="14" />
                     </button>
                   </div>
                 </div>
@@ -6060,8 +6061,7 @@ onUnmounted(() => {
         <!-- Duplicates view -->
         <template v-else-if="activeNav === 'dedup'">
           <section>
-            <div class="library-header">
-              <h2>Duplicates</h2>
+            <div class="library-header page-toolbar">
               <div class="dedup-toolbar">
                 <button
                   class="dedup-filter-btn"
@@ -6074,7 +6074,7 @@ onUnmounted(() => {
                   @click="dedupFilter = 'unresolved'"
                 >Unresolved</button>
                 <button class="btn-secondary dedup-rescan-btn" @click="openDedup()" :disabled="dedupLoading">
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                  <AppIcon name="refresh-cw" :size="14" />
                   Rescan
                 </button>
               </div>
@@ -6086,7 +6086,7 @@ onUnmounted(() => {
 
             <template v-else-if="dedupGroups.length === 0">
               <p class="search-empty-copy dedup-clean-copy">
-                <svg viewBox="0 0 24 24" fill="#1db954" width="20" height="20"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                <AppIcon name="circle-check" :size="20" color="#1db954" />
                 No duplicates found. Your library looks clean!
               </p>
             </template>
@@ -6135,7 +6135,7 @@ onUnmounted(() => {
                       </span>
                       <span class="dedup-track-meta">
                         <span>{{ track.path }}</span>
-                        <span v-if="track.play_count > 0">▶ {{ track.play_count }}</span>
+                        <span v-if="track.play_count > 0"><AppIcon name="play" :size="12" /> {{ track.play_count }}</span>
                         <span v-if="track.manually_edited" class="dedup-edited-tag">edited</span>
                         <span v-if="track.is_duplicate" class="dedup-flagged-tag">flagged</span>
                       </span>
@@ -6167,10 +6167,7 @@ onUnmounted(() => {
         <!-- Discovery view -->
         <template v-else-if="activeNav === 'discovery'">
           <section>
-            <div class="library-header discovery-header">
-              <div class="discovery-header-copy">
-                <h2>Devices on Network</h2>
-              </div>
+            <div class="library-header discovery-header page-toolbar">
               <div class="discovery-toolbar">
                 <button class="sync-toggle" @click="openDeviceSettings"><span class="device-emoji">{{ deviceEmoji }}</span> Settings</button>
                 <button
@@ -6179,7 +6176,7 @@ onUnmounted(() => {
                   @click="toggleSync"
                   :title="syncEnabled ? 'Sync on — click to disable' : 'Sync off — click to enable'"
                 >
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                  <AppIcon name="refresh-cw" :size="14" />
                   Sync
                 </button>
               </div>
@@ -6202,9 +6199,9 @@ onUnmounted(() => {
                     <span v-if="isRemoteOutputPeer(peer)" class="track-playback-badge next discovery-output-pill">Output</span>
                     <span class="discovery-status-pill" :class="peerPlaybackClass(peer)">
                       <span class="peer-playback-icon" aria-hidden="true">
-                        <svg v-if="peer.playback?.state === 'playing'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
-                        <svg v-else-if="peer.playback?.state === 'paused'" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
-                        <svg v-else viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M7 7h10v10H7z"/></svg>
+                        <AppIcon name="play" v-if="peer.playback?.state === 'playing'" :size="14" />
+                        <AppIcon name="pause" v-else-if="peer.playback?.state === 'paused'" :size="14" />
+                        <AppIcon name="square" v-else :size="14" />
                       </span>
                       {{ peerPlaybackLabel(peer) }}
                     </span>
@@ -6236,7 +6233,7 @@ onUnmounted(() => {
                   :disabled="['index','download','reindex','merging'].includes(syncProgress[peer.name]?.phase ?? '')"
                   title="Sync now"
                 >
-                  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                  <AppIcon name="refresh-cw" :size="16" />
                 </button>
               </div>
             </div>
@@ -6245,6 +6242,7 @@ onUnmounted(() => {
 
         <template v-else-if="isSettingsNav || activeNav === 'about'">
           <SettingsView
+            v-model:show-duplicate-tracks="showDuplicateTracks"
             :section="activeNav === 'about' ? 'about' : settingsSection"
             :data-dir="libraryDataDir"
             :index-busy="libraryScanBusy"
@@ -6256,12 +6254,25 @@ onUnmounted(() => {
             :remote-output-label="remoteOutputPeer ? peerLabel(remoteOutputPeer) : ''"
             :sync-enabled="syncEnabled" :sync-busy="syncBusy" :sync-error="syncError" :sync-active="syncActive" :peers-count="peers.length"
             :update-available="hasAvailableUpdate"
-            :cover-url="currentCoverUrl" :cover-colors="nowPlaying ? currentTrack.colors : ['#183e35', '#315341']"
+            :cover-url="currentCoverUrl" :cover-colors="currentTrack.colors"
             @navigate="openSettings" @open-folder="openSettingsFolder" @reindex="doReindex" @identify="identifyFromSettings"
             @duplicates="activeNav = 'dedup'; openDedup()" @devices="activeNav = 'discovery'"
             @refresh-audio="refreshOutputDevices" @select-output="selectSettingsOutput" @select-sample-rate="selectSettingsSampleRate"
             @toggle-sync="toggleSync" @device-saved="onDeviceSettingsSaved" @soulseek-saved="loadSoulseekStatus"
           >
+            <template #appearance-track>
+              <div v-for="(rarity, index) in ['Epic', 'Legendary', 'Mythic']" :key="rarity" class="track-row appearance-track-preview" :class="rarityClass(rarity)" :style="rarityVars(rarity)" role="listitem" :aria-label="`${rarity} track appearance preview`">
+                <div class="track-cover-sm" :style="currentCoverUrl
+                  ? { backgroundImage: `url(${currentCoverUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+                  : { background: `linear-gradient(135deg, ${currentTrack.colors[0]}, ${currentTrack.colors[1]})` }" />
+                <span class="track-num">{{ index + 1 }}</span>
+                <div class="track-info">
+                  <div class="track-title-row"><span class="track-title">Preview track {{ index + 1 }}</span></div>
+                  <span class="track-album">{{ nowPlaying?.album || 'Your music library' }}</span>
+                </div>
+                <span class="track-dur">{{ formatDuration(213 + index * 24) }}</span>
+              </div>
+            </template>
             <template #about>
               <AboutPanel :info="aboutInfo" :loading="aboutLoading" :error="aboutError" :status="aboutUpdateStatus"
                 :checking="aboutCheckingUpdates" :updating="aboutUpdating" :progress="aboutUpdateProgress"
@@ -6360,7 +6371,7 @@ onUnmounted(() => {
       <div class="modal-header">
         <h3>Confirm marking</h3>
         <button class="icon-btn" @click="dedupConfirmOpen = false">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          <AppIcon name="x" :size="18" />
         </button>
       </div>
       <div class="modal-body">
@@ -6379,7 +6390,7 @@ onUnmounted(() => {
           <div class="modal-header">
             <h3>Edit Track</h3>
             <button class="icon-btn" @click="editingTrack = null">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+              <AppIcon name="x" :size="18" />
             </button>
           </div>
           <div class="modal-body edit-track-body">
@@ -6456,12 +6467,12 @@ onUnmounted(() => {
         </template>
         <template v-else-if="indexRunning">
           <div v-if="!indexDone" class="identify-mini-spinner" />
-          <svg v-else viewBox="0 0 24 24" fill="#1db954" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+          <AppIcon name="circle-check" v-else :size="16" color="#1db954" />
           <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
           <span v-else>+{{ indexAdded }}</span>
         </template>
         <template v-else>
-          <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2z"/></svg>
+          <AppIcon name="list" :size="15" />
         </template>
         <span v-if="!indexRunning" class="activity-mini-label">Activity</span>
       </button>
@@ -6473,7 +6484,7 @@ onUnmounted(() => {
       <div v-if="identifyRunning && identifyMinimized" class="identify-mini" @click="identifyMinimized = false">
         <div v-if="!identifyDone" class="identify-mini-spinner" />
         <span>{{ identifyCurrent }}/{{ identifyTotal }}</span>
-        <span v-if="identifyDone" class="identify-mini-done">✓</span>
+        <span v-if="identifyDone" class="identify-mini-done"><AppIcon name="check" /></span>
       </div>
     </div>
 
@@ -6485,10 +6496,10 @@ onUnmounted(() => {
             <h3>Identifying tracks <span class="powered-by">powered by <a href="https://acoustid.org" target="_blank">AcoustID</a></span></h3>
             <div style="display:flex;gap:8px">
               <button class="icon-btn" title="Minimize" @click="identifyMinimized = true">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M6 19h12v2H6z"/></svg>
+                <AppIcon name="minus" :size="18" />
               </button>
               <button v-if="identifyDone" class="icon-btn" title="Close" @click="identifyRunning = false">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                <AppIcon name="x" :size="18" />
               </button>
             </div>
           </div>
@@ -6518,7 +6529,7 @@ onUnmounted(() => {
           <div class="modal-header">
             <h3>Activity <span class="powered-by">library &amp; sync history</span></h3>
             <button class="icon-btn" title="Close" @click="indexLogOpen = false; indexRunning = false">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+              <AppIcon name="x" :size="18" />
             </button>
           </div>
           <div class="modal-body">
@@ -6547,12 +6558,12 @@ onUnmounted(() => {
                     <template v-else>scanning…</template>
                   </span>
                   <span class="ls-badge ls-badge-done" v-else-if="session.status === 'done'">
-                    <svg viewBox="0 0 24 24" fill="#1db954" width="12" height="12"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                    <AppIcon name="check" :size="12" color="#1db954" />
                     <template v-if="session.filesAdded > 0">+{{ session.filesAdded }} files</template>
                     <template v-else>up to date</template>
                   </span>
                   <span class="ls-badge ls-badge-err" v-else>
-                    <svg viewBox="0 0 24 24" fill="#ff5252" width="12" height="12"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    <AppIcon name="x" :size="12" color="#ff5252" />
                     error
                   </span>
                   <span class="ls-time">{{ new Date(session.finishedAt || session.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
@@ -6625,6 +6636,7 @@ onUnmounted(() => {
       @seek="seek"
       @toggle-queue-menu="toggleQueueMenu"
       @toggle-device-menu="toggleDeviceMenu"
+      @open-playback-settings="openSettings('playback')"
       @jump-to-queue-item="jumpToQueueItem"
       @pick-local-device="pickLocalDevice"
       @pick-local-sample-rate="pickLocalSampleRate"
@@ -6697,8 +6709,8 @@ onUnmounted(() => {
                 <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
               </div>
               <button class="icon-btn" :class="{ green: nowPlaying.is_liked }" @click.stop="toggleLike(nowPlaying!)" style="margin-left:auto;">
-                <svg v-if="nowPlaying.is_liked" viewBox="0 0 24 24" fill="#1db954" width="22" height="22"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+                <AppIcon name="heart" v-if="nowPlaying.is_liked" :size="22" color="#1db954" filled />
+                <AppIcon name="heart" v-else :size="22" />
               </button>
             </div>
             <!-- seek -->
@@ -6728,21 +6740,21 @@ onUnmounted(() => {
             <!-- controls -->
             <div class="detail-controls">
               <button class="icon-btn" :class="{ green: isShuffled }" @click="isShuffled = !isShuffled">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+                <AppIcon name="shuffle" :size="20" />
               </button>
               <button class="icon-btn" @click="playPrev">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+                <AppIcon name="skip-back" :size="32" />
               </button>
               <button class="detail-play-btn" @click="togglePlay">
-                <svg v-if="!isPlaying" viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><path d="M8 5v14l11-7z"/></svg>
-                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                <AppIcon name="play" v-if="!isPlaying" :size="28" />
+                <AppIcon name="pause" v-else :size="28" />
               </button>
               <button class="icon-btn" @click="playNext">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="32" height="32"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                <AppIcon name="skip-forward" :size="32" />
               </button>
               <button class="icon-btn" :class="{ green: repeatMode > 0 }" @click="repeatMode = (repeatMode + 1) % 3">
-                <svg v-if="repeatMode < 2" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-                <svg v-else viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2v-5h-1l-2 1v1h1.5v3H13z"/></svg>
+                <AppIcon name="repeat" v-if="repeatMode < 2" :size="20" />
+                <AppIcon name="repeat-1" v-else :size="20" />
               </button>
             </div>
           </div>
@@ -6764,6 +6776,8 @@ a, button, [role="button"] {
 
 <style scoped>
 .detail-static-cover { position: absolute; inset: 15%; border-radius: 14px; box-shadow: 0 20px 50px #0006; }
+.page-title-input { width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
+.page-title-input:focus-visible { outline: 2px solid #1db954; outline-offset: -2px; }
 
 /* ── Layout ── */
 .app {
@@ -6821,11 +6835,6 @@ a, button, [role="button"] {
 
 .discovery-header {
   align-items: flex-end;
-}
-.discovery-header-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 .discovery-toolbar {
   display: flex;
@@ -7069,7 +7078,6 @@ a, button, [role="button"] {
   background: linear-gradient(180deg, #4a2d8a 0%, #1f1b3a 30%, #121212 58%);
 }
 
-.main.settings-main { background: #121212; }
 
 .user-menu-wrapper { position: relative; }
 .user-btn {
@@ -7290,6 +7298,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 16px; gap: 16px;
 }
+.library-header.page-toolbar { justify-content: flex-end; }
 .library-page-controls {
   display: flex;
   align-items: center;
@@ -7506,11 +7515,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   color: #a7a7a7;
   white-space: nowrap;
 }
-.smart-name-input {
-  font-size: var(--fs-modal-title);
-  font-weight: 600;
-  padding: 4px 10px;
-}
 .smart-track-count {
   font-size: var(--fs-body-sm);
   color: #a7a7a7;
@@ -7612,7 +7616,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   min-height: 34px;
   line-height: 1.2;
   appearance: none; -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23a7a7a7'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-image: url("./assets/icons/chevron-down.svg");
   background-repeat: no-repeat; background-position: right 12px center; background-size: 12px 12px;
   outline: none; transition: border-color .15s, color .15s;
 }
@@ -7662,6 +7666,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   cursor: pointer; user-select: none;
 }
 .track-row:hover { background: #282828 !important; }
+.appearance-track-preview { width: 100%; pointer-events: none; }
 .track-row.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
 .track-cover-sm {
   width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0;
@@ -7759,7 +7764,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23ffffff'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-image: url("./assets/icons/chevron-down-light.svg");
   background-repeat: no-repeat;
   background-position: right 12px center;
   background-size: 12px 12px;
