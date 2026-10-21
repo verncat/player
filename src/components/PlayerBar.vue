@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppIcon from './AppIcon.vue';
+import AppSelect from './AppSelect.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import ResponsivePopup from "./ResponsivePopup.vue";
 import type { AudioDevice, Track } from "../types";
@@ -71,7 +72,7 @@ const emit = defineEmits<{
   openPlaybackSettings: [];
   jumpToQueueItem: [index: number];
   pickLocalDevice: [name: string, sampleRate?: number | null, keepOpen?: boolean];
-  pickLocalSampleRate: [device: AudioDevice, event: Event];
+  pickLocalSampleRate: [device: AudioDevice, sampleRate: number | null];
   pickRemoteDevice: [peer: Peer];
   setVolume: [event: MouseEvent];
 }>();
@@ -554,18 +555,18 @@ onUnmounted(() => {
             <div class="device-item-main">
               <span class="device-check"><AppIcon v-if="!remoteOutputPeer && dev.name === currentDevice" name="selected" /></span>
               <span class="device-name">{{ dev.name }}</span>
-              <select
+              <AppSelect
                 v-if="!remoteOutputPeer && dev.name === currentDevice && dev.sample_rates.length"
-                class="device-sample-rate audio-select"
-                :value="currentSampleRate ?? ''"
+                class="device-sample-rate"
+                :model-value="currentSampleRate ?? null"
                 @click.stop
-                @change="emit('pickLocalSampleRate', dev, $event)"
+                @update:model-value="emit('pickLocalSampleRate', dev, $event)"
               >
-                <option value="">{{ nativeSampleRateLabel }}</option>
+                <option :value="null">{{ nativeSampleRateLabel }}</option>
                 <option v-for="rate in dev.sample_rates" :key="rate" :value="rate">
                   {{ formatSampleRate(rate) }}
                 </option>
-              </select>
+              </AppSelect>
             </div>
           </div>
           <div v-if="remoteOutputDevices.length" class="device-section-label">Player devices</div>

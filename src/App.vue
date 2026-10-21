@@ -35,6 +35,8 @@ import {
 import { hashToColors, rarityClass, rarityVars } from "./utils/rarity";
 import AppSidebar from "./components/AppSidebar.vue";
 import AppIcon from "./components/AppIcon.vue";
+import AppSelect from "./components/AppSelect.vue";
+import PlaylistArtwork from "./components/PlaylistArtwork.vue";
 import AppTopbar from "./components/AppTopbar.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
@@ -3881,9 +3883,8 @@ async function pickLocalDevice(name: string, sampleRate?: number | null, keepOpe
   const nextName = name === currentDevice.value && sampleRate === undefined && !remoteOutputPeer.value ? null : name;
   await applyLocalOutput(nextName, sampleRate ?? null, keepOpen);
 }
-async function pickLocalSampleRate(device: AudioDevice, event: Event) {
-  const value = (event.target as HTMLSelectElement).value;
-  await applyLocalOutput(device.name, value ? Number(value) : null, true);
+async function pickLocalSampleRate(device: AudioDevice, sampleRate: number | null) {
+  await applyLocalOutput(device.name, sampleRate, true);
 }
 function selectSettingsOutput(name: string) {
   void applyLocalOutput(name || null, null, true);
@@ -5609,9 +5610,7 @@ onUnmounted(() => {
                 <div v-if="playlists.length === 0" class="library-empty">No playlists yet.</div>
                 <div v-else class="track-list">
                   <div v-for="pl in playlists" :key="pl.id" class="track-row" style="cursor:pointer;" @click="openPlaylist(pl)">
-                    <div class="track-cover-sm" style="background: linear-gradient(135deg, #333, #1a1a1a); display:flex; align-items:center; justify-content:center;">
-                      <AppIcon name="playlist" :size="20" color="#a7a7a7" />
-                    </div>
+                    <PlaylistArtwork class="track-cover-sm" kind="regular" />
                     <div class="track-info">
                       <span class="track-title">{{ pl.name }}</span>
                       <span class="track-album">{{ pl.track_count }} track{{ pl.track_count !== 1 ? 's' : '' }}</span>
@@ -5651,7 +5650,7 @@ onUnmounted(() => {
                 <!-- Rules -->
                 <div class="sp-rules">
                   <div v-for="rule in editingSP.rules" :key="rule.id" class="sp-rule-row">
-                    <select class="sp-select" :value="rule.field" @change="rule.field = ($event.target as HTMLSelectElement).value as SPField; onSPRuleFieldChange(rule)">
+                    <AppSelect :model-value="rule.field" @update:model-value="rule.field = $event; onSPRuleFieldChange(rule)">
                       <option value="any">Any field</option>
                       <option value="title">Title</option>
                       <option value="artist">Artist</option>
@@ -5670,18 +5669,18 @@ onUnmounted(() => {
                       <option value="is_liked">Is liked</option>
                       <option value="date_added">Date added</option>
                       <option value="sort">Sort by</option>
-                    </select>
+                    </AppSelect>
 
                     <template v-if="spFieldType(rule.field) === 'text'">
                       <span class="sp-op-label">contains</span>
                       <input class="library-search sp-text-input" v-model="rule.value" placeholder="search…" @input="saveSP()" />
                     </template>
                     <template v-else-if="spFieldType(rule.field) === 'number'">
-                      <select class="sp-select" :value="rule.op" @change="rule.op = ($event.target as HTMLSelectElement).value as SPOp; saveSP()">
+                      <AppSelect :model-value="rule.op" @update:model-value="rule.op = $event; saveSP()">
                         <option value="gte">≥</option>
                         <option value="lte">≤</option>
                         <option value="eq">=</option>
-                      </select>
+                      </AppSelect>
                       <input class="library-search sp-num-input" type="number" min="0" v-model="rule.value" @input="saveSP()" />
                     </template>
                     <template v-else-if="spFieldType(rule.field) === 'bool'">
@@ -5689,22 +5688,22 @@ onUnmounted(() => {
                       <button :class="['sp-match-btn', rule.op === 'is_false' && 'active']" @click="rule.op = 'is_false'; saveSP()">No</button>
                     </template>
                     <template v-else-if="spFieldType(rule.field) === 'date'">
-                      <select class="sp-select" :value="rule.op" @change="rule.op = ($event.target as HTMLSelectElement).value as SPOp; saveSP()">
+                      <AppSelect :model-value="rule.op" @update:model-value="rule.op = $event; saveSP()">
                         <option value="gte">after</option>
                         <option value="lte">before</option>
                         <option value="eq">on</option>
-                      </select>
+                      </AppSelect>
                       <input class="library-search sp-text-input" type="date" v-model="rule.value" @change="saveSP()" />
                     </template>
                     <template v-else-if="spFieldType(rule.field) === 'sort'">
                       <span class="sp-op-label">by</span>
-                      <select class="sp-select" :value="normalizeSPSortField(rule.value)" @change="rule.value = normalizeSPSortField(($event.target as HTMLSelectElement).value); saveSP()">
+                      <AppSelect :model-value="normalizeSPSortField(rule.value)" @update:model-value="rule.value = normalizeSPSortField($event); saveSP()">
                         <option v-for="option in SP_SORT_FIELD_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
-                      </select>
-                      <select class="sp-select" :value="normalizeSPSortOp(rule.op)" @change="rule.op = normalizeSPSortOp(($event.target as HTMLSelectElement).value); saveSP()">
+                      </AppSelect>
+                      <AppSelect :model-value="normalizeSPSortOp(rule.op)" @update:model-value="rule.op = normalizeSPSortOp($event); saveSP()">
                         <option value="sort_asc">ASC</option>
                         <option value="sort_desc">DESC</option>
-                      </select>
+                      </AppSelect>
                     </template>
                     <template v-else>
                       <div class="sp-multiselect">
@@ -5778,9 +5777,7 @@ onUnmounted(() => {
                 <div v-if="smartPlaylists.length === 0" class="library-empty">No flexible playlists yet.</div>
                 <div v-else class="track-list">
                   <div v-for="sp in smartPlaylists" :key="sp.id" class="track-row" style="cursor:pointer;" @click="smartView = sp">
-                    <div class="track-cover-sm" style="background: linear-gradient(135deg, #1a2a3a, #0d1b2a); display:flex; align-items:center; justify-content:center;">
-                      <AppIcon name="smart-playlist" :size="20" color="#4fc3f7" />
-                    </div>
+                    <PlaylistArtwork class="track-cover-sm" kind="smart" />
                     <div class="track-info">
                       <span class="track-title">{{ sp.name }}</span>
                       <span class="track-album">{{ sp.rules.length }} rule{{ sp.rules.length !== 1 ? 's' : '' }} · {{ smartPlaylistPreviews[sp.id]?.total ?? 0 }} tracks</span>
@@ -6200,10 +6197,10 @@ onUnmounted(() => {
             </label>
             <label class="field">
               <span>Liked</span>
-              <select v-model="editForm.is_liked">
+              <AppSelect v-model="editForm.is_liked" variant="filled">
                 <option :value="false">No</option>
                 <option :value="true">Yes</option>
-              </select>
+              </AppSelect>
             </label>
             <label class="field">
               <span>Date added</span>
@@ -6211,10 +6208,10 @@ onUnmounted(() => {
             </label>
             <label class="field">
               <span>Rarity</span>
-              <select v-model="editForm.rarity">
+              <AppSelect v-model="editForm.rarity" variant="filled">
                 <option value="">Unset</option>
                 <option v-for="rarity in TRACK_RARITY_OPTIONS" :key="rarity" :value="rarity">{{ rarity }}</option>
-              </select>
+              </AppSelect>
             </label>
           </div>
           <div class="modal-footer">
@@ -7331,22 +7328,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   background: #1e1e1e; border-radius: 12px; padding: 8px 12px;
   flex-wrap: wrap;
 }
-.sp-select {
-  background: #282828; border: 1px solid #535353; border-radius: 20px;
-  color: #a7a7a7; font-size: var(--fs-input); padding: 6px 34px 6px 12px; cursor: pointer;
-  min-height: 34px;
-  line-height: 1.2;
-  appearance: none; -webkit-appearance: none;
-  background-image: url("./assets/icons/chevron-down.svg");
-  background-repeat: no-repeat; background-position: right 12px center; background-size: 12px 12px;
-  outline: none; transition: border-color .15s, color .15s;
-}
-.sp-select:focus { border-color: #fff; color: #fff; }
-.sp-select:hover { border-color: #fff; color: #fff; }
-.sp-select option {
-  background: #282828;
-  color: #fff;
-}
 .sp-op-label { font-size: var(--fs-body-sm); color: #a7a7a7; white-space: nowrap; }
 .sp-text-input { flex: 1; min-width: 100px; }
 .sp-num-input { width: 80px; }
@@ -7465,32 +7446,16 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .field {
   display: flex; flex-direction: column; gap: 4px;
 }
-.field span {
+.field > span {
   font-size: var(--fs-field-label); font-weight: 600; color: #a7a7a7; text-transform: uppercase; letter-spacing: .03em;
 }
-.field input,
-.field select {
+.field input {
   background: #3e3e3e; border: none; border-radius: 4px;
   color: #fff; font-size: var(--fs-field-input); padding: 10px 12px; outline: none;
   min-height: 42px;
   line-height: 1.2;
 }
-.field select {
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("./assets/icons/chevron-down-light.svg");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  background-size: 12px 12px;
-  padding-right: 40px;
-}
-.field select option {
-  background: #282828;
-  color: #fff;
-}
-.field input:focus,
-.field select:focus { outline: 1px solid #1db954; }
+.field input:focus { outline: 1px solid #1db954; }
 .edit-track-modal { width: 460px; }
 .edit-track-body {
   max-height: min(70vh, 560px);

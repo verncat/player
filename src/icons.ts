@@ -1,6 +1,6 @@
 import { h, type Component, type FunctionalComponent } from 'vue';
 import {
-  ArrowLeft, ArrowRight, Check, ChevronLeft, ChevronRight,
+  ArrowLeft, ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight,
   CircleCheck, Download, ExternalLink, FolderOpen, Headphones, Heart, House,
   Info, LibraryBig, List, ListFilter, ListMusic, ListPlus, Menu, Minus,
   Palette, Pause, Pencil, Pin, Play, Plus, Radio, RefreshCw, Repeat, Repeat1, Search,
@@ -33,6 +33,7 @@ export const icons = {
   'page-previous': ArrowLeft,
   'page-next': ArrowRight,
   disclosure: ChevronRight,
+  dropdown: ChevronDown,
   'external-link': ExternalLink,
   folder: FolderOpen,
 

@@ -7,6 +7,7 @@ import { useAppearance } from '../composables/useAppearance';
 import { formatSampleRate } from '../utils/format';
 import SettingsToggle from './SettingsToggle.vue';
 import AppIcon from './AppIcon.vue';
+import AppSelect from './AppSelect.vue';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 
 const props = defineProps<{
@@ -212,18 +213,18 @@ onMounted(() => { void loadConfig(); });
             <div class="setting-row"><div><h3>Audio output</h3><p>Choose where Player sends audio on this device.</p></div><button :disabled="audioLoading || audioBusy" @click="emit('refreshAudio')">{{ audioLoading ? 'Refreshing...' : 'Refresh' }}</button></div>
             <label class="field">
               <span>Output device</span>
-              <select class="audio-select" :value="selectedDevice ?? ''" :disabled="audioLoading || audioBusy" @change="emit('selectOutput', ($event.target as HTMLSelectElement).value)">
+              <AppSelect :model-value="selectedDevice ?? ''" :disabled="audioLoading || audioBusy" @update:model-value="emit('selectOutput', $event)">
                 <option value="">System default</option>
                 <option v-if="currentDevice && !currentOutput" :value="currentDevice">{{ currentDevice }}</option>
                 <option v-for="device in outputDevices" :key="device.name" :value="device.name">{{ device.name }}</option>
-              </select>
+              </AppSelect>
             </label>
             <label class="field">
               <span>Sample rate</span>
-              <select class="audio-select" :value="currentSampleRate ?? ''" :disabled="audioLoading || audioBusy || !outputDevices.length" @change="emit('selectSampleRate', ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)">
-                <option value="">Auto</option>
+              <AppSelect :model-value="currentSampleRate ?? null" :disabled="audioLoading || audioBusy || !outputDevices.length" @update:model-value="emit('selectSampleRate', $event)">
+                <option :value="null">Auto</option>
                 <option v-for="rate in sampleRates" :key="rate" :value="rate">{{ formatSampleRate(rate) }}</option>
-              </select>
+              </AppSelect>
             </label>
             <p class="help">Auto uses the track sample rate. Available rates depend on your output device.</p>
             <p v-if="nativeSampleRate" class="help">Current track: {{ formatSampleRate(nativeSampleRate) }}</p>
@@ -311,7 +312,7 @@ button, input { font: inherit; }
 .settings-panel .icon-label { display: inline-flex; align-items: center; gap: 6px; }
 .settings-panel button:where(:not(.settings-switch):enabled):is(:hover, :active) { background: rgb(255 255 255 / 6%); border-color: #777; }
 .settings-panel button:not(.settings-switch):disabled { opacity: .45; cursor: default; }
-button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #1db954; outline-offset: 3px; }
+button:focus-visible, input:focus-visible { outline: 2px solid #1db954; outline-offset: 3px; }
 .settings-panel :deep(.settings-switch) { padding: 3px; border-radius: 99px; }
 .settings-panel .primary { background: #1db954; border-color: #1db954; color: #061d0e; padding-inline: 24px; }
 .settings-panel .primary:enabled:is(:hover, :active) { background: #35cd6b; border-color: #35cd6b; }
@@ -321,7 +322,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .field { display: flex; flex-direction: column; gap: 9px; margin-top: 22px; font-size: 13px; font-weight: 600; }
 .field input { border: 1px solid #505050; background: transparent; color: #fff; border-radius: 5px; padding: 12px; width: 100%; min-height: 44px; font-size: 14px; }
 .field input:disabled { opacity: .5; }
-.field .audio-select { width: 100%; min-height: 44px; }
+.field .app-select { min-height: 44px; }
 .help { font-size: 12px; margin-top: 12px; }
 .notice { border-radius: 8px; padding: 16px; margin-bottom: 24px; }
 .notice strong { font-size: 13px; display: block; margin-bottom: 6px; }
