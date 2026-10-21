@@ -8,7 +8,6 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
   TRACK_RARITY_OPTIONS,
-  rarityColors,
   type AudioDevice,
   type DeviceList,
   type SoulseekDownloadEvent,
@@ -32,7 +31,8 @@ import {
   parseTrackDateInput,
   trackDateInputValue,
 } from "./utils/tracks";
-import { hashToColors, rarityClass, rarityVars } from "./utils/rarity";
+import { hashToColors, highlightedRarity, rarityClass, rarityColorName, rarityVars } from "./utils/rarity";
+import { activeThemeColors, translucent } from "./theme";
 import AppSidebar from "./components/AppSidebar.vue";
 import AppIcon from "./components/AppIcon.vue";
 import AppSelect from "./components/AppSelect.vue";
@@ -2802,7 +2802,7 @@ const currentTrack = computed<{ title: string; artist: string; colors: [string, 
       colors: hashToColors(rp.hash ?? null),
     };
   }
-  return { title: 'No track', artist: '', colors: ['#282828', '#181818'] };
+  return { title: 'No track', artist: '', colors: hashToColors(null) };
 });
 
 const beatIntensity = computed(() => {
@@ -2813,16 +2813,15 @@ const beatIntensity = computed(() => {
 const currentCoverUrl = computed(() => coverUrl(nowPlaying.value?.cover_hash, 'medium'));
 
 const currentRarityColor = computed(() => {
-  const rarity = nowPlaying.value?.rarity;
-  if (!rarity || rarity === 'Common') return '#d9dee8';
-  return rarityColors[rarity] ?? '#d9dee8';
+  const rarity = highlightedRarity(nowPlaying.value?.rarity ?? null);
+  return rarity ? activeThemeColors.value[rarityColorName(rarity)] : null;
 });
 
 const detailBackdropWashStyle = computed(() => {
   const [colorA, colorB] = currentTrack.value.colors;
   const pulse = beatIntensity.value;
   return {
-    background: `radial-gradient(circle at 18% 20%, ${colorA} 0%, transparent ${Math.max(28, 46 - pulse * 5)}%), radial-gradient(circle at 82% 18%, ${colorB} 0%, transparent ${Math.max(26, 44 - pulse * 4)}%), linear-gradient(180deg, rgba(4,6,12,0.22), rgba(4,6,12,0.74) 38%, rgba(4,6,12,0.95))`,
+    background: `radial-gradient(circle at 18% 20%, ${colorA} 0%, transparent ${Math.max(28, 46 - pulse * 5)}%), radial-gradient(circle at 82% 18%, ${colorB} 0%, transparent ${Math.max(26, 44 - pulse * 4)}%), linear-gradient(180deg, ${translucent('bg', 22)}, ${translucent('bg', 74)} 38%, ${translucent('bg', 95)})`,
     opacity: (0.62 + pulse * 0.18).toFixed(2),
   };
 });
@@ -2831,7 +2830,7 @@ const detailAuraStyle = computed(() => {
   const [colorA, colorB] = currentTrack.value.colors;
   const pulse = beatIntensity.value;
   return {
-    background: `radial-gradient(circle at 34% 34%, ${colorA} 0%, transparent 48%), radial-gradient(circle at 66% 62%, ${colorB} 0%, transparent 46%), radial-gradient(circle at 50% 50%, rgba(255,255,255,0.2) 0%, transparent 34%)`,
+    background: `radial-gradient(circle at 34% 34%, ${colorA} 0%, transparent 48%), radial-gradient(circle at 66% 62%, ${colorB} 0%, transparent 46%), radial-gradient(circle at 50% 50%, ${translucent('text', 20)} 0%, transparent 34%)`,
     opacity: (0.42 + pulse * 0.18).toFixed(2),
     transform: `scale(${(1.01 + pulse * 0.05).toFixed(3)})`,
     filter: `blur(${(24 + pulse * 10).toFixed(0)}px) saturate(${(1.02 + pulse * 0.2).toFixed(2)})`,
@@ -2881,8 +2880,8 @@ function spectrumBarStyle(segment: (typeof spectrumSegments)[number]) {
     '--bar-height': segment.height,
     '--bar-scale': scale.toFixed(3),
     '--bar-lift': `${lift.toFixed(1)}px`,
-    background: `linear-gradient(180deg, ${colorA} 0%, rgba(255,255,255,0.95) 58%, ${colorB} 100%)`,
-    boxShadow: `0 0 ${segment.glow} rgba(255,255,255,${(0.08 + level * 0.36).toFixed(3)})`,
+    background: `linear-gradient(180deg, ${colorA} 0%, ${translucent('text', 95)} 58%, ${colorB} 100%)`,
+    boxShadow: `0 0 ${segment.glow} ${translucent('text', Number((8 + level * 36).toFixed(1)))}`,
     filter: `saturate(${(1 + level * 0.7).toFixed(2)})`,
     opacity: opacity.toFixed(3),
   };

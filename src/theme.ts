@@ -1,3 +1,4 @@
+import { computed, shallowRef } from 'vue';
 import { readableTextOn, type HexColor } from './utils/color';
 
 export type ThemeMode = 'dark';
@@ -47,6 +48,13 @@ export interface ThemeColors {
   'danger-text': string;
   warning: string;
   info: string;
+  // Rarity colors must be plain colors: the 3D cover reads them as values, not CSS.
+  'rarity-common': HexColor;
+  'rarity-uncommon': HexColor;
+  'rarity-rare': HexColor;
+  'rarity-epic': HexColor;
+  'rarity-legendary': HexColor;
+  'rarity-mythic': HexColor;
 }
 
 type AccentColor = 'accent' | 'on-accent';
@@ -74,6 +82,12 @@ const darkPalette: ModePalette = {
   'danger-text': 'color-mix(in srgb, var(--color-danger) 60%, white)',
   warning: '#ffa726',
   info: '#4fc3f7',
+  'rarity-common': '#b0b0b0',
+  'rarity-uncommon': '#1db954',
+  'rarity-rare': '#4fc3f7',
+  'rarity-epic': '#ba68c8',
+  'rarity-legendary': '#ffa726',
+  'rarity-mythic': '#ff5252',
 };
 
 const palettes: Record<ThemeMode, ModePalette> = { dark: darkPalette };
@@ -86,8 +100,19 @@ export function themeColors(theme: Theme): ThemeColors {
   };
 }
 
-export function applyTheme(theme: Theme, root: HTMLElement = document.documentElement) {
+const activeTheme = shallowRef(DEFAULT_THEME);
+
+/** The applied theme's colors, for code that needs values instead of CSS variables. */
+export const activeThemeColors = computed(() => themeColors(activeTheme.value));
+
+export function applyTheme(theme: Theme) {
+  activeTheme.value = theme;
   for (const [name, value] of Object.entries(themeColors(theme))) {
-    root.style.setProperty(`--color-${name}`, value);
+    document.documentElement.style.setProperty(`--color-${name}`, value);
   }
+}
+
+/** A theme color at the given opacity, for styles built in TypeScript. */
+export function translucent(name: keyof ThemeColors, percent: number) {
+  return `color-mix(in srgb, var(--color-${name}) ${percent}%, transparent)`;
 }

@@ -8,6 +8,7 @@ import { formatSampleRate } from '../utils/format';
 import SettingsToggle from './SettingsToggle.vue';
 import AppIcon from './AppIcon.vue';
 import AppSelect from './AppSelect.vue';
+import { activeThemeColors } from '../theme';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 
 const props = defineProps<{
@@ -275,7 +276,7 @@ onMounted(() => { void loadConfig(); });
 
         <template v-else-if="selected === 'appearance'">
           <div class="appearance-preview" :class="{ 'preview-flat': !preferences.album3d || reducedMotion }" aria-label="Appearance preview">
-            <div class="preview-art"><WebGLAlbumRenderer v-if="preferences.album3d && !reducedMotion" :cover-url="coverUrl" :colors="coverColors" rarity-color="#ff8000" :beat-scale="1" :is-playing="false" :tilt-x="4" :tilt-y="-12" :offset-x="0" :offset-y="0" :dragging="false" /><div v-else class="flat-art" :style="coverUrl ? { backgroundImage: `url(${coverUrl})` } : { background: `linear-gradient(135deg, ${coverColors[0]}, ${coverColors[1]})` }" /></div>
+            <div class="preview-art"><WebGLAlbumRenderer v-if="preferences.album3d && !reducedMotion" :cover-url="coverUrl" :colors="coverColors" :rarity-color="activeThemeColors['rarity-legendary']" :beat-scale="1" :is-playing="false" :tilt-x="4" :tilt-y="-12" :offset-x="0" :offset-y="0" :dragging="false" /><div v-else class="flat-art" :style="coverUrl ? { backgroundImage: `url(${coverUrl})` } : { background: `linear-gradient(135deg, ${coverColors[0]}, ${coverColors[1]})` }" /></div>
             <div class="preview-track" role="list" aria-label="Track rarity previews"><slot name="appearance-track" /></div>
           </div>
           <div class="settings-group"><div class="setting-row"><div><h4>Reduce motion</h4><p>{{ systemReducedMotion ? 'Enabled by your system preferences.' : 'Keep covers still and turn off decorative animations.' }}</p></div><SettingsToggle :model-value="reducedMotion" label="Reduce motion" :disabled="systemReducedMotion" @update:model-value="setPreference('reduceMotion', $event)" /></div><div class="setting-row"><div><h4>3D album cover</h4><p>{{ reducedMotion ? 'A still cover is used while reduced motion is on.' : 'Show the interactive album cover in now playing.' }}</p></div><SettingsToggle :model-value="preferences.album3d" label="3D album cover" :disabled="reducedMotion" @update:model-value="setPreference('album3d', $event)" /></div><div class="setting-row"><div><h4>Rarity animations</h4><p>{{ reducedMotion ? 'Animations are paused while reduced motion is on.' : 'Animate rare tracks while keeping their rarity colors.' }}</p></div><SettingsToggle :model-value="preferences.rarityAnimations" label="Rarity animations" :disabled="reducedMotion" @update:model-value="setPreference('rarityAnimations', $event)" /></div><p v-if="storageError" class="error" role="alert">{{ storageError }}</p></div>

@@ -50,7 +50,7 @@ Frontend:
 - [src/composables/useHistoryNavigation.ts](src/composables/useHistoryNavigation.ts): back/forward navigation kept in the browser history, and transient history entries for UI state that back should undo.
 - [src/composables/useAppearance.ts](src/composables/useAppearance.ts) and [src/composables/useDiscordPresence.ts](src/composables/useDiscordPresence.ts): appearance preferences and the Discord Rich Presence adapter.
 - [src/api.ts](src/api.ts): the start of a frontend API layer (artist and album queries).
-- [src/utils/](src/utils/): formatting, rarity colors, special artist names, cover URLs.
+- [src/utils/](src/utils/): formatting, rarity helpers and placeholder cover gradients, special artist names, cover URLs.
 - [src/icons.ts](src/icons.ts) and [src/types/settings.ts](src/types/settings.ts): the icon registry, and the settings sections and types.
 - [src/theme.ts](src/theme.ts) and [src/styles/](src/styles/): theme colors, applied as CSS variables, and the global stylesheets (static size tokens, element defaults, shared component styles).
 
@@ -226,7 +226,7 @@ On Android there is also a direct JS bridge surface:
 
 Interface icons use the official `@lucide/vue` package through [src/components/AppIcon.vue](src/components/AppIcon.vue), with an explicit icon registry in [src/icons.ts](src/icons.ts). Icons are named by their meaning in the app (`back`, `queue`, `now-playing`), not by their Lucide glyph, so an icon set can replace each meaning separately; several names may share a glyph. Icons share a 24px viewBox and a stroke width of 2. Selects go through [src/components/AppSelect.vue](src/components/AppSelect.vue), which draws its arrow with the `dropdown` icon, so the arrow follows the text color and icon set. The Lucide license is included in [public/licenses/lucide.txt](public/licenses/lucide.txt). Application artwork and device emoji remain separate assets.
 
-Colors come from a theme defined in [src/theme.ts](src/theme.ts): a palette for the mode (only dark so far) plus an accent color. `applyTheme` sets them on the document root as `--color-<name>` variables before the app mounts. Shades of the accent are mixed from `--color-accent` in CSS, and the text color on accent backgrounds is black or white by contrast, so a new accent needs no other changes. Sizes that don't change with the theme (font sizes and their phone overrides, radii, the body font) are variables on `:root` in [src/styles/tokens.css](src/styles/tokens.css). Both are defined on the root rather than inside the app element, so content teleported to `<body>` (popups, the image preview, the now-playing detail view) resolves them too. Component styles use the tokens throughout, with translucent shades mixed from them (`color-mix(in srgb, var(--color-text) 8%, transparent)`). Literal colors remain only in illustrations (the vinyl record, onboarding art, the home header hue, the mascot glow) and in colors computed in TypeScript.
+Colors come from a theme defined in [src/theme.ts](src/theme.ts): a palette for the mode (only dark so far) plus an accent color. `applyTheme` sets them on the document root as `--color-<name>` variables before the app mounts. Shades of the accent are mixed from `--color-accent` in CSS, and the text color on accent backgrounds is black or white by contrast, so a new accent needs no other changes. Sizes that don't change with the theme (font sizes and their phone overrides, radii, the body font) are variables on `:root` in [src/styles/tokens.css](src/styles/tokens.css). Both are defined on the root rather than inside the app element, so content teleported to `<body>` (popups, the image preview, the now-playing detail view) resolves them too. Component styles use the tokens throughout, with translucent shades mixed from them (`color-mix(in srgb, var(--color-text) 8%, transparent)`). Literal colors remain only in artwork: the vinyl record, onboarding art, the home header hue, the mascot glow, the 3D cover's lighting and materials, the static "Made For You" covers, and placeholder art. Placeholder gradients derived from file hashes stay dark in every theme. Rarity colors are part of the theme (`rarity-common` to `rarity-mythic`); code that needs a color value rather than a CSS variable, like the 3D cover, reads `activeThemeColors`. Styles built in TypeScript, such as the now-playing backdrop and spectrum ring, mix theme colors through `translucent()`.
 
 The current visual system combines music metadata with generated decoration:
 
@@ -243,7 +243,7 @@ The current visual system combines music metadata with generated decoration:
 
 - `coverUrl` (the medium-size cover)
 - two palette colors
-- rarity color
+- rarity color, or `null` for a neutral sheen (tracks without a highlighted rarity)
 - beat scale
 - play/pause state
 - pointer tilt and offset

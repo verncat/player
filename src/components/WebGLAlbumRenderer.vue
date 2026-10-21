@@ -7,7 +7,7 @@ import CoverImage from './CoverImage.vue';
 const props = defineProps<{
   coverUrl: string | null;
   colors: [string, string];
-  rarityColor: string;
+  rarityColor: string | null;
   beatScale: number;
   isPlaying: boolean;
   tiltX: number;
@@ -16,6 +16,9 @@ const props = defineProps<{
   offsetY: number;
   dragging: boolean;
 }>();
+
+const NEUTRAL_SHEEN = '#d9dee8';
+const sheenColor = () => props.rarityColor ?? NEUTRAL_SHEEN;
 
 const hostRef = ref<HTMLDivElement | null>(null);
 const failedRef = ref(false);
@@ -229,7 +232,7 @@ function applyScenePalette() {
     rimLight.color.copy(primary);
   }
   if (sheenMaterial) {
-    sheenMaterial.uniforms.uRarityColor.value.set(props.rarityColor);
+    sheenMaterial.uniforms.uRarityColor.value.set(sheenColor());
   }
 }
 
@@ -389,7 +392,7 @@ function buildScene() {
       uBeat: { value: 0 },
       uPlaying: { value: 0 },
       uTilt: { value: new THREE.Vector2(0, 0) },
-      uRarityColor: { value: new THREE.Color(props.rarityColor) },
+      uRarityColor: { value: new THREE.Color(sheenColor()) },
       uMask: { value: coverMaskTexture },
     },
     vertexShader: SHEEN_VERTEX_SHADER,
@@ -473,7 +476,7 @@ function animate(now: number) {
     sheenMaterial.uniforms.uBeat.value = beat;
     sheenMaterial.uniforms.uPlaying.value = props.isPlaying ? 1 : 0;
     sheenMaterial.uniforms.uTilt.value.set(props.tiltX / 18, props.tiltY / 18);
-    sheenMaterial.uniforms.uRarityColor.value.set(props.rarityColor);
+    sheenMaterial.uniforms.uRarityColor.value.set(sheenColor());
   }
 
   if (zippyMaterial && zippyTextures.length === ZIPPY_FRAME_URLS.length) {
