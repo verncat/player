@@ -138,7 +138,7 @@ function onClick() {
       :title="track.is_liked ? 'Unlike' : 'Like'"
       @click.stop="actions.toggleLike(track)"
     >
-      <AppIcon :name="track.is_liked ? 'liked' : 'like'" :size="16" :color="track.is_liked ? '#1db954' : 'currentColor'" />
+      <AppIcon :name="track.is_liked ? 'liked' : 'like'" :size="16" :class="{ liked: track.is_liked }" />
     </button>
     <button
       v-if="shows('addToPlaylist')"
@@ -158,21 +158,21 @@ function onClick() {
   padding: 8px 8px; border-radius: 4px;
   cursor: pointer; user-select: none;
 }
-.track-row:hover { background: #282828 !important; }
-.track-row.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
+.track-row:hover { background: var(--color-card-hover) !important; }
+.track-row.rarity-tint { background: var(--rarity-tint); }
 .track-row.track-row-current {
-  background: rgba(29, 185, 84, 0.14) !important;
-  box-shadow: inset 0 0 0 1px rgba(29, 185, 84, 0.3);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 .track-row.track-row-next {
-  background: rgba(29, 185, 84, 0.08) !important;
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent) !important;
 }
 .track-cover-sm {
   width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0;
 }
 .track-num {
   width: 24px; text-align: right;
-  font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
+  font-size: var(--fs-track-side); color: var(--color-text-muted); flex-shrink: 0;
 }
 .track-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .track-title-row {
@@ -182,12 +182,12 @@ function onClick() {
   min-width: 0;
 }
 .track-title {
-  font-size: var(--fs-track-title); font-weight: 500; color: #fff;
+  font-size: var(--fs-track-title); font-weight: 500; color: var(--color-text);
   display: block; flex: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .track-album {
-  font-size: var(--fs-track-meta); color: #a7a7a7;
+  font-size: var(--fs-track-meta); color: var(--color-text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .track-playback-badge {
@@ -202,30 +202,31 @@ function onClick() {
   flex-shrink: 0;
 }
 .track-playback-badge.current {
-  background: #1db954;
-  color: #08120b;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
 }
 .track-playback-badge.next {
-  background: rgba(29, 185, 84, 0.14);
-  color: #8de2a7;
-  box-shadow: inset 0 0 0 1px rgba(29, 185, 84, 0.28);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 .track-playback-step {
   font-variant-numeric: tabular-nums;
 }
 .track-dur {
-  font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
+  font-size: var(--fs-track-side); color: var(--color-text-muted); flex-shrink: 0;
 }
 
 .icon-btn {
   background: none; border: none;
-  color: #b3b3b3; cursor: pointer; padding: 4px;
+  color: var(--color-text-muted); cursor: pointer; padding: 4px;
   display: flex; align-items: center; justify-content: center;
   border-radius: 4px;
   flex-shrink: 0;
   transition: color .1s, opacity .12s;
 }
-.icon-btn:hover { color: #fff; }
+.icon-btn:hover { color: var(--color-text); }
+.liked { color: var(--color-accent); }
 .hover-action { opacity: 0; }
 .track-row:hover .hover-action,
 .hover-action:focus-visible { opacity: 1; }
@@ -234,7 +235,7 @@ function onClick() {
   min-width: 36px;
   text-align: right;
   font-size: var(--fs-track-side);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   flex-shrink: 0;
 }
 

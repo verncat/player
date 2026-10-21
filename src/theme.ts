@@ -26,6 +26,8 @@ export interface ThemeColors {
   'surface-hover': string;
   /** Behind full-window overlays. */
   backdrop: string;
+  /** Drop shadows and dimming layers, mixed with transparency. */
+  shadow: string;
   text: string;
   /** Secondary text: metadata, labels. */
   'text-muted': string;
@@ -41,6 +43,8 @@ export interface ThemeColors {
   /** Accent-colored text on the regular background. */
   'accent-text': string;
   danger: string;
+  /** Error text on the regular background. */
+  'danger-text': string;
   warning: string;
   info: string;
 }
@@ -58,6 +62,7 @@ const darkPalette: ModePalette = {
   surface: '#282828',
   'surface-hover': '#3e3e3e',
   backdrop: 'rgb(0 0 0 / 85%)',
+  shadow: '#000',
   text: '#fff',
   'text-muted': '#a7a7a7',
   'text-faint': '#777',
@@ -66,6 +71,7 @@ const darkPalette: ModePalette = {
   'accent-hover': 'color-mix(in srgb, var(--color-accent) 85%, white)',
   'accent-text': 'color-mix(in srgb, var(--color-accent) 55%, white)',
   danger: '#ff5252',
+  'danger-text': 'color-mix(in srgb, var(--color-danger) 60%, white)',
   warning: '#ffa726',
   info: '#4fc3f7',
 };

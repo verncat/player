@@ -63,7 +63,7 @@ img {
   max-height: 100%;
   object-fit: contain;
   border-radius: var(--radius-cover, 6px);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, .6);
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--color-shadow) 60%, transparent);
 }
 .image-preview-enter-active,
 .image-preview-leave-active {

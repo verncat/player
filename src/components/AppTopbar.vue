@@ -48,15 +48,15 @@ const emit = defineEmits<{
   flex-shrink: 0;
 }
 .page-heading { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.page-heading h1 { color: #fff; font-size: 24px; font-weight: 800; letter-spacing: -.5px; line-height: 1.25; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.page-heading p { color: #a7a7a7; font-size: 13px; line-height: 1.5; margin: 4px 0 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.page-heading h1 { color: var(--color-text); font-size: 24px; font-weight: 800; letter-spacing: -.5px; line-height: 1.25; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-heading p { color: var(--color-text-muted); font-size: 13px; line-height: 1.5; margin: 4px 0 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .arrow-btn {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: rgba(0,0,0,.45);
+  background: color-mix(in srgb, var(--color-shadow) 45%, transparent);
   border: none;
-  color: #fff;
+  color: var(--color-text);
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
@@ -64,7 +64,7 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: center;
 }
-.arrow-btn:hover:not(:disabled) { background: rgba(0,0,0,.7); }
+.arrow-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--color-shadow) 70%, transparent); }
 .arrow-btn:disabled { opacity: .4; cursor: default; }
 
 .burger-btn {
@@ -78,7 +78,7 @@ const emit = defineEmits<{
     justify-content: center;
     background: none;
     border: none;
-    color: #fff;
+    color: var(--color-text);
     cursor: pointer;
     padding: 6px;
     flex-shrink: 0;

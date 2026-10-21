@@ -588,6 +588,6 @@ onUnmounted(() => cleanup());
   position: absolute;
   inset: 8%;
   border-radius: 14px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 24px 60px color-mix(in srgb, var(--color-shadow) 35%, transparent);
 }
 </style>

@@ -58,7 +58,7 @@ const previewOpen = ref(false);
   background-color: var(--color-surface);
   background-size: cover;
   background-position: center;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-shadow) 50%, transparent);
 }
 .page-cover.previewable { cursor: zoom-in; }
 .page-heading {
