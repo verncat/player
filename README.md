@@ -149,6 +149,8 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 
 ### Sync and discovery
 
+Devices can share a local profile without an account or a primary player. On an existing device choose **Allow linking** in Devices. On the new device choose **Use profile** next to it, compare the code, and confirm on both screens. The profile key is transferred over an encrypted session; each installation keeps its own device UUID. Music sync remains a separate action.
+
 - Peer discovery over mDNS.
 - Local network sync between devices.
 - Merkle-style metadata reconciliation for efficient sync.

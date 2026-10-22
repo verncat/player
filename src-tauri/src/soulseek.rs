@@ -60,12 +60,16 @@ struct SoulseekInner {
 pub struct SoulseekState {
     inner: Arc<Mutex<SoulseekInner>>,
     preview_cancellers: Arc<Mutex<HashMap<String, DownloadCanceller>>>,
+    discovery_lock: tokio::sync::Mutex<()>,
+    discovery_changed: tokio::sync::Notify,
 }
 
 impl SoulseekState {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(SoulseekInner::default())),
+            discovery_lock: tokio::sync::Mutex::new(()),
+            discovery_changed: tokio::sync::Notify::new(),
             preview_cancellers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -109,7 +113,7 @@ impl SoulseekState {
     fn sync_client_config(&self, desired: Option<SoulseekConfig>) -> Option<Client> {
         let mut inner = self.inner.lock().unwrap();
         if inner.config != desired {
-            inner.client = None;
+            if let Some(client) = inner.client.take() { client.disconnect(); }
             inner.config = desired.clone();
         }
 
@@ -135,6 +139,104 @@ impl SoulseekState {
             }
         })
     }
+}
+
+
+/// Public discovery hint only. It is not proof of possession of a profile key.
+pub(crate) fn profile_interest(profile_id: &str) -> Result<String, String> {
+    let id = uuid::Uuid::parse_str(profile_id.trim()).map_err(|_| "Enter a valid Profile ID.")?;
+    if id.is_nil() { return Err("Enter a valid Profile ID.".into()); }
+    Ok(format!("adhdplayer-v1-{id}"))
+}
+
+impl SoulseekState {
+    pub(crate) async fn discovery_client(
+        &self, library: &LibraryState, profile: &crate::profile::LocalProfileState,
+    ) -> Result<Client, String> {
+        let _guard = self.discovery_lock.lock().await;
+        let settings = library.get_device_settings().map_err(|e| e.to_string())?;
+        let desired = Self::desired_config(&settings);
+        let previous_client = {
+            let inner = self.inner.lock().unwrap();
+            inner.config.clone().zip(inner.client.clone())
+        };
+        // Remove our marker using the old session before disabling or changing accounts.
+        if let Some((old_config, old_client)) = previous_client {
+            if Some(&old_config) != desired.as_ref() {
+                let previous = discovery_marker(library, &old_config.username)?;
+                if previous.is_some() {
+                    if old_client.set_discovery_interest(previous, None).await.is_ok() {
+                        save_discovery_marker(library, &old_config.username, None)?;
+                    }
+                }
+            }
+        }
+        let client = self.maybe_client_for_settings(&settings)
+            .ok_or("Enable Soulseek and save your username and password in Settings to find friends.")?;
+        let owner = profile.info().user_id;
+        let account = settings.soulseek_username.trim().to_owned();
+        let connection = library.conn();
+        client.set_private_message_handler(Arc::new(move |message| {
+            let Ok(conn) = connection.lock() else { return false; };
+            crate::private_messages::receive(&conn, &owner, &account, message).is_ok()
+        }));
+        tokio::time::timeout(Duration::from_secs(20), client.connect()).await
+            .map_err(|_| "Soulseek connection timed out. Please try again.")?
+            .map_err(|e| e.to_string())?;
+        // Re-read the publication preference after awaiting the connection.
+        let publish = library.get_device_settings().map_err(|e| e.to_string())?.soulseek_discovery_enabled;
+        let current = if publish { Some(profile_interest(&profile.info().user_id)?) } else { None };
+        let previous = discovery_marker(library, &settings.soulseek_username.trim())?;
+        client.set_discovery_interest(previous.clone(), current.clone()).await.map_err(|e| e.to_string())?;
+        if previous != current {
+            save_discovery_marker(library, settings.soulseek_username.trim(), current.as_deref())?;
+        }
+        Ok(client)
+    }
+}
+
+fn discovery_marker(library: &LibraryState, username: &str) -> Result<Option<String>, String> {
+    use rusqlite::OptionalExtension;
+    let connection = library.conn();
+    let conn = connection.lock().map_err(|_| "Could not read Soulseek discovery settings.")?;
+    conn.query_row("SELECT marker FROM soulseek_profile_markers WHERE username = ?1", [username], |row| row.get(0))
+        .optional().map_err(|e| e.to_string())
+}
+
+fn save_discovery_marker(library: &LibraryState, username: &str, marker: Option<&str>) -> Result<(), String> {
+    let connection = library.conn();
+    let conn = connection.lock().map_err(|_| "Could not save Soulseek discovery settings.")?;
+    if let Some(marker) = marker {
+        conn.execute("INSERT INTO soulseek_profile_markers (username, marker) VALUES (?1, ?2)
+            ON CONFLICT(username) DO UPDATE SET marker = excluded.marker", rusqlite::params![username, marker])
+            .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute("DELETE FROM soulseek_profile_markers WHERE username = ?1", [username]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn start_profile_discovery(app: tauri::AppHandle) {
+    use tauri::Manager;
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let soulseek = app.state::<SoulseekState>();
+            let library = app.state::<LibraryState>();
+            let profile = app.state::<crate::profile::LocalProfileState>();
+            // The same client is reused by downloads, searches and discovery.
+            // A profile imported by pairing is picked up on the next pass.
+            let should_refresh = library.get_device_settings().ok().is_some_and(|settings| {
+                SoulseekState::desired_config(&settings).is_some()
+                    || soulseek.inner.lock().unwrap().client.is_some()
+            });
+            if should_refresh {
+                if let Err(error) = soulseek.discovery_client(&library, &profile).await {
+                    tracing::debug!(target: "player_lib::soulseek", %error, "Profile discovery unavailable");
+                }
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(15), soulseek.discovery_changed.notified()).await;
+        }
+    });
 }
 
 #[derive(Debug, Serialize)]
@@ -233,13 +335,27 @@ struct SoulseekDownloadEvent {
 }
 
 #[tauri::command]
+pub fn set_soulseek_discovery(
+    enabled: bool,
+    library: tauri::State<'_, LibraryState>,
+    soulseek: tauri::State<'_, SoulseekState>,
+) -> Result<(), String> {
+    library.set_soulseek_discovery(enabled).map_err(|e| e.to_string())?;
+    soulseek.discovery_changed.notify_one();
+    Ok(())
+}
+
+#[tauri::command]
 pub fn soulseek_get_status(
     state: tauri::State<'_, SoulseekState>,
     library: tauri::State<'_, LibraryState>,
 ) -> Result<SoulseekStatus, String> {
     let settings = library.get_device_settings().map_err(|e| e.to_string())?;
     let configured = SoulseekState::desired_config(&settings).is_some();
-    let active_session = state.maybe_client_for_settings(&settings).is_some();
+    let active_session = {
+        let inner = state.inner.lock().unwrap();
+        inner.config == SoulseekState::desired_config(&settings) && inner.client.is_some()
+    };
     let username = if settings.soulseek_username.trim().is_empty() {
         None
     } else {

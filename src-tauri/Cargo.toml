@@ -23,6 +23,7 @@ tracy = ["dep:tracing-tracy"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+tokio = { version = "1", features = ["sync", "time"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
@@ -34,6 +35,10 @@ notify = "6"
 walkdir = "2"
 base64 = "0.22"
 blake3 = "1"
+uuid = { version = "1", features = ["v4", "v5"] }
+snow = "0.10"
+zeroize = "1"
+tempfile = "3"
 encoding_rs = "0.8"
 symphonia = { version = "0.5", features = ["all"] }
 opus = "0.4"

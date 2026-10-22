@@ -109,6 +109,8 @@ This is a deliberately pragmatic but monolithic design: most state is colocated 
 - `history`: play history.
 - `playlists`: regular playlists and smart playlists.
 - `discovery`: peer devices and sync controls.
+- `friends`: local Player contacts added by Profile ID.
+- `friend`: a friend page addressed by Profile ID, with Soulseek private messaging.
 - `settings`: preferences, with addressable Library, Playback, Devices & Sync, Soulseek, Appearance, and About sections.
 
 On mobile, navigation is presented as a side drawer opened by a burger button instead of a permanently visible desktop sidebar.
@@ -216,13 +218,65 @@ This keeps the rendering code separate while the rest of the visual chrome remai
 - Library shows the data folder, indexing progress, a Show duplicates switch, and access to duplicate review and identification. The switch controls the existing shared duplicate filter.
 - About includes a Licenses link opening `public/licenses/third-party.txt` in the GitHub repository default branch. The file must be published with the app source for the link to resolve. `pnpm build` runs `scripts/generate-licenses.mjs` to collect installed npm runtime dependencies and Cargo dependencies for the build target into `public/licenses/third-party.txt`. Bundled license and notice files are preserved; packages declaring only an SPDX identifier use standard texts from `spdx-license-list`. Packages with no license metadata are explicitly identified. `LICENSES_TARGET` can override the target, otherwise the Tauri target, Cargo target, or Rust host is used. Run `pnpm licenses:generate` to refresh the file for development.
 - Playback shares audio output and sample rate state with the footer device picker.
-- Discord RPC has its own settings section for the optional Discord Rich Presence integration. It is disabled by default and stored per device. The frontend adapter sends playback snapshots to an isolated native worker with throttled updates and reconnects. The `discord-rpc` Cargo feature can omit the implementation and dependency; `DISCORD_CLIENT_ID` configures the public application ID at compile time. See [docs/discord-rich-presence.md](docs/discord-rich-presence.md).
+- Discord RPC has its own settings section for the optional desktop integration. It is disabled by default and stored per device. See [Discord Rich Presence](#510-discord-rich-presence) for setup, architecture, and checks.
 - Devices & Sync edits this device identity and controls the existing LAN sync setting. Peer management stays in the Devices view.
 - Soulseek owns credential drafts with explicit Save and Cancel actions. Device and Soulseek forms read the latest saved configuration before writing, so saving one form preserves the other settings.
 - Appearance stores device-local preferences in localStorage through [src/composables/useAppearance.ts](src/composables/useAppearance.ts). Reduced motion also respects the system preference, stops beat and cover motion, and uses a still cover. The 3D cover and rarity animations can be controlled independently.
 - About uses [src/components/AboutPanel.vue](src/components/AboutPanel.vue) for version information, the existing updater flow, release notes, and contributor profiles. Each frontend build runs [scripts/sync-contributors.mjs](scripts/sync-contributors.mjs) to refresh GitHub contributors and download their avatars into bundled assets. A checked-in snapshot keeps development and offline builds usable. The application makes no network requests to display these credits.
 
 Device identity and Soulseek credentials keep their existing SQLite persistence. Appearance preferences are separate from music metadata and are not synced. Long-running actions report progress, and setting failures remain visible next to the affected controls.
+
+### Friends
+
+[src/components/FriendsView.vue](src/components/FriendsView.vue) is a separate page below Devices in the sidebar, with its title in the shared topbar. It lists saved Player contacts, filters them by name or Profile ID, and uses the existing responsive popup to add a contact by UUID with an optional local name. Profile IDs are independent of external services. Adding a contact starts an optional Soulseek interest lookup; no match or an automatic lookup failure does not mark the contact as invalid or show a warning. The row can retry this lookup manually, with errors shown for that explicit action. Matching Soulseek usernames are shown as unverified candidates. There is no friend request, online status, or Discord dependency.
+
+[src-tauri/src/friends.rs](src-tauri/src/friends.rs) provides `get_friends`, `add_friend`, and `remove_friend`. Contacts live in the local library database, scoped to the current profile ID. Inputs are validated natively, self-additions and duplicates are rejected, and changing profiles selects a separate list. Soulseek candidates and the last successful lookup time are also stored. A timeout is an error, not an empty result. Contacts are not currently synchronized to other devices, even when they share the profile key. Saved IDs are contacts, not trusted devices or proof of identity.
+
+[src/components/FriendChatView.vue](src/components/FriendChatView.vue) opens when selecting a friend. The shared topbar shows their local name, Friends stays selected in the sidebar, and back/forward history retains the Profile ID. The message pane uses the player palette with green outgoing bubbles, a fixed composer above the footer player, a styled scrollbar, and paginated history. Enter sends, Shift+Enter adds a line, and IME composition does not submit. Multiple discovered Soulseek usernames require choosing a conversation; the custom responsive account menu does not use a native select. Friends without a Soulseek account keep their independent profile page and an optional account search.
+
+[src-tauri/src/private_messages.rs](src-tauri/src/private_messages.rs) stores incoming and outgoing PMs in SQLite scoped by Player profile, local Soulseek account and remote username. Historical friend-account mappings remain available if discovery later omits that account. Native commands validate the friend and target username, and recheck the active profile/account after connection before sending. The view polls the local database every two seconds while open, loads 100 messages per page and preserves scroll position when reading older messages. Message bodies render as plain text.
+
+The shared Soulseek connection supports server messages 22 (PM) and 23 (receipt acknowledgement). Incoming messages are acknowledged only after storage succeeds; replayed IDs/timestamps are deduplicated. Message bodies are not logged by the PM handler. A completed socket write means submitted to Soulseek, not delivered or read by the recipient. Failed or interrupted sends retain their local record and are never retried automatically. Conversation history is local to this installation and is not synchronized or end-to-end encrypted by Player. Enabling Soulseek keeps its connection available for receiving PMs even when Profile ID publication is off.
+
+### 5.10 Discord Rich Presence
+
+Discord Rich Presence is an optional desktop integration. It is off by default and can be enabled in Settings, Discord RPC. The preference is stored on this device. Pausing, stopping, or disabling the integration clears the activity.
+
+#### Application setup
+
+Player uses the public Application ID `1562037965537157120` by default. Regular development and release builds need no environment variable. No bot token, Client Secret, or user authentication is required.
+
+Upload the Player application icon as a Rich Presence art asset named `player` in the [Discord Developer Portal](https://discord.com/developers/applications).
+
+Forks can create their own Discord application and override the public Application ID when compiling:
+
+```sh
+DISCORD_CLIENT_ID=your_application_id pnpm tauri dev
+DISCORD_CLIENT_ID=your_application_id pnpm tauri build
+```
+
+For release builds, the optional repository Actions variable `DISCORD_CLIENT_ID` overrides the default. An unset or empty variable keeps Player's Application ID. An invalid override disables the switch with a configuration message. Android and builds without the feature do not show the integration.
+
+The Discord desktop client must be running with activity sharing enabled. The integration retries when Discord is closed or restarts. It publishes the track title and artist, playback timestamps, and normally the album as image hover text. It does not upload local cover art or send file paths. The configured art asset supplies the application icon.
+
+The optional Discord discovery switch in the Discord RPC section publishes profile discovery metadata. It is off by default and stored per device as `player.discord-discovery`. While RPC and discovery are both enabled and music is playing, `assets.small_url` contains exactly `adhd://v1/<public-key>`, using the Base64 public key displayed in Devices & Sync. The native command reads this key directly from the current local profile and ignores discovery keys supplied in playback snapshots. The frontend refreshes presence when the profile changes. The album tooltip in `assets.large_text` is preserved. Turning discovery off removes `assets.small_url` immediately, bypassing the normal update throttle. Pausing or disabling RPC still clears the whole activity. This marker supplies public identity metadata for Discord discovery consumers.
+
+#### Boundaries
+
+- `src/composables/useDiscordPresence.ts` adapts the existing playback state to a small metadata snapshot. It persists the preference and forwards meaningful playback changes, including seeks, rather than every playback tick.
+- `src-tauri/src/discord_presence.rs` owns the IPC connection, background worker, update coalescing, reconnects, and cleanup. It does not own playback or library state.
+- The `discord-rpc` Cargo feature controls the dependency and implementation. It is included by default for desktop builds and can be omitted with `pnpm tauri build -- --no-default-features`.
+
+These boundaries allow a future plugin API to replace the adapter without changes to the audio engine. There is no general plugin framework in this implementation.
+
+#### Checks
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml discord_presence --lib
+cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --lib
+```
+
+The unit tests cover disabled behavior, immediate pause and disable cleanup, update coalescing, reconnection, timestamps after seeking, and Unicode metadata. Testing the appearance in a real Discord profile requires the configured application and a running Discord desktop client.
 
 ## 6. Backend Design
 
@@ -326,7 +380,7 @@ Main tables:
 
 - `tracks`: core metadata, path, duration, cover hash, file hash, rarity, manual edits, likes, play count, year, genre, date added.
 - `play_history`: playback history tied to track IDs.
-- `device_config`: local device emoji and user-visible device name.
+- `device_config`: local device UUID, emoji, user-visible device name, sync preferences, and Soulseek settings.
 - `playlists`: regular playlists.
 - `playlist_tracks`: ordered membership of tracks in playlists.
 - `smart_playlists`: saved smart playlist definitions.
@@ -508,6 +562,44 @@ Each device has two user-facing identity fields:
 - `emoji`
 
 These are stored in `device_config`, exposed through sync endpoints, and shown in the discovery UI. This gives a friendly identity layer without a formal account system.
+
+Each installation also has a random UUID v4 stored as `device_config.device_id`. Schema initialization creates it for new databases and backfills existing installations without changing their preferences. Renaming the device, changing its emoji, saving other settings, and restarting the app preserve the UUID. `get_device_settings`, `/status`, and `/tracks` expose it, and discovery carries it as optional peer metadata so older peers remain compatible. It is independent of hostname and IP address. The current discovery map still uses mDNS service names as keys.
+
+The device UUID identifies an app database, not physical hardware or a user account. Copying `app.db` also copies the device UUID; removing the database creates a new device identity on the next launch. Demo mode uses its temporary in-memory database. The device UUID does not grant access or authenticate peers.
+
+### Player profile discovery through Soulseek
+
+When Soulseek is enabled and configured and **Publish Profile ID** is on, a background task reuses the normal Soulseek client and publishes `adhdplayer-v1-<canonical Profile UUID>` as an interest with server message 51 (`AddThingILike`). Publication is off by default and persisted per device in `device_config.soulseek_discovery_enabled`. Finding friends does not require publishing your own ID. The toggle wakes the discovery task immediately; disabling publication removes the recorded marker when connected, with retry on reconnection if necessary. It also checks settings and profile changes every 15 seconds. The server actor republishes the current marker after reconnecting. The previous marker for each Soulseek username is stored in SQLite and removed with message 52 on profile replacement; cleanup on disabling or changing credentials is best effort while the old connection is usable. Other interests are untouched. Publication has no server acknowledgement and stale entries can remain after an interrupted session.
+
+`resolve_friend` requests message 112 (`ItemSimilarUsers`) for the same marker, correlates replies by item, applies the shared search rate limiter and a bounded timeout, and saves every returned username as an unverified candidate for that contact. Parsing bounds strings and result counts. Multiple Soulseek accounts may advertise one Player profile. The public marker may be copied; it does not prove ownership of the profile key and never grants sync, pairing or device trust. Interest indexing, server result caps and real-world discovery reliability require live testing; no completeness guarantee is assumed.
+
+### 9.4 Local profiles and device pairing
+
+[src-tauri/src/profile.rs](src-tauri/src/profile.rs) owns a local X25519 profile key pair. `user_id` is a deterministic UUID v5 derived from the public key using the OID namespace. Linked devices share the same private key, public key, and user UUID while keeping independent device UUIDs. Every linked device can share the profile; there is no primary device or permission hierarchy.
+
+The private key is stored as 32 raw bytes in `identity/profile.key` under Tauri's app-local data directory. On Android this is private app storage, separate from the shared music directory. On Unix the directory is mode 0700 and the key file is mode 0600; Windows uses the app-local directory's inherited access controls. Atomic file replacement persists a received profile before replacing the in-memory key. A corrupt key file produces an error instead of silently creating a different profile. Demo mode keeps an ephemeral profile in memory. The key is not encrypted at rest. Sync data, status responses, logs, and contributor/build artifacts omit it. Settings can explicitly request the key through a separate local command as described below.
+
+[src/components/DevicePairing.vue](src/components/DevicePairing.vue) uses the existing responsive popup and lives outside the Devices route so a session remains visible when navigating. The flow is:
+
+1. On a device already using the desired profile, open Devices and choose **Allow linking**. This opens a three-minute window for one incoming session.
+2. On the joining device, choose **Use profile** next to that device and confirm the direction. The popup explains that its current profile will be replaced while its library stays local.
+3. Both screens show three groups of four hexadecimal digits. Compare all groups, then confirm on both devices. The source screen explicitly says that sharing the profile also lets the new device link more devices.
+4. The source transfers its private key through the encrypted session only after both confirmations. The receiver verifies that it derives the public key authenticated by the handshake, saves it, and refreshes the displayed profile. Changing profiles affects only this installation; other devices using the previous profile keep that profile.
+
+Pairing uses [snow](https://docs.rs/snow/0.10.0/snow/) with `Noise_XX_25519_ChaChaPoly_BLAKE2s`, fresh handshake keys, a session ID bound through the prologue, and a 48-bit code from the completed handshake transcript. Device labels are also bound into that transcript. The joining device checks the source's static public key and device UUID against its selected discovery entry. `/profile-pairing/start`, `/profile-pairing/finish`, and `/profile-pairing/exchange` carry handshake messages or encrypted transport messages. They require JSON POST requests with bounded bodies. Session windows, a single active session, limited initial attempts, nonce-based replay rejection, explicit cancellation, HTTP timeouts, and disabled redirects bound the exchange. Losing or tampering with a transport message fails the session instead of silently restarting its nonce sequence.
+
+Settings, Devices & Sync shows read-only Profile ID and Public key fields, and a Private key field hidden by default. Show requests the Base64-encoded private key through `local_profile_private_key`; Hide, changing settings sections, and unmounting the view clear the displayed key. Stale async responses cannot reveal it after leaving the section. `local_profile_info` continues to expose only the public key and user UUID. Devices omits the old summary row with the profile ID, device count, sync state, and discovery method.
+
+Pairing commands separately allow, join, inspect, confirm, and cancel sessions; network and file work runs on blocking workers. `/status`, `/tracks`, and discovery expose optional `user_id` and `profile_public_key` fields for compatibility with old peers. The Shared profile label compares announced keys; it is not an authorization decision. Existing music sync and remote playback endpoints retain their current access behavior. Pairing does not automatically start a music sync.
+
+Sharing the private key means a lost device cannot be individually revoked from the profile. Changing the shared key changes the user UUID and requires linking the remaining devices to the new profile. Cancelling a pending session does not revoke a key that was already transferred. Profile import, backup files, and key rotation do not yet have UI flows.
+
+Tests cover persistence and private file permissions, key validation, comparison codes, two-sided confirmation, encrypted transfer, replay and tamper rejection, cancellation, expiry, old peer payloads, and an HTTP round trip between two loopback peers:
+
+```sh
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+pnpm exec vue-tsc --noEmit
+```
 
 ## 10. Track Identification Design
 

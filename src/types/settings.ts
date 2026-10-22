@@ -19,10 +19,12 @@ export interface Contributor {
 }
 
 export interface DeviceSettings {
+  device_id: string;
   emoji: string;
   device_name: string;
   sync_enabled: boolean;
   soulseek_enabled: boolean;
+  soulseek_discovery_enabled: boolean;
   soulseek_username: string;
   soulseek_password: string;
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { AudioDevice } from '../types';
 import { SETTINGS_SECTIONS, type DeviceSettings, type SettingsSection } from '../types/settings';
@@ -37,6 +37,7 @@ const props = defineProps<{
   peersCount: number;
   updateAvailable: boolean;
   discordEnabled: boolean;
+  discordDiscoveryEnabled: boolean;
   discordAvailable: boolean;
   discordConfigured: boolean;
   discordReady: boolean;
@@ -57,6 +58,7 @@ const emit = defineEmits<{
   selectSampleRate: [sampleRate: number | null];
   toggleSync: [];
   toggleDiscord: [enabled: boolean];
+  toggleDiscordDiscovery: [enabled: boolean];
   deviceSaved: [settings: DeviceSettings];
   soulseekSaved: [];
 }>();
@@ -65,6 +67,48 @@ const selected = computed(() => props.section ?? 'library');
 const sections = computed(() => SETTINGS_SECTIONS.filter((item) => item.id !== 'discord' || (props.discordReady && props.discordAvailable)));
 const sectionInfo = computed(() => SETTINGS_SECTIONS.find((section) => section.id === selected.value)!);
 const panel = ref<HTMLElement | null>(null);
+const profile = ref<{ user_id: string; public_key: string } | null>(null);
+const profileLoading = ref(false);
+const profileError = ref('');
+const privateKey = ref('');
+const privateKeyLoading = ref(false);
+let profileGeneration = 0;
+
+async function loadProfile() {
+  const generation = ++profileGeneration;
+  privateKey.value = '';
+  privateKeyLoading.value = false;
+  profileError.value = '';
+  profile.value = null;
+  profileLoading.value = false;
+  if (selected.value !== 'devices') return;
+  profileLoading.value = true;
+  try {
+    const info = await invoke<{ user_id: string; public_key: string }>('local_profile_info');
+    if (generation === profileGeneration) profile.value = info;
+  } catch {
+    if (generation === profileGeneration) profileError.value = 'Could not load your profile. Please try again.';
+  } finally {
+    if (generation === profileGeneration) profileLoading.value = false;
+  }
+}
+async function togglePrivateKey() {
+  if (privateKey.value) { privateKey.value = ''; return; }
+  if (privateKeyLoading.value) return;
+  privateKeyLoading.value = true;
+  profileError.value = '';
+  const generation = profileGeneration;
+  try {
+    const key = await invoke<string>('local_profile_private_key');
+    if (generation === profileGeneration) privateKey.value = key;
+  } catch {
+    if (generation === profileGeneration) profileError.value = 'Could not show your private key. Please try again.';
+  } finally {
+    if (generation === profileGeneration) privateKeyLoading.value = false;
+  }
+}
+watch(selected, () => { void loadProfile(); }, { immediate: true });
+onUnmounted(() => { profileGeneration += 1; privateKey.value = ''; });
 watch(() => props.section, async () => { await nextTick(); panel.value?.focus({ preventScroll: true }); });
 const currentOutput = computed(() => props.outputDevices.find((device) => device.name === props.currentDevice));
 const sampleRates = computed(() => {
@@ -159,6 +203,16 @@ async function saveSoulseek() {
     soulseekError.value = 'Could not save Soulseek credentials. Please try again.';
   } finally { soulseekSaving.value = false; }
 }
+async function toggleSoulseekDiscovery(enabled: boolean) {
+  if (soulseekSaving.value || identitySaving.value || !config.value) return;
+  soulseekSaving.value = true;
+  soulseekError.value = '';
+  try {
+    await invoke('set_soulseek_discovery', { enabled });
+    config.value = { ...config.value, soulseek_discovery_enabled: enabled };
+  } catch { soulseekError.value = 'Could not change profile publication. Please try again.'; }
+  finally { soulseekSaving.value = false; }
+}
 async function toggleSoulseek(enabled: boolean) {
   if (soulseekSaving.value || identitySaving.value) return;
   soulseekSaving.value = true;
@@ -238,6 +292,7 @@ onMounted(() => { void loadConfig(); });
           <div v-else class="settings-group">
             <div class="setting-row"><div><h4>Discord Rich Presence</h4><p>Show the track and artist you are listening to on your Discord profile.</p></div><SettingsToggle :model-value="discordEnabled" label="Discord Rich Presence" :disabled="!discordConfigured" @update:model-value="emit('toggleDiscord', $event)" /></div>
             <p class="help">{{ discordConfigured ? 'Requires the Discord desktop app. Your activity is hidden while paused.' : 'Discord integration is not configured in this build.' }}</p>
+            <div class="setting-row"><div><h4>Discord discovery</h4><p>Share your public key in Discord Rich Presence so other Players can recognize your profile.</p></div><SettingsToggle :model-value="discordDiscoveryEnabled" label="Discord discovery" :disabled="!discordConfigured" @update:model-value="emit('toggleDiscordDiscovery', $event)" /></div>
             <p v-if="discordError" class="error" role="alert">{{ discordError }}</p>
           </div>
         </template>
@@ -250,15 +305,29 @@ onMounted(() => { void loadConfig(); });
               <form class="settings-group" @submit.prevent="saveIdentity">
                 <h3>Device identity</h3><p>This is how this Player appears to other devices.</p>
                 <div class="device-preview"><span class="device-emoji">{{ emoji }}</span><div><strong>{{ deviceName.trim() || 'My Player' }}</strong><p>This device</p></div></div>
+                <label class="field"><span>Device ID</span><input class="profile-value" :value="config.device_id" readonly spellcheck="false" autocomplete="off" /></label>
                 <label class="field"><span>Device name</span><input v-model="deviceName" placeholder="My Player" autocomplete="off" maxlength="100" :disabled="identitySaving" /></label>
                 <fieldset :disabled="identitySaving"><legend>Device emoji</legend><div class="emoji-picker"><button v-for="item in emojiOptions" :key="item" type="button" :class="{ chosen: emoji === item }" :aria-pressed="emoji === item" :aria-label="`Use ${item} as device emoji`" @click="emoji = item">{{ item }}</button></div></fieldset>
                 <p v-if="identityError" class="error" role="alert">{{ identityError }}</p><p v-if="identitySaved && !identityDirty" class="success" role="status">Device identity saved.</p>
                 <div class="form-actions"><button type="button" :disabled="!identityDirty || identitySaving" @click="resetIdentity">Cancel</button><button class="primary" :disabled="!identityDirty || identitySaving || soulseekSaving" type="submit">{{ identitySaving ? 'Saving...' : 'Save' }}</button></div>
               </form>
+              <div class="settings-group">
+                <h3>Local profile</h3><p>Shared across your linked devices.</p>
+                <p v-if="profileLoading" role="status">Loading profile...</p>
+                <template v-if="profile">
+                  <label class="field"><span>Profile ID</span><input class="profile-value" :value="profile.user_id" readonly spellcheck="false" autocomplete="off" /></label>
+                  <label class="field"><span>Public key</span><input class="profile-value" :value="profile.public_key" readonly spellcheck="false" autocomplete="off" /></label>
+                  <label class="field"><span>Private key</span><span class="password-field"><input class="profile-value" :value="privateKey" :type="privateKey ? 'text' : 'password'" placeholder="Hidden" readonly spellcheck="false" autocomplete="off" /><button type="button" :aria-pressed="!!privateKey" :disabled="privateKeyLoading" @click="togglePrivateKey">{{ privateKeyLoading ? 'Loading...' : privateKey ? 'Hide' : 'Show' }}</button></span></label>
+                  <p>Keep this key private. Anyone with it can use and share your profile.</p>
+                </template>
+                <p v-if="profileError" class="error" role="alert">{{ profileError }}</p>
+                <button v-if="!profile && !profileLoading && profileError" type="button" @click="loadProfile">Try again</button>
+              </div>
               <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="icon-label" @click="emit('devices')">Open devices <AppIcon name="arrow-right" /></button></div></div>
             </template>
             <template v-else>
-              <div class="settings-group"><div class="setting-row"><div><h3>Soulseek search</h3><p>Search the Soulseek network and download music into your library.</p></div><SettingsToggle :model-value="soulseekEnabled" label="Soulseek search" :disabled="soulseekSaving || identitySaving" @update:model-value="toggleSoulseek" /></div></div>
+              <div class="settings-group"><div class="setting-row"><div><h3>Soulseek search</h3><p>Search music, download tracks and chat with Player friends through Soulseek.</p></div><SettingsToggle :model-value="soulseekEnabled" label="Soulseek search" :disabled="soulseekSaving || identitySaving" @update:model-value="toggleSoulseek" /></div></div>
+              <div class="settings-group"><div class="setting-row"><div><h3>Publish Profile ID</h3><p>Let other Players find your Soulseek username using your Profile ID. Your ID is published as a public Soulseek interest.</p></div><SettingsToggle :model-value="config?.soulseek_discovery_enabled ?? false" label="Publish Profile ID" :disabled="!soulseekEnabled || soulseekSaving || identitySaving" @update:model-value="toggleSoulseekDiscovery" /></div></div>
               <form v-if="soulseekEnabled" class="settings-group" @submit.prevent="saveSoulseek">
                 <h3>Connection</h3><p>Use your Soulseek account to search the network.</p>
                 <label class="field"><span>Username</span><input v-model="username" autocomplete="username" spellcheck="false" :disabled="soulseekSaving" /></label>
@@ -321,6 +390,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .field { display: flex; flex-direction: column; gap: 9px; margin-top: 22px; font-size: 13px; font-weight: 600; }
 .field input { border: 1px solid #505050; background: transparent; color: #fff; border-radius: 5px; padding: 12px; width: 100%; min-height: 44px; font-size: 14px; }
 .field input:disabled { opacity: .5; }
+.field input.profile-value { font-family: monospace; font-size: 13px; }
 .field .audio-select { width: 100%; min-height: 44px; }
 .help { font-size: 12px; margin-top: 12px; }
 .notice { border-radius: 8px; padding: 16px; margin-bottom: 24px; }

@@ -68,8 +68,7 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
         "DELETE FROM play_history;
          DELETE FROM playlist_tracks;
          DELETE FROM playlists;
-         DELETE FROM smart_playlists;
-         DELETE FROM device_config;",
+         DELETE FROM smart_playlists;",
     )?;
 
     conn.execute(
@@ -81,7 +80,14 @@ pub fn seed_demo_database(conn: &Connection, data_dir: &Path) -> DemoResult<()> 
             soulseek_enabled,
             soulseek_username,
             soulseek_password
-        ) VALUES (1, ?1, ?2, 0, 0, '', '')",
+        ) VALUES (1, ?1, ?2, 0, 0, '', '')
+        ON CONFLICT(id) DO UPDATE SET
+            emoji = excluded.emoji,
+            device_name = excluded.device_name,
+            sync_enabled = excluded.sync_enabled,
+            soulseek_enabled = excluded.soulseek_enabled,
+            soulseek_username = excluded.soulseek_username,
+            soulseek_password = excluded.soulseek_password",
         params!["🎧", "Demo Device"],
     )?;
 

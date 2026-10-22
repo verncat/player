@@ -39,6 +39,8 @@ pub use settings::*;
 #[derive(Clone)]
 pub struct Client {
     settings: ClientSettings,
+    connect_lock: Arc<tokio::sync::Mutex<()>>,
+    private_message_handler: crate::actor::server_actor::SharedMessageHandler,
     /// Single lock for all mutable state.
     inner: Arc<Mutex<ClientInner>>,
     /// The search rate limiter.
@@ -75,6 +77,8 @@ impl Client {
 
         Self {
             settings,
+            connect_lock: Arc::new(tokio::sync::Mutex::new(())),
+            private_message_handler: Default::default(),
             inner: Arc::new(Mutex::new(ClientInner {
                 state: ClientState::Disconnected,
                 active: None,
@@ -86,6 +90,7 @@ impl Client {
 
     /// Connect to the Soulseek server and login. Blocks until login succeeds or fails.
     pub async fn connect(&self) -> Result<()> {
+        let _connect = self.connect_lock.lock().await;
         trace!("Connecting to soulseek");
         {
             let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -94,6 +99,8 @@ impl Client {
             }
         }
 
+        // Retire an old failed session before starting another login.
+        self.disconnect();
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).state = ClientState::Connecting;
 
         let username = self.settings.username.0.clone();
@@ -139,7 +146,7 @@ impl Client {
         };
 
         // Spawn ServerActor first so we have its handle for the worker.
-        let server_actor = ServerActor::new(
+        let mut server_actor = ServerActor::new(
             self.settings.server_address.clone(),
             op_tx.clone(),
             ServerActorConfig {
@@ -151,6 +158,7 @@ impl Client {
                 reconnect_settings: self.settings.reconnect_settings.clone(),
             },
         );
+        server_actor.private_message_handler = self.private_message_handler.clone();
         let server_handle = actor_system.spawn(server_actor);
 
         // Spawn ConnectedWorker — receives server_handle for sending commands.
@@ -216,11 +224,62 @@ impl Client {
 
         // Await login result. ClientState::Connected is set by state_monitor on LoginSucceeded.
         match login_rx.await {
-            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(true)) => {
+                self.inner.lock().unwrap_or_else(|e| e.into_inner()).state = ClientState::Connected;
+                Ok(())
+            },
             Ok(Err(e)) => Err(e),
             Ok(Ok(false)) => Err(SoulseekRs::AuthenticationFailed),
             Err(_) => Err(SoulseekRs::Timeout),
         }
+    }
+
+    pub fn set_private_message_handler(&self, handler: crate::actor::server_actor::PrivateMessageHandler) {
+        *self.private_message_handler.lock().unwrap_or_else(|e| e.into_inner()) = Some(handler);
+    }
+
+    /// Success means written to the server socket, not delivered to the recipient.
+    pub async fn send_private_message(&self, username: &str, body: &str) -> Result<()> {
+        if username.is_empty() || username.len() > 30 || !username.is_ascii()
+            || body.trim().is_empty() || body.len() > 4096 {
+            return Err(SoulseekRs::InvalidMessage("Invalid private message".into()));
+        }
+        let handle = self.inner.lock().unwrap_or_else(|e| e.into_inner()).active.as_ref()
+            .map(|active| active.server_handle.clone()).ok_or(SoulseekRs::NotConnected)?;
+        let (response, receiver) = oneshot::channel();
+        handle.send(ServerCommand::SendPrivateMessage { username: username.to_owned(), body: body.to_owned(), response })
+            .map_err(|_| SoulseekRs::NotConnected)?;
+        tokio::time::timeout(Duration::from_secs(10), receiver).await
+            .map_err(|_| SoulseekRs::Timeout)?.map_err(|_| SoulseekRs::ConnectionClosed)?
+    }
+
+    pub fn disconnect(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(active) = inner.active.take() { active.actor_system.shutdown(); }
+        inner.state = ClientState::Disconnected;
+    }
+
+    /// Update only this application's discovery interest, leaving other likes alone.
+    pub async fn set_discovery_interest(&self, previous: Option<String>, current: Option<String>) -> Result<()> {
+        let handle = self.inner.lock().unwrap_or_else(|e| e.into_inner()).active.as_ref()
+            .map(|active| active.server_handle.clone()).ok_or(SoulseekRs::NotConnected)?;
+        let (response, receiver) = oneshot::channel();
+        handle.send(ServerCommand::SetDiscoveryInterest { previous, current, response })
+            .map_err(|_| SoulseekRs::NotConnected)?;
+        tokio::time::timeout(Duration::from_secs(10), receiver).await
+            .map_err(|_| SoulseekRs::Timeout)?.map_err(|_| SoulseekRs::ConnectionClosed)?
+    }
+
+    pub async fn find_interest_users(&self, item: &str) -> Result<Vec<String>> {
+        if item.is_empty() || item.len() > 256 { return Err(SoulseekRs::InvalidMessage("Invalid interest length".into())); }
+        self.wait_for_search_rate_limit().await?;
+        let handle = self.inner.lock().unwrap_or_else(|e| e.into_inner()).active.as_ref()
+            .map(|active| active.server_handle.clone()).ok_or(SoulseekRs::NotConnected)?;
+        let (response, receiver) = oneshot::channel();
+        handle.send(ServerCommand::FindInterestUsers { item: item.to_owned(), response })
+            .map_err(|_| SoulseekRs::NotConnected)?;
+        tokio::time::timeout(Duration::from_secs(10), receiver).await
+            .map_err(|_| SoulseekRs::Timeout)?.map_err(|_| SoulseekRs::ConnectionClosed)?
     }
 
     pub async fn search_with_cancel(
@@ -357,3 +416,9 @@ mod tests {
         assert!(settings.download_rate_limit_settings.is_some());
     }
 }
+
+#[cfg(test)]
+mod interest_tests;
+
+#[cfg(test)]
+mod private_message_tests;

@@ -21,6 +21,8 @@ use crate::peer::ConnectionType;
 use crate::peer::Peer;
 
 use std::io;
+use std::collections::HashMap;
+use crate::message::server::ItemSimilarUsersHandler;
 use std::net::ToSocketAddrs;
 use std::time::{Duration, Instant};
 
@@ -56,38 +58,23 @@ impl std::fmt::Display for PeerAddress {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct UserMessage {
-    id: u32,
-    timestamp: u32,
-    username: String,
-    message: String,
-    new_message: bool,
+    pub id: u32,
+    pub timestamp: u32,
+    pub username: String,
+    pub message: String,
+    pub new_message: bool,
 }
 impl UserMessage {
-    pub fn new(
-        id: u32,
-        timestamp: u32,
-        username: String,
-        message: String,
-        new_message: bool,
-    ) -> Self {
-        Self {
-            id,
-            timestamp,
-            username,
-            message,
-            new_message,
-        }
-    }
-    pub fn print(&self) {
-        debug!(
-            "Timestamp: {}. User: {}, Id: #{}, New message: {} Message: {}",
-            self.timestamp, self.username, self.id, self.new_message, self.message
-        );
+    pub fn new(id: u32, timestamp: u32, username: String, message: String, new_message: bool) -> Self {
+        Self { id, timestamp, username, message, new_message }
     }
 }
+
+/// Return true only after durable storage. False leaves the message unacknowledged.
+pub type PrivateMessageHandler = std::sync::Arc<dyn Fn(&UserMessage) -> bool + Send + Sync>;
+pub type SharedMessageHandler = std::sync::Arc<std::sync::Mutex<Option<PrivateMessageHandler>>>;
 
 /// Commands sent from external callers (client, connected_worker) into the actor.
 #[derive(Debug)]
@@ -103,11 +90,27 @@ pub enum ServerCommand {
     },
     PierceFirewall(PierceToken),
     GetPeerAddress(String),
+    SendPrivateMessage {
+        username: String,
+        body: String,
+        response: tokio::sync::oneshot::Sender<Result<(), SoulseekRs>>,
+    },
+    SetDiscoveryInterest {
+        previous: Option<String>,
+        current: Option<String>,
+        response: tokio::sync::oneshot::Sender<Result<(), SoulseekRs>>,
+    },
+    FindInterestUsers {
+        item: String,
+        response: tokio::sync::oneshot::Sender<Result<Vec<String>, SoulseekRs>>,
+    },
 }
 
 /// Internal signals produced by wire message handlers or actor self-sends.
 pub(crate) enum ServerSignal {
     ProcessRead,
+    InterestUsers { item: String, users: Vec<String> },
+    PrivateMessage(UserMessage),
     LoginStatus(bool),
     SendMessage(Message),
     ConnectToPeer(Peer),
@@ -161,6 +164,11 @@ pub struct ServerActorConfig {
     pub reconnect_settings: ReconnectSettings,
 }
 
+struct InterestQuery {
+    deadline: Instant,
+    responses: Vec<tokio::sync::oneshot::Sender<Result<Vec<String>, SoulseekRs>>>,
+}
+
 pub struct ServerActor {
     address: PeerAddress,
     listen_port: u32,
@@ -174,6 +182,9 @@ pub struct ServerActor {
     signal_tx: UnboundedSender<ServerSignal>,
     signal_rx: UnboundedReceiver<ServerSignal>,
     queued_messages: Vec<ServerCommand>,
+    discovery_interest: Option<String>,
+    pub(crate) private_message_handler: SharedMessageHandler,
+    interest_queries: HashMap<String, InterestQuery>,
     reconnect_settings: ReconnectSettings,
     tcp_keepalive: KeepAliveSettings,
 }
@@ -198,6 +209,9 @@ impl ServerActor {
             signal_tx,
             signal_rx,
             queued_messages: Vec::new(),
+            discovery_interest: None,
+            private_message_handler: Default::default(),
+            interest_queries: HashMap::new(),
             reconnect_settings: config.reconnect_settings,
             tcp_keepalive: config.tcp_keepalive,
         }
@@ -305,8 +319,57 @@ impl ServerActor {
         }
     }
 
+    fn write_interest(&mut self, code: u32, item: &str) -> Result<(), SoulseekRs> {
+        self.write_packet(Message::new().write_int32(code).write_string(item).get_buffer())
+    }
+
+    fn write_packet(&mut self, packet: Vec<u8>) -> Result<(), SoulseekRs> {
+        let ServerConnection::Connected { ref stream, .. } = self.connection else {
+            return Err(SoulseekRs::NotConnected);
+        };
+        match stream.try_write(&packet) {
+            Ok(written) if written == packet.len() => Ok(()),
+            Ok(_) => {
+                self.disconnect_with_error(io::Error::new(io::ErrorKind::WriteZero, "Partial server write"));
+                Err(SoulseekRs::ConnectionClosed)
+            }
+            Err(error) => Err(SoulseekRs::NetworkError(error)),
+        }
+    }
+
     fn handle_command(&mut self, cmd: ServerCommand) {
         match cmd {
+            ServerCommand::SendPrivateMessage { username, body, response } => {
+                if response.is_closed() { return; }
+                let packet = Message::new().write_int32(22).write_string(&username).write_string(&body).get_buffer();
+                let result = self.write_packet(packet);
+                let _ = response.send(result);
+            }
+            ServerCommand::SetDiscoveryInterest { previous, current, response } => {
+                let result = (|| {
+                    for old in [previous.as_ref(), self.discovery_interest.as_ref()].into_iter().flatten()
+                        .filter(|old| Some(*old) != current.as_ref()).cloned().collect::<std::collections::HashSet<_>>() {
+                        self.write_interest(52, &old)?;
+                    }
+                    if self.discovery_interest != current {
+                        if let Some(item) = &current { self.write_interest(51, item)?; }
+                        self.discovery_interest = current;
+                    }
+                    Ok(())
+                })();
+                let _ = response.send(result);
+            }
+            ServerCommand::FindInterestUsers { item, response } => {
+                if let Some(query) = self.interest_queries.get_mut(&item) {
+                    if query.responses.len() < 16 { query.responses.push(response); }
+                    else { let _ = response.send(Err(SoulseekRs::Timeout)); }
+                } else if self.interest_queries.len() < 32 {
+                    self.queue_message(Message::new().write_int32(112).write_string(&item).clone());
+                    self.interest_queries.insert(item, InterestQuery {
+                        deadline: Instant::now() + Duration::from_secs(8), responses: vec![response],
+                    });
+                } else { let _ = response.send(Err(SoulseekRs::Timeout)); }
+            }
             ServerCommand::Login {
                 username,
                 password,
@@ -333,6 +396,18 @@ impl ServerActor {
 
     fn handle_signal(&mut self, sig: ServerSignal) {
         match sig {
+            ServerSignal::PrivateMessage(message) => {
+                let handler = self.private_message_handler.lock().ok().and_then(|handler| handler.clone());
+                if handler.is_some_and(|store| store(&message)) {
+                    // Persist first, acknowledge second. A replay is deduplicated by the application.
+                    self.queue_message(Message::new().write_int32(23).write_int32(message.id).clone());
+                }
+            }
+            ServerSignal::InterestUsers { item, users } => {
+                if let Some(query) = self.interest_queries.remove(&item) {
+                    for response in query.responses { let _ = response.send(Ok(users.clone())); }
+                }
+            }
             ServerSignal::ConnectToPeer(peer) => {
                 if let Some(op) = match peer.connection_type {
                     ConnectionType::P | ConnectionType::F => {
@@ -361,6 +436,9 @@ impl ServerActor {
                 }
 
                 if logged_in {
+                    if let Some(item) = &self.discovery_interest {
+                        self.queue_message(Message::new().write_int32(51).write_string(item).clone());
+                    }
                     if let Err(_e) = self.client_channel.send(ClientOperation::LoginSucceeded) {
                         error!("[server] Failed to send LoginSucceeded: {}", _e);
                     }
@@ -428,6 +506,7 @@ impl ServerActor {
             let mut temp_buffer = [0u8; 1024];
             match stream.try_read(&mut temp_buffer) {
                 Ok(0) => {
+                    self.disconnect_with_error(io::Error::new(io::ErrorKind::UnexpectedEof, "Server closed the connection"));
                     return;
                 }
                 Ok(n) => {
@@ -525,6 +604,9 @@ impl ServerActor {
 
     fn disconnect_with_error(&mut self, _error: io::Error) {
         debug!("[server] disconnect");
+        for (_, query) in self.interest_queries.drain() {
+            for response in query.responses { let _ = response.send(Err(SoulseekRs::ConnectionClosed)); }
+        }
 
         let new_reconnect_attempt = match &self.connection {
             ServerConnection::Connected { .. } => 1,
@@ -601,6 +683,7 @@ impl ServerActor {
 
         let mut handlers = Handlers::new();
         handlers.register_handler(LoginHandler);
+        handlers.register_handler(ItemSimilarUsersHandler);
         handlers.register_handler(RoomListHandler);
         handlers.register_handler(ExcludedSearchPhrasesHandler);
         handlers.register_handler(PrivilegedUsersHandler);
@@ -690,6 +773,24 @@ impl Actor for ServerActor {
     type Message = ServerCommand;
 
     fn handle(&mut self, msg: Self::Message) {
+        let msg = if !matches!(self.connection, ServerConnection::Connected { .. })
+            || !matches!(self.login_state, LoginState::LoggedIn { .. }) {
+            match msg {
+                ServerCommand::SendPrivateMessage { response, .. } => {
+                    let _ = response.send(Err(SoulseekRs::NotConnected));
+                    return;
+                }
+                ServerCommand::SetDiscoveryInterest { response, .. } => {
+                    let _ = response.send(Err(SoulseekRs::NotConnected));
+                    return;
+                }
+                ServerCommand::FindInterestUsers { response, .. } => {
+                    let _ = response.send(Err(SoulseekRs::NotConnected));
+                    return;
+                }
+                other => other,
+            }
+        } else { msg };
         if !matches!(self.connection, ServerConnection::Connected { .. }) {
             self.queued_messages.push(msg);
             return;
@@ -713,6 +814,11 @@ impl Actor for ServerActor {
 
     fn tick(&mut self) {
         self.drain_signals();
+        self.interest_queries.retain(|_, query| {
+            if Instant::now() < query.deadline && query.responses.iter().any(|r| !r.is_closed()) { return true; }
+            for response in query.responses.drain(..) { let _ = response.send(Err(SoulseekRs::Timeout)); }
+            false
+        });
 
         // Time out any pending login wait.
         if let LoginState::Pending { ref deadline, .. } = self.login_state
@@ -734,5 +840,70 @@ impl Actor for ServerActor {
                 self.maybe_reconnect();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod interest_tests {
+    use super::*;
+
+    fn actor() -> ServerActor {
+        let (client, _) = mpsc::unbounded_channel();
+        ServerActor::new(PeerAddress::new("127.0.0.1".into(), 9), client, ServerActorConfig {
+            listen_port: 0, enable_listen: false, shared_folders: 0, shared_files: 0,
+            tcp_keepalive: KeepAliveSettings::Disabled, reconnect_settings: ReconnectSettings::Disabled,
+        })
+    }
+
+    #[test]
+    fn private_message_is_acknowledged_only_after_storage_succeeds() {
+        let mut actor = actor();
+        let message = UserMessage::new(77, 42, "alice".into(), "Hello".into(), true);
+        *actor.private_message_handler.lock().unwrap() = Some(std::sync::Arc::new(|_| false));
+        actor.handle_signal(ServerSignal::PrivateMessage(message.clone()));
+        assert!(actor.signal_rx.try_recv().is_err());
+        *actor.private_message_handler.lock().unwrap() = Some(std::sync::Arc::new(|_| true));
+        actor.handle_signal(ServerSignal::PrivateMessage(message));
+        let ServerSignal::SendMessage(mut ack) = actor.signal_rx.try_recv().unwrap() else { panic!("expected acknowledgement") };
+        assert_eq!(ack.read_int32(), 23);
+        assert_eq!(ack.read_int32(), 77);
+    }
+
+    #[test]
+    fn relogin_replays_the_current_discovery_marker() {
+        let mut actor = actor();
+        actor.discovery_interest = Some("adhdplayer-v1-current".into());
+        actor.handle_signal(ServerSignal::LoginStatus(true));
+        let mut markers = Vec::new();
+        while let Ok(signal) = actor.signal_rx.try_recv() {
+            if let ServerSignal::SendMessage(mut message) = signal {
+                if message.read_int32() == 51 { markers.push(message.read_string()); }
+            }
+        }
+        assert_eq!(markers, vec!["adhdplayer-v1-current"]);
+    }
+
+    #[tokio::test]
+    async fn pending_interest_times_out_instead_of_returning_no_matches() {
+        let mut actor = actor();
+        let (response, receiver) = tokio::sync::oneshot::channel();
+        actor.interest_queries.insert("marker".into(), InterestQuery {
+            deadline: Instant::now() - Duration::from_secs(1), responses: vec![response],
+        });
+        actor.tick();
+        assert!(matches!(receiver.await.unwrap(), Err(SoulseekRs::Timeout)));
+        assert!(actor.interest_queries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disconnected_interest_queries_fail_and_can_be_retried() {
+        let mut actor = actor();
+        let (response, receiver) = tokio::sync::oneshot::channel();
+        actor.interest_queries.insert("marker".into(), InterestQuery {
+            deadline: Instant::now() + Duration::from_secs(5), responses: vec![response],
+        });
+        actor.disconnect_with_error(io::Error::new(io::ErrorKind::ConnectionReset, "test"));
+        assert!(matches!(receiver.await.unwrap(), Err(SoulseekRs::ConnectionClosed)));
+        assert!(actor.interest_queries.is_empty());
     }
 }

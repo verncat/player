@@ -12,6 +12,9 @@ pub struct PlaybackPresence {
     pub position: f64,
     pub duration: f64,
     pub playing: bool,
+    // Set natively from the local profile, never accepted from a playback snapshot.
+    #[serde(skip_deserializing)]
+    pub discovery_public_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -67,9 +70,18 @@ pub fn discord_availability() -> DiscordAvailability {
 #[tauri::command]
 pub fn discord_update_presence(
     enabled: bool,
-    playback: Option<PlaybackPresence>,
+    mut playback: Option<PlaybackPresence>,
+    discovery_enabled: Option<bool>,
+    profile: tauri::State<'_, crate::profile::LocalProfileState>,
     state: tauri::State<'_, DiscordPresenceState>,
 ) -> Result<(), String> {
+    if let Some(playback) = playback.as_mut() {
+        playback.discovery_public_key = if enabled && discovery_enabled.unwrap_or(false) {
+            Some(profile.info().public_key)
+        } else {
+            None
+        };
+    }
     #[cfg(all(
         feature = "discord-rpc",
         any(target_os = "macos", target_os = "windows", target_os = "linux")
@@ -241,7 +253,6 @@ mod desktop {
             let client = self.client.as_mut().ok_or("Discord is not connected")?;
             let title = label(&playback.title, "Unknown track");
             let artist = label(&playback.artist, "Unknown artist");
-            let album = label(&playback.album, "Player");
             let mut timestamps = activity::Timestamps::new().start(start);
             if let Some(end) = end {
                 timestamps = timestamps.end(end);
@@ -251,11 +262,7 @@ mod desktop {
                 .details(title)
                 .state(artist)
                 .timestamps(timestamps)
-                .assets(
-                    activity::Assets::new()
-                        .large_image("player")
-                        .large_text(album),
-                );
+                .assets(activity_assets(playback));
             client.set_activity(presence).map_err(|e| e.to_string())?;
             Self::acknowledge(client)
         }
@@ -277,6 +284,16 @@ mod desktop {
             end -= 1;
         }
         value[..end].into()
+    }
+
+    fn activity_assets(playback: &PlaybackPresence) -> activity::Assets<'static> {
+        let assets = activity::Assets::new()
+            .large_image("player")
+            .large_text(label(&playback.album, "Player"));
+        match &playback.discovery_public_key {
+            Some(key) => assets.small_url(format!("adhd://v1/{key}")),
+            None => assets,
+        }
     }
 
     fn unix_millis() -> i64 {
@@ -313,6 +330,7 @@ mod desktop {
         last_version: Option<u64>,
         last_sent: Option<Instant>,
         retry_at: Option<Instant>,
+        last_discovery_key: Option<String>,
     }
     impl<T: Transport> Engine<T> {
         fn new(transport: T) -> Self {
@@ -322,6 +340,7 @@ mod desktop {
                 last_version: None,
                 last_sent: None,
                 retry_at: None,
+                last_discovery_key: None,
             }
         }
         fn disconnect(&mut self) {
@@ -331,6 +350,7 @@ mod desktop {
             self.connected = false;
             self.last_version = None;
             self.last_sent = None;
+            self.last_discovery_key = None;
         }
         fn tick(&mut self, desired: &Desired, now: Instant, wall: i64) {
             let playback = desired
@@ -342,6 +362,10 @@ mod desktop {
                 self.retry_at = None;
                 return;
             };
+            // Remove an advertised key immediately, even inside the normal update throttle.
+            if self.last_discovery_key.is_some() && playback.discovery_public_key.is_none() {
+                self.disconnect();
+            }
             if self.retry_at.is_some_and(|retry| now < retry) {
                 return;
             }
@@ -362,6 +386,7 @@ mod desktop {
                 self.transport.publish(playback, start, end)?;
                 self.last_version = Some(desired.version);
                 self.last_sent = Some(now);
+                self.last_discovery_key = playback.discovery_public_key.clone();
                 self.retry_at = None;
                 Ok::<_, String>(())
             })();
@@ -383,6 +408,8 @@ mod desktop {
             clears: usize,
             fail: bool,
             last_title: String,
+            last_large_text: String,
+            last_small_url: Option<String>,
         }
         impl Transport for Fake {
             fn connect(&mut self) -> Result<(), String> {
@@ -401,6 +428,9 @@ mod desktop {
             ) -> Result<(), String> {
                 self.publishes += 1;
                 self.last_title = p.title.clone();
+                let assets = serde_json::to_value(activity_assets(p)).unwrap();
+                self.last_large_text = assets["large_text"].as_str().unwrap().into();
+                self.last_small_url = assets.get("small_url").and_then(|url| url.as_str()).map(str::to_owned);
                 if self.fail {
                     Err("disconnected".into())
                 } else {
@@ -421,12 +451,65 @@ mod desktop {
                     position: 30.0,
                     duration: 180.0,
                     playing: true,
+                    discovery_public_key: None,
                 }),
                 received: now,
                 version: 1,
                 shutdown: false,
             }
         }
+        #[test]
+        fn discovery_metadata_uses_the_versioned_public_key_format() {
+            let mut d = desired(Instant::now());
+            let playback = d.playback.as_mut().unwrap();
+            let assets = serde_json::to_value(activity_assets(playback)).unwrap();
+            assert_eq!(assets["large_text"], "Album");
+            assert!(assets.get("small_url").is_none());
+            let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            playback.discovery_public_key = Some(key.into());
+            let activity = activity::Activity::new().assets(activity_assets(playback));
+            let json = serde_json::to_value(activity).unwrap();
+            assert_eq!(json["assets"]["small_url"], format!("adhd://v1/{key}"));
+            assert_eq!(json["assets"]["large_text"], "Album");
+            playback.discovery_public_key = None;
+            playback.album.clear();
+            let assets = serde_json::to_value(activity_assets(playback)).unwrap();
+            assert_eq!(assets["large_text"], "Player");
+            assert!(assets.get("small_url").is_none());
+        }
+
+        #[test]
+        fn playback_payload_cannot_inject_a_discovery_key() {
+            let payload = serde_json::json!({
+                "title": "Song", "artist": "Artist", "album": "Album",
+                "position": 0, "duration": 10, "playing": true,
+                "discovery_public_key": "untrusted"
+            });
+            let playback: PlaybackPresence = serde_json::from_value(payload).unwrap();
+            assert!(playback.discovery_public_key.is_none());
+            let assets = serde_json::to_value(activity_assets(&playback)).unwrap();
+            assert_eq!(assets["large_text"], "Album");
+            assert!(assets.get("small_url").is_none());
+        }
+
+        #[test]
+        fn disabling_discovery_removes_the_key_without_waiting_for_the_throttle() {
+            let now = Instant::now();
+            let mut d = desired(now);
+            d.playback.as_mut().unwrap().discovery_public_key = Some("public-key".into());
+            let mut engine = Engine::new(Fake::default());
+            engine.tick(&d, now, 100_000);
+            assert_eq!(engine.transport.last_small_url.as_deref(), Some("adhd://v1/public-key"));
+            assert_eq!(engine.transport.last_large_text, "Album");
+            d.version += 1;
+            d.playback.as_mut().unwrap().discovery_public_key = None;
+            engine.tick(&d, now + Duration::from_secs(1), 101_000);
+            assert_eq!(engine.transport.clears, 1);
+            assert_eq!(engine.transport.publishes, 2);
+            assert_eq!(engine.transport.last_large_text, "Album");
+            assert!(engine.transport.last_small_url.is_none());
+        }
+
         #[test]
         fn disabled_never_connects_and_pause_clears_immediately() {
             let now = Instant::now();

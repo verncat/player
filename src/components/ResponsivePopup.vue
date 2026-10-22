@@ -23,6 +23,14 @@ const emit = defineEmits<{
 const wrapperRef = ref<HTMLElement | null>(null);
 const desktopPanelRef = ref<HTMLElement | null>(null);
 const desktopStyle = ref<Record<string, string>>({});
+let panelObserver: ResizeObserver | undefined;
+watch(desktopPanelRef, (panel) => {
+  panelObserver?.disconnect();
+  if (panel) {
+    panelObserver = new ResizeObserver(updateDesktopPosition);
+    panelObserver.observe(panel);
+  }
+});
 
 function updateDesktopPosition() {
   const wrapper = wrapperRef.value;
@@ -91,6 +99,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  panelObserver?.disconnect();
   window.removeEventListener('resize', updateDesktopPosition);
   window.removeEventListener('scroll', updateDesktopPosition, true);
 });
