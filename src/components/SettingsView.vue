@@ -10,6 +10,7 @@ import AppIcon from './AppIcon.vue';
 import AppSelect from './AppSelect.vue';
 import { activeThemeColors, userColorChoices } from '../theme';
 import { ACCENT_PRESETS, GRADIENT_PRESETS, isCustomColor } from '../colorPresets';
+import RangeSlider from './RangeSlider.vue';
 import { THEME_MODE_OPTIONS, useTheme } from '../composables/useTheme';
 import CustomColorSwatch from './CustomColorSwatch.vue';
 import SegmentedControl from './SegmentedControl.vue';
@@ -301,10 +302,11 @@ onMounted(() => { void loadConfig(); });
             <h3>Theme</h3>
             <div class="setting-row"><div><h4>Mode</h4><p>Follow your system, or always use dark or light.</p></div><SegmentedControl :model-value="themePreferences.mode" :options="THEME_MODE_OPTIONS" label="Theme mode" @update:model-value="setThemePreference('mode', $event)" /></div>
           </div>
-          <div v-if="userColorChoices.accent || userColorChoices.gradient" class="settings-group">
+          <div v-if="userColorChoices.accent || userColorChoices.gradient || userColorChoices.tint" class="settings-group">
             <h3>Colors</h3>
             <div v-if="userColorChoices.accent" class="setting-row"><div><h4>Accent color</h4><p>Used for buttons, highlights and what's playing.</p></div><SwatchPicker :model-value="themePreferences.accent" :options="accentOptions" label="Accent color" @update:model-value="setThemePreference('accent', $event)"><CustomColorSwatch :color="customAccent" label="Custom accent color" @pick="setThemePreference('accent', $event)" /></SwatchPicker></div>
             <div v-if="userColorChoices.gradient" class="setting-row"><div><h4>Background gradient</h4><p>A soft glow at the top of the page.</p></div><SwatchPicker :model-value="themePreferences.gradient" :options="gradientOptions" label="Background gradient" @update:model-value="setThemePreference('gradient', $event)"><CustomColorSwatch :color="customGradient" label="Custom gradient color" @pick="setThemePreference('gradient', $event)" /></SwatchPicker></div>
+            <div v-if="userColorChoices.tint" class="setting-row"><div><h4>Tint</h4><p>Gives the app a tint in the accent color's hue.</p></div><RangeSlider :model-value="themePreferences.tint" label="Tint" unit="%" @update:model-value="setThemePreference('tint', $event)" /></div>
             <p v-if="themeStorageError" class="error" role="alert">{{ themeStorageError }}</p>
           </div>
         </template>
@@ -315,10 +317,10 @@ onMounted(() => { void loadConfig(); });
 </template>
 
 <style scoped>
-.settings-page { max-width: 1120px; margin: 0 auto; padding: 12px 8px 48px; }
+.settings-page { --settings-page-top: 12px; max-width: 1120px; margin: 0 auto; padding: var(--settings-page-top) 8px 48px; }
 p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 0; }
 .settings-layout { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 44px; align-items: start; }
-.settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; }
+.settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: var(--settings-page-top); }
 .settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
 .settings-nav > button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
 .settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }

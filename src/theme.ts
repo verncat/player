@@ -1,7 +1,7 @@
 import { computed, shallowRef } from 'vue';
 import { defaultTheme } from './themes/default';
 import { ACCENT_PRESETS, GRADIENT_PRESETS, resolveChoice, type ColorChoice } from './colorPresets';
-import { readableTextOn, type HexColor } from './utils/color';
+import { fromOklch, readableTextOn, toOklch, type HexColor } from './utils/color';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -55,12 +55,21 @@ export interface ThemeColors {
 }
 
 type AccentColor = 'accent' | 'on-accent' | 'hero';
-export type ModePalette = Omit<ThemeColors, AccentColor>;
+type NeutralColor = 'bg' | 'bg-elevated' | 'card' | 'card-hover' | 'surface' | 'surface-hover'
+  | 'text' | 'text-muted' | 'text-faint' | 'border' | 'border-strong';
+export type ModePalette = Omit<ThemeColors, AccentColor | NeutralColor> & Record<NeutralColor, HexColor>;
+
+// The content area stays neutral: it already carries the header gradient.
+const TINTED_COLORS: readonly Exclude<NeutralColor, 'bg-elevated'>[] = [
+  'bg', 'card', 'card-hover', 'surface', 'surface-hover',
+  'text', 'text-muted', 'text-faint', 'border', 'border-strong',
+];
 
 export interface ThemeDefinition {
   palettes: Record<ThemeMode, ModePalette>;
   accent?: Record<ThemeMode, HexColor>;
   gradient?: Record<ThemeMode, HexColor> | null;
+  tint?: number;
 }
 
 export const activeDefinition = defaultTheme;
@@ -69,17 +78,27 @@ export interface Theme {
   mode: ThemeMode;
   accent: ColorChoice;
   gradient: ColorChoice | null;
+  tint: number;
 }
 
 export const DEFAULT_THEME: Theme = {
   mode: 'dark',
   accent: ACCENT_PRESETS[0].id,
   gradient: GRADIENT_PRESETS[0].id,
+  tint: 5,
 };
 
+const FULL_TINT_CHROMA = 0.05;
+
+function tintGrays(palette: ModePalette, hue: number, chroma: number) {
+  for (const name of TINTED_COLORS) palette[name] = fromOklch({ ...toOklch(palette[name]), c: chroma, h: hue });
+}
+
+/** Which color choices the active theme leaves to the user (settings shows only these). */
 export const userColorChoices = {
   accent: activeDefinition.accent === undefined,
   gradient: activeDefinition.gradient === undefined,
+  tint: activeDefinition.tint === undefined,
 };
 
 function accentColor(theme: Theme): HexColor {
@@ -95,8 +114,11 @@ function heroColor(theme: Theme): HexColor | null {
 }
 
 export function themeColors(theme: Theme): ThemeColors {
-  const palette = activeDefinition.palettes[theme.mode];
+  const palette = { ...activeDefinition.palettes[theme.mode] };
   const accent = accentColor(theme);
+  const { c: accentChroma, h: accentHue } = toOklch(accent);
+  const tintChroma = Math.min(((activeDefinition.tint ?? theme.tint) / 100) * FULL_TINT_CHROMA, accentChroma);
+  tintGrays(palette, accentHue, tintChroma);
   const hero = heroColor(theme);
   return {
     ...palette,

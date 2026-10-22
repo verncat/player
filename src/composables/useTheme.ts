@@ -30,6 +30,7 @@ try {
   if (THEME_MODE_OPTIONS.some((option) => option.value === saved?.mode)) preferences.mode = saved.mode;
   if (typeof saved?.accent === 'string' && isKnownChoice(ACCENT_PRESETS, saved.accent)) preferences.accent = saved.accent;
   if (saved?.gradient === null || (typeof saved?.gradient === 'string' && isKnownChoice(GRADIENT_PRESETS, saved.gradient))) preferences.gradient = saved.gradient;
+  if (typeof saved?.tint === 'number' && saved.tint >= 0 && saved.tint <= 100) preferences.tint = saved.tint;
 } catch {
   // An unreadable preference never prevents the player from starting.
 }
@@ -38,6 +39,7 @@ const theme = computed<Theme>(() => ({
   mode: preferences.mode === 'system' ? (systemDark.value ? 'dark' : 'light') : preferences.mode,
   accent: preferences.accent,
   gradient: preferences.gradient,
+  tint: preferences.tint,
 }));
 
 function switchTheme(next: Theme) {
