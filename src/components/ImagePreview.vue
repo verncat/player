@@ -55,7 +55,7 @@ useTransientHistoryEntry(() => !!props.src, () => emit('close'));
   align-items: center;
   justify-content: center;
   padding: 32px;
-  background: var(--color-backdrop, rgba(0, 0, 0, .85));
+  background: var(--color-backdrop);
   cursor: zoom-out;
 }
 img {
@@ -63,7 +63,7 @@ img {
   max-height: 100%;
   object-fit: contain;
   border-radius: var(--radius-cover, 6px);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, .6);
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--color-shadow) 60%, transparent);
 }
 .image-preview-enter-active,
 .image-preview-leave-active {

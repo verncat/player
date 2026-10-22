@@ -1,29 +1,23 @@
-import { animatedRarities, rarityColors } from "../types";
+import { animatedRarities, TRACK_RARITY_OPTIONS, type TrackRarity } from "../types";
+
+/** The rarity a track is highlighted with: any known rarity except Common. */
+export function highlightedRarity(r: string | null): TrackRarity | null {
+  const rarity = TRACK_RARITY_OPTIONS.find((option) => option === r);
+  return rarity && rarity !== "Common" ? rarity : null;
+}
+
+export function rarityColorName(rarity: TrackRarity) {
+  return `rarity-${rarity.toLowerCase() as Lowercase<TrackRarity>}` as const;
+}
 
 export function rarityClass(r: string | null) {
-  if (!r || r === "Common") return "";
-  if (animatedRarities.has(r)) return `rarity-animated rarity-${r.toLowerCase()}`;
+  const rarity = highlightedRarity(r);
+  if (!rarity) return "";
+  if (animatedRarities.has(rarity)) return `rarity-animated rarity-${rarity.toLowerCase()}`;
   return "rarity-tint";
 }
 
 export function rarityVars(r: string | null): Record<string, string> {
-  if (!r || r === "Common") return {};
-  const c = rarityColors[r] || "#b0b0b0";
-  return { "--rc": c };
-}
-
-export function hashToColors(hash: string | null): [string, string] {
-  if (!hash || hash.length < 8) return ["#1a1a2e", "#16213e"];
-  const a = parseInt(hash.slice(0, 6), 16);
-  const b = parseInt(hash.slice(6, 12), 16);
-  const hueA = a % 360;
-  const hueB = (hueA + 137) % 360;
-  const satA = 45 + ((a >> 16) & 0x1f);
-  const satB = 45 + ((b >> 16) & 0x1f);
-  const litA = 20 + ((a >> 8) & 0x0f);
-  const litB = 15 + ((b >> 8) & 0x0f);
-  return [
-    `hsl(${hueA}, ${satA}%, ${litA}%)`,
-    `hsl(${hueB}, ${satB}%, ${litB}%)`,
-  ];
+  const rarity = highlightedRarity(r);
+  return rarity ? { "--rc": `var(--color-${rarityColorName(rarity)})` } : {};
 }

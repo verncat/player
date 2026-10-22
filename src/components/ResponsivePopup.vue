@@ -166,11 +166,11 @@ onUnmounted(() => {
 
 .responsive-popup-desktop {
   position: fixed;
-  background: #282828;
+  background: var(--color-surface);
   border-radius: 4px;
   padding: 4px 0;
   min-width: 190px;
-  box-shadow: 0 16px 32px rgba(0, 0, 0, .5);
+  box-shadow: 0 16px 32px color-mix(in srgb, var(--color-shadow) 50%, transparent);
   z-index: 200;
   max-height: min(72vh, 560px);
   overflow: hidden;
@@ -182,7 +182,7 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 199;
-  background: rgba(0, 0, 0, 0.42);
+  background: color-mix(in srgb, var(--color-shadow) 42%, transparent);
 }
 
 .responsive-popup-desktop.dropdown-enter-active,
@@ -214,7 +214,7 @@ onUnmounted(() => {
 }
 
 .responsive-popup-body::-webkit-scrollbar-thumb {
-  background: #555;
+  background: var(--color-border-strong);
   border-radius: 3px;
 }
 
@@ -246,14 +246,14 @@ onUnmounted(() => {
   gap: 10px;
   padding: 12px 16px 14px;
   flex-shrink: 0;
-  background: #282828;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--color-surface);
+  border-top: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 
 .responsive-popup-cancel,
 .responsive-popup-save {
   border-radius: 20px;
-  font-size: var(--fs-button, 13px);
+  font-size: var(--fs-button);
   font-weight: 700;
   padding: 8px 22px;
   cursor: pointer;
@@ -261,22 +261,22 @@ onUnmounted(() => {
 
 .responsive-popup-cancel {
   background: transparent;
-  border: 1px solid #535353;
-  color: #fff;
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-text);
 }
 
 .responsive-popup-cancel:hover {
-  border-color: #fff;
+  border-color: var(--color-text);
 }
 
 .responsive-popup-save {
-  background: #1db954;
+  background: var(--color-accent);
   border: none;
-  color: #000;
+  color: var(--color-on-accent);
 }
 
 .responsive-popup-save:hover:not(:disabled) {
-  background: #1ed760;
+  background: var(--color-accent-hover);
 }
 
 .responsive-popup-save:disabled {
@@ -301,7 +301,7 @@ onUnmounted(() => {
     align-items: center;
     justify-content: center;
     padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
-    background: rgba(0, 0, 0, 0.56);
+    background: color-mix(in srgb, var(--color-shadow) 56%, transparent);
   }
 
   .responsive-popup-mobile-panel {
@@ -318,10 +318,10 @@ onUnmounted(() => {
     display: flex;
     flex-direction: column;
     transform: none;
-    background: #282828;
+    background: var(--color-surface);
     border-radius: 4px;
     padding: 4px 0;
-    box-shadow: 0 16px 32px rgba(0, 0, 0, .5);
+    box-shadow: 0 16px 32px color-mix(in srgb, var(--color-shadow) 50%, transparent);
   }
 
   .mobile-popup-enter-active,

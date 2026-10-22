@@ -90,13 +90,6 @@ export interface TrackPage {
   has_more: boolean;
 }
 
-export const rarityColors: Record<string, string> = {
-  Common: '#b0b0b0',
-  Uncommon: '#1db954',
-  Rare: '#4fc3f7',
-  Epic: '#ba68c8',
-  Legendary: '#ffa726',
-  Mythic: '#ff5252',
-};
 export const animatedRarities = new Set(['Epic', 'Legendary', 'Mythic']);
 export const TRACK_RARITY_OPTIONS = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary', 'Mythic'] as const;
+export type TrackRarity = typeof TRACK_RARITY_OPTIONS[number];

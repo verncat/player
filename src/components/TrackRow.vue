@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { Track } from "../types";
 import { formatDuration } from "../utils/format";
-import { hashToColors, rarityClass, rarityVars } from "../utils/rarity";
-import { coverUrl } from "../utils/covers";
+import { rarityClass, rarityVars } from "../utils/rarity";
+import { coverUrl, placeholderCoverColors } from "../utils/covers";
 import { useTrackActions, type TrackButton } from "../composables/useTrackActions";
 import CoverImage from "./CoverImage.vue";
 import TrackMeta from "./TrackMeta.vue";
@@ -96,17 +96,17 @@ function onClick() {
       v-if="showCover"
       class="track-cover-sm"
       :src="coverUrl(track.cover_hash, 'small')"
-      :placeholder="hashToColors(track.file_hash)"
+      :placeholder="placeholderCoverColors(track.file_hash)"
     />
     <span v-if="showNumber" class="track-num">{{ track.track_number ?? '–' }}</span>
     <div class="track-info">
       <div class="track-title-row">
         <span class="track-title">{{ track.title || track.path }}</span>
         <span v-if="actions.isCurrent(track.id)" class="track-playback-badge current" title="Now playing">
-          <AppIcon name="play" :size="12" />
+          <AppIcon name="now-playing" :size="12" />
         </span>
         <span v-else-if="actions.isNext(track.id)" class="track-playback-badge next" title="Up next">
-          <AppIcon name="play" :size="12" />
+          <AppIcon name="up-next" :size="12" />
           <span class="track-playback-step">1</span>
         </span>
       </div>
@@ -124,13 +124,13 @@ function onClick() {
     <slot name="extra" />
 
     <button v-if="shows('identify')" class="icon-btn hover-action inline-action" title="Identify" @click.stop="actions.identify(track)">
-      <AppIcon name="wand-sparkles" :size="14" />
+      <AppIcon name="identify" :size="14" />
     </button>
     <button v-if="shows('edit')" class="icon-btn hover-action inline-action" title="Edit" @click.stop="actions.edit(track)">
-      <AppIcon name="pencil" :size="14" />
+      <AppIcon name="edit" :size="14" />
     </button>
     <span v-if="shows('playCount')" class="play-count" :title="track.play_count > 0 ? 'Play count' : undefined">
-      <template v-if="track.play_count > 0"><AppIcon name="play" :size="12" /> {{ track.play_count }}</template>
+      <template v-if="track.play_count > 0"><AppIcon name="play-count" :size="12" /> {{ track.play_count }}</template>
     </span>
     <button
       v-if="shows('like')"
@@ -138,7 +138,7 @@ function onClick() {
       :title="track.is_liked ? 'Unlike' : 'Like'"
       @click.stop="actions.toggleLike(track)"
     >
-      <AppIcon name="heart" :size="16" :filled="track.is_liked" :color="track.is_liked ? '#1db954' : 'currentColor'" />
+      <AppIcon :name="track.is_liked ? 'liked' : 'like'" :size="16" :class="{ liked: track.is_liked }" />
     </button>
     <button
       v-if="shows('addToPlaylist')"
@@ -146,7 +146,7 @@ function onClick() {
       title="Add to playlist"
       @click.stop="actions.openAddToPlaylist(track, $event.clientX, $event.clientY)"
     >
-      <AppIcon name="list-plus" :size="16" />
+      <AppIcon name="add-to-playlist" :size="16" />
     </button>
     <span class="track-dur">{{ formatDuration(track.duration_secs) }}</span>
   </div>
@@ -158,21 +158,21 @@ function onClick() {
   padding: 8px 8px; border-radius: 4px;
   cursor: pointer; user-select: none;
 }
-.track-row:hover { background: #282828 !important; }
-.track-row.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
+.track-row:hover { background: var(--color-card-hover) !important; }
+.track-row.rarity-tint { background: var(--rarity-tint); }
 .track-row.track-row-current {
-  background: rgba(29, 185, 84, 0.14) !important;
-  box-shadow: inset 0 0 0 1px rgba(29, 185, 84, 0.3);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 .track-row.track-row-next {
-  background: rgba(29, 185, 84, 0.08) !important;
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent) !important;
 }
 .track-cover-sm {
   width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0;
 }
 .track-num {
   width: 24px; text-align: right;
-  font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
+  font-size: var(--fs-track-side); color: var(--color-text-muted); flex-shrink: 0;
 }
 .track-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .track-title-row {
@@ -182,12 +182,12 @@ function onClick() {
   min-width: 0;
 }
 .track-title {
-  font-size: var(--fs-track-title); font-weight: 500; color: #fff;
+  font-size: var(--fs-track-title); font-weight: 500; color: var(--color-text);
   display: block; flex: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .track-album {
-  font-size: var(--fs-track-meta); color: #a7a7a7;
+  font-size: var(--fs-track-meta); color: var(--color-text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .track-playback-badge {
@@ -202,30 +202,31 @@ function onClick() {
   flex-shrink: 0;
 }
 .track-playback-badge.current {
-  background: #1db954;
-  color: #08120b;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
 }
 .track-playback-badge.next {
-  background: rgba(29, 185, 84, 0.14);
-  color: #8de2a7;
-  box-shadow: inset 0 0 0 1px rgba(29, 185, 84, 0.28);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 .track-playback-step {
   font-variant-numeric: tabular-nums;
 }
 .track-dur {
-  font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
+  font-size: var(--fs-track-side); color: var(--color-text-muted); flex-shrink: 0;
 }
 
 .icon-btn {
   background: none; border: none;
-  color: #b3b3b3; cursor: pointer; padding: 4px;
+  color: var(--color-text-muted); cursor: pointer; padding: 4px;
   display: flex; align-items: center; justify-content: center;
   border-radius: 4px;
   flex-shrink: 0;
   transition: color .1s, opacity .12s;
 }
-.icon-btn:hover { color: #fff; }
+.icon-btn:hover { color: var(--color-text); }
+.liked { color: var(--color-accent); }
 .hover-action { opacity: 0; }
 .track-row:hover .hover-action,
 .hover-action:focus-visible { opacity: 1; }
@@ -234,7 +235,7 @@ function onClick() {
   min-width: 36px;
   text-align: right;
   font-size: var(--fs-track-side);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   flex-shrink: 0;
 }
 

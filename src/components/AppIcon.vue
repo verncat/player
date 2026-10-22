@@ -5,12 +5,11 @@ withDefaults(defineProps<{
   name: AppIconName;
   size?: number;
   color?: string;
-  filled?: boolean;
-}>(), { size: 16, color: 'currentColor', filled: false });
+}>(), { size: 16, color: 'currentColor' });
 </script>
 
 <template>
-  <component :is="icons[name]" class="app-icon" :size="size" :color="color" :stroke-width="2" :fill="filled ? color : 'none'" aria-hidden="true" focusable="false" />
+  <component :is="icons[name]" class="app-icon" :size="size" :color="color" :stroke-width="2" aria-hidden="true" focusable="false" />
 </template>
 
 <style scoped>

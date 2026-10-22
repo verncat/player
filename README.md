@@ -170,7 +170,8 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 - Responsive desktop/mobile layout.
 - Android media notification and lock-screen controls.
 - Now-playing view with a Three.js/WebGL album card.
-- Settings page for library tools, audio output, device identity and sync, Soulseek, and appearance (including reduced motion).
+- Dark and light themes (or following the system) with a choice of accent color and header gradient.
+- Settings page for library tools, audio output, device identity and sync, Soulseek, and appearance (theme, accent color, gradient, tint, reduced motion).
 - Optional Discord Rich Presence on desktop, off by default.
 - About section with version info, update checks, an embedded changelog, contributors, and third-party licenses.
 - Demo mode with a seeded library (`--demo`), used for the screenshots above.
