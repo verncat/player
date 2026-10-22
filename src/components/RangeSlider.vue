@@ -1,27 +1,20 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-
 withDefaults(defineProps<{ label: string; min?: number; max?: number; step?: number; unit?: string }>(), { min: 0, max: 100, step: 1, unit: '' });
 const model = defineModel<number>({ required: true });
-
-const shown = ref(model.value);
-watch(model, (value) => { shown.value = value; });
 </script>
 
 <template>
   <div class="range-slider">
-    <!-- the value is reported on change, not input: the final pick, not every step while dragging -->
     <input
       type="range"
       :min="min"
       :max="max"
       :step="step"
-      :value="shown"
+      :value="model"
       :aria-label="label"
-      @input="shown = Number(($event.target as HTMLInputElement).value)"
-      @change="model = shown"
+      @input="model = Number(($event.target as HTMLInputElement).value)"
     />
-    <span class="range-slider-value">{{ shown }}{{ unit }}</span>
+    <span class="range-slider-value">{{ model }}{{ unit }}</span>
   </div>
 </template>
 

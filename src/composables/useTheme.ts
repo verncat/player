@@ -42,9 +42,13 @@ const theme = computed<Theme>(() => ({
   tint: preferences.tint,
 }));
 
-function switchTheme(next: Theme) {
+// The tint follows a slider while it's dragged, so tint-only changes apply instantly.
+const onlyTintChanged = (next: Theme, previous: Theme) =>
+  next.tint !== previous.tint && next.mode === previous.mode && next.accent === previous.accent && next.gradient === previous.gradient;
+
+function switchTheme(next: Theme, previous: Theme) {
   const root = document.documentElement;
-  if (useAppearance().reducedMotion.value) {
+  if (useAppearance().reducedMotion.value || onlyTintChanged(next, previous)) {
     applyTheme(next);
   } else if (document.startViewTransition) {
     document.startViewTransition(() => applyTheme(next));
