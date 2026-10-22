@@ -5,9 +5,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import ResponsivePopup from "./ResponsivePopup.vue";
 import type { AudioDevice, Track } from "../types";
 import { formatDuration, formatSampleRate, formatTime } from "../utils/format";
-import { hashToColors } from "../utils/rarity";
 import { artistLabel } from "../utils/artists";
-import { coverUrl } from "../utils/covers";
+import { coverUrl, placeholderCoverColors } from "../utils/covers";
 import CoverImage from "./CoverImage.vue";
 
 interface CurrentTrackSummary {
@@ -506,7 +505,7 @@ onUnmounted(() => {
         <div class="queue-now" v-if="nowPlaying">
           <span class="queue-now-label">Now playing</span>
           <div class="queue-item active">
-            <CoverImage class="queue-item-cover" :src="coverUrl(nowPlaying.cover_hash, 'small')" :placeholder="hashToColors(nowPlaying.file_hash)" />
+            <CoverImage class="queue-item-cover" :src="coverUrl(nowPlaying.cover_hash, 'small')" :placeholder="placeholderCoverColors(nowPlaying.file_hash)" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ nowPlaying.title || nowPlaying.path }}</span>
               <span class="queue-item-artist">{{ artistLabel(nowPlaying.artist) }}</span>
@@ -522,7 +521,7 @@ onUnmounted(() => {
             class="queue-item"
             @click="emit('jumpToQueueItem', i)"
           >
-            <CoverImage class="queue-item-cover" :src="coverUrl(track.cover_hash, 'small')" :placeholder="hashToColors(track.file_hash)" />
+            <CoverImage class="queue-item-cover" :src="coverUrl(track.cover_hash, 'small')" :placeholder="placeholderCoverColors(track.file_hash)" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ track.title || track.path }}</span>
               <span class="queue-item-artist">{{ artistLabel(track.artist) }}</span>

@@ -31,7 +31,7 @@ import {
   parseTrackDateInput,
   trackDateInputValue,
 } from "./utils/tracks";
-import { hashToColors, highlightedRarity, rarityClass, rarityColorName, rarityVars } from "./utils/rarity";
+import { highlightedRarity, rarityClass, rarityColorName, rarityVars } from "./utils/rarity";
 import { activeThemeColors, translucent } from "./theme";
 import AppSidebar from "./components/AppSidebar.vue";
 import AppIcon from "./components/AppIcon.vue";
@@ -54,7 +54,7 @@ import { provideTrackActions } from "./composables/useTrackActions";
 import { useHistoryNavigation } from "./composables/useHistoryNavigation";
 import { artistLabel, hasArtistPage } from "./utils/artists";
 import { countAlbumTracks } from "./api";
-import { coverUrl } from "./utils/covers";
+import { coverUrl, placeholderCoverColors } from "./utils/covers";
 
 const { preferences: appearance, reducedMotion } = useAppearance();
 watch([reducedMotion, () => appearance.rarityAnimations], ([reduce, rarity]) => {
@@ -1263,7 +1263,7 @@ const homePinnedSections = computed<HomePinnedPlaylistSection[]>(() => {
 });
 
 function homePinnedCoverStyle(item: HomePinnedPlaylistItem) {
-  const [left, right] = hashToColors(item.key);
+  const [left, right] = placeholderCoverColors(item.key);
   return `background: linear-gradient(135deg, ${left}, ${right})`;
 }
 
@@ -2791,7 +2791,7 @@ const currentTrack = computed<{ title: string; artist: string; colors: [string, 
     return {
       title: nowPlaying.value.title || nowPlaying.value.path,
       artist: artistLabel(nowPlaying.value.artist),
-      colors: hashToColors(nowPlaying.value.file_hash),
+      colors: placeholderCoverColors(nowPlaying.value.file_hash),
     };
   }
   const rp = remoteOutputPeer.value?.playback;
@@ -2799,10 +2799,10 @@ const currentTrack = computed<{ title: string; artist: string; colors: [string, 
     return {
       title: rp.title || 'Unknown',
       artist: artistLabel(rp.artist),
-      colors: hashToColors(rp.hash ?? null),
+      colors: placeholderCoverColors(rp.hash ?? null),
     };
   }
-  return { title: 'No track', artist: '', colors: hashToColors(null) };
+  return { title: 'No track', artist: '', colors: placeholderCoverColors(null) };
 });
 
 const beatIntensity = computed(() => {
@@ -5077,7 +5077,7 @@ onUnmounted(() => {
                 @touchmove.passive="moveTrackRowLongPress"
                 @touchend="endTrackRowLongPress"
                 @touchcancel="endTrackRowLongPress">
-                <CoverImage class="cover" :src="coverUrl(track.cover_hash, 'medium')" :placeholder="hashToColors(track.file_hash)">
+                <CoverImage class="cover" :src="coverUrl(track.cover_hash, 'medium')" :placeholder="placeholderCoverColors(track.file_hash)">
                   <div class="hover-play">
                     <button class="green-circle" type="button" @click.stop="toggleRecentCardPlayback(idx, track.id)">
                       <AppIcon name="play" v-if="!isTrackPlaying(track.id)" :size="18" />
@@ -5859,7 +5859,7 @@ onUnmounted(() => {
                     :style="rarityVars(track.rarity)"
                     @click="dedupToggleTrack(i, track.id)"
                   >
-                    <CoverImage class="track-cover-sm" :src="coverUrl(track.cover_hash, 'small')" :placeholder="hashToColors(track.file_hash)" />
+                    <CoverImage class="track-cover-sm" :src="coverUrl(track.cover_hash, 'small')" :placeholder="placeholderCoverColors(track.file_hash)" />
                     <div class="track-info">
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>

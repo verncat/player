@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { Track } from "../types";
 import { formatDuration } from "../utils/format";
-import { hashToColors, rarityClass, rarityVars } from "../utils/rarity";
-import { coverUrl } from "../utils/covers";
+import { rarityClass, rarityVars } from "../utils/rarity";
+import { coverUrl, placeholderCoverColors } from "../utils/covers";
 import { useTrackActions, type TrackButton } from "../composables/useTrackActions";
 import CoverImage from "./CoverImage.vue";
 import TrackMeta from "./TrackMeta.vue";
@@ -96,7 +96,7 @@ function onClick() {
       v-if="showCover"
       class="track-cover-sm"
       :src="coverUrl(track.cover_hash, 'small')"
-      :placeholder="hashToColors(track.file_hash)"
+      :placeholder="placeholderCoverColors(track.file_hash)"
     />
     <span v-if="showNumber" class="track-num">{{ track.track_number ?? '–' }}</span>
     <div class="track-info">

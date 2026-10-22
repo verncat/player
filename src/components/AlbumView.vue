@@ -2,9 +2,8 @@
 import { computed, ref, watch } from "vue";
 import type { Track } from "../types";
 import { fetchAlbumTracks } from "../api";
-import { hashToColors } from "../utils/rarity";
 import { artistLabel, hasArtistPage } from "../utils/artists";
-import { coverUrl } from "../utils/covers";
+import { coverUrl, placeholderCoverColors } from "../utils/covers";
 import { useTrackActions } from "../composables/useTrackActions";
 import PageHeader from "./PageHeader.vue";
 import TrackRow from "./TrackRow.vue";
@@ -61,7 +60,7 @@ const totalMinutes = computed(() =>
 const coverHash = computed(() => tracks.value.find((t) => t.cover_hash)?.cover_hash ?? null);
 const albumCoverUrl = computed(() => coverUrl(coverHash.value, 'medium'));
 const albumCoverFullUrl = computed(() => coverUrl(coverHash.value, 'full'));
-const coverGradient = computed(() => hashToColors(tracks.value[0]?.file_hash ?? null));
+const coverGradient = computed(() => placeholderCoverColors(tracks.value[0]?.file_hash ?? null));
 </script>
 
 <template>
