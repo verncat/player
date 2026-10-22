@@ -1,23 +1,18 @@
 import { computed, shallowRef } from 'vue';
+import { defaultTheme } from './themes/default';
+import { ACCENT_PRESETS, GRADIENT_PRESETS, resolveChoice, type ColorChoice } from './colorPresets';
 import { readableTextOn, type HexColor } from './utils/color';
 
-export type ThemeMode = 'dark';
-
-export interface Theme {
-  mode: ThemeMode;
-  accent: HexColor;
-}
-
-export const DEFAULT_THEME: Theme = { mode: 'dark', accent: '#1db954' };
+export type ThemeMode = 'dark' | 'light';
 
 /**
  * Each color is set on the document root as the CSS variable `--color-<name>`,
  * so styles use e.g. `var(--color-text-muted)`.
  */
 export interface ThemeColors {
-  /** Window background. */
+  /** Window background and sidebar. */
   bg: string;
-  /** Main content area and drawers, one step above the background. */
+  /** Main content area and drawers. */
   'bg-elevated': string;
   /** Cards and the player bar. */
   card: string;
@@ -37,6 +32,8 @@ export interface ThemeColors {
   border: string;
   /** Outlines of controls such as pill buttons and selects. */
   'border-strong': string;
+  /** Top of the home page header gradient (the content color when there is none). */
+  hero: string;
   accent: string;
   'accent-hover': string;
   /** Text and icons drawn on an accent background. */
@@ -57,46 +54,55 @@ export interface ThemeColors {
   'rarity-mythic': HexColor;
 }
 
-type AccentColor = 'accent' | 'on-accent';
-type ModePalette = Omit<ThemeColors, AccentColor>;
+type AccentColor = 'accent' | 'on-accent' | 'hero';
+export type ModePalette = Omit<ThemeColors, AccentColor>;
 
-// Accent shades are mixed from the chosen accent in CSS, so changing the
-// accent only needs `--color-accent` and `--color-on-accent` to be updated.
-const darkPalette: ModePalette = {
-  bg: '#000',
-  'bg-elevated': '#121212',
-  card: '#181818',
-  'card-hover': '#282828',
-  surface: '#282828',
-  'surface-hover': '#3e3e3e',
-  backdrop: 'rgb(0 0 0 / 85%)',
-  shadow: '#000',
-  text: '#fff',
-  'text-muted': '#a7a7a7',
-  'text-faint': '#777',
-  border: '#282828',
-  'border-strong': '#535353',
-  'accent-hover': 'color-mix(in srgb, var(--color-accent) 85%, white)',
-  'accent-text': 'color-mix(in srgb, var(--color-accent) 55%, white)',
-  danger: '#ff5252',
-  'danger-text': 'color-mix(in srgb, var(--color-danger) 60%, white)',
-  warning: '#ffa726',
-  info: '#4fc3f7',
-  'rarity-common': '#b0b0b0',
-  'rarity-uncommon': '#1db954',
-  'rarity-rare': '#4fc3f7',
-  'rarity-epic': '#ba68c8',
-  'rarity-legendary': '#ffa726',
-  'rarity-mythic': '#ff5252',
+export interface ThemeDefinition {
+  palettes: Record<ThemeMode, ModePalette>;
+  accent?: Record<ThemeMode, HexColor>;
+  gradient?: Record<ThemeMode, HexColor> | null;
+}
+
+export const activeDefinition = defaultTheme;
+
+export interface Theme {
+  mode: ThemeMode;
+  accent: ColorChoice;
+  gradient: ColorChoice | null;
+}
+
+export const DEFAULT_THEME: Theme = {
+  mode: 'dark',
+  accent: ACCENT_PRESETS[0].id,
+  gradient: GRADIENT_PRESETS[0].id,
 };
 
-const palettes: Record<ThemeMode, ModePalette> = { dark: darkPalette };
+export const userColorChoices = {
+  accent: activeDefinition.accent === undefined,
+  gradient: activeDefinition.gradient === undefined,
+};
+
+function accentColor(theme: Theme): HexColor {
+  return activeDefinition.accent?.[theme.mode]
+    ?? resolveChoice(ACCENT_PRESETS, theme.accent, theme.mode)
+    ?? ACCENT_PRESETS[0].colors[theme.mode];
+}
+
+function heroColor(theme: Theme): HexColor | null {
+  if (activeDefinition.gradient !== undefined) return activeDefinition.gradient?.[theme.mode] ?? null;
+  if (theme.gradient === null) return null;
+  return resolveChoice(GRADIENT_PRESETS, theme.gradient, theme.mode);
+}
 
 export function themeColors(theme: Theme): ThemeColors {
+  const palette = activeDefinition.palettes[theme.mode];
+  const accent = accentColor(theme);
+  const hero = heroColor(theme);
   return {
-    ...palettes[theme.mode],
-    accent: theme.accent,
-    'on-accent': readableTextOn(theme.accent),
+    ...palette,
+    accent,
+    'on-accent': readableTextOn(accent),
+    hero: hero ?? palette['bg-elevated'],
   };
 }
 
@@ -105,10 +111,14 @@ const activeTheme = shallowRef(DEFAULT_THEME);
 /** The applied theme's colors, for code that needs values instead of CSS variables. */
 export const activeThemeColors = computed(() => themeColors(activeTheme.value));
 
+export const activeThemeMode = computed(() => activeTheme.value.mode);
+
 export function applyTheme(theme: Theme) {
   activeTheme.value = theme;
+  const root = document.documentElement;
+  root.style.colorScheme = theme.mode;
   for (const [name, value] of Object.entries(themeColors(theme))) {
-    document.documentElement.style.setProperty(`--color-${name}`, value);
+    root.style.setProperty(`--color-${name}`, value);
   }
 }
 

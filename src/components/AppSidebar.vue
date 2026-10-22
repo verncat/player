@@ -76,6 +76,7 @@ const emit = defineEmits<{
 .sidebar {
   grid-row: 1 / 2;
   background: var(--color-bg);
+  border-right: 1px solid color-mix(in srgb, var(--color-shadow) 20%, transparent);
   padding: 20px 8px;
   display: flex;
   flex-direction: column;

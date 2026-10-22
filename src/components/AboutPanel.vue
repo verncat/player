@@ -134,7 +134,7 @@ button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3
 .contributors-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 12px; list-style: none; padding: 0; margin: 16px 0 0; }
 .contributor-link { display: flex; align-items: center; gap: 12px; padding: 16px; color: var(--color-text-muted); text-decoration: none; }
 .contributor-link:is(:hover, :active) { color: var(--color-text); }
-.contributor-avatar { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent-text); font-size: 16px; font-weight: 700; flex-shrink: 0; }
+.contributor-avatar { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: color-mix(in srgb, var(--color-accent) 15%, var(--color-surface)); color: var(--color-accent-text); font-size: 16px; font-weight: 700; flex-shrink: 0; }
 .contributor-avatar img { display: block; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .contributor-info { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .contributor-info strong { font-size: 14px; }

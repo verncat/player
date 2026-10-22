@@ -8,7 +8,12 @@ import { formatSampleRate } from '../utils/format';
 import SettingsToggle from './SettingsToggle.vue';
 import AppIcon from './AppIcon.vue';
 import AppSelect from './AppSelect.vue';
-import { activeThemeColors } from '../theme';
+import { activeThemeColors, userColorChoices } from '../theme';
+import { ACCENT_PRESETS, GRADIENT_PRESETS, isCustomColor } from '../colorPresets';
+import { THEME_MODE_OPTIONS, useTheme } from '../composables/useTheme';
+import CustomColorSwatch from './CustomColorSwatch.vue';
+import SegmentedControl from './SegmentedControl.vue';
+import SwatchPicker from './SwatchPicker.vue';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 
 const props = defineProps<{
@@ -94,6 +99,18 @@ const identityDirty = computed(() => !!config.value && (deviceName.value !== con
 const soulseekDirty = computed(() => !!config.value && (username.value !== config.value.soulseek_username || password.value !== config.value.soulseek_password));
 const soulseekEnabled = computed(() => config.value?.soulseek_enabled ?? false);
 const { preferences, reducedMotion, systemReducedMotion, storageError, setPreference } = useAppearance();
+const { preferences: themePreferences, theme, storageError: themeStorageError, setThemePreference } = useTheme();
+const NO_GRADIENT_SWATCH = 'linear-gradient(135deg, transparent 46%, var(--color-text-faint) 46% 54%, transparent 54%), var(--color-bg-elevated)';
+const accentOptions = computed(() => ACCENT_PRESETS.map((preset) => ({ value: preset.id, label: preset.label, background: preset.colors[theme.value.mode] })));
+const customAccent = computed(() => isCustomColor(themePreferences.accent) ? themePreferences.accent : null);
+const gradientOptions = computed(() => [
+  { value: null, label: 'No gradient', background: NO_GRADIENT_SWATCH },
+  ...GRADIENT_PRESETS.map((preset) => ({ value: preset.id, label: preset.label, background: preset.colors[theme.value.mode] })),
+]);
+const customGradient = computed(() => {
+  const gradient = themePreferences.gradient;
+  return gradient && isCustomColor(gradient) ? gradient : null;
+});
 
 async function loadConfig() {
   configLoading.value = true;
@@ -280,6 +297,16 @@ onMounted(() => { void loadConfig(); });
             <div class="preview-track" role="list" aria-label="Track rarity previews"><slot name="appearance-track" /></div>
           </div>
           <div class="settings-group"><div class="setting-row"><div><h4>Reduce motion</h4><p>{{ systemReducedMotion ? 'Enabled by your system preferences.' : 'Keep covers still and turn off decorative animations.' }}</p></div><SettingsToggle :model-value="reducedMotion" label="Reduce motion" :disabled="systemReducedMotion" @update:model-value="setPreference('reduceMotion', $event)" /></div><div class="setting-row"><div><h4>3D album cover</h4><p>{{ reducedMotion ? 'A still cover is used while reduced motion is on.' : 'Show the interactive album cover in now playing.' }}</p></div><SettingsToggle :model-value="preferences.album3d" label="3D album cover" :disabled="reducedMotion" @update:model-value="setPreference('album3d', $event)" /></div><div class="setting-row"><div><h4>Rarity animations</h4><p>{{ reducedMotion ? 'Animations are paused while reduced motion is on.' : 'Animate rare tracks while keeping their rarity colors.' }}</p></div><SettingsToggle :model-value="preferences.rarityAnimations" label="Rarity animations" :disabled="reducedMotion" @update:model-value="setPreference('rarityAnimations', $event)" /></div><p v-if="storageError" class="error" role="alert">{{ storageError }}</p></div>
+          <div class="settings-group">
+            <h3>Theme</h3>
+            <div class="setting-row"><div><h4>Mode</h4><p>Follow your system, or always use dark or light.</p></div><SegmentedControl :model-value="themePreferences.mode" :options="THEME_MODE_OPTIONS" label="Theme mode" @update:model-value="setThemePreference('mode', $event)" /></div>
+          </div>
+          <div v-if="userColorChoices.accent || userColorChoices.gradient" class="settings-group">
+            <h3>Colors</h3>
+            <div v-if="userColorChoices.accent" class="setting-row"><div><h4>Accent color</h4><p>Used for buttons, highlights and what's playing.</p></div><SwatchPicker :model-value="themePreferences.accent" :options="accentOptions" label="Accent color" @update:model-value="setThemePreference('accent', $event)"><CustomColorSwatch :color="customAccent" label="Custom accent color" @pick="setThemePreference('accent', $event)" /></SwatchPicker></div>
+            <div v-if="userColorChoices.gradient" class="setting-row"><div><h4>Background gradient</h4><p>A soft glow at the top of the page.</p></div><SwatchPicker :model-value="themePreferences.gradient" :options="gradientOptions" label="Background gradient" @update:model-value="setThemePreference('gradient', $event)"><CustomColorSwatch :color="customGradient" label="Custom gradient color" @pick="setThemePreference('gradient', $event)" /></SwatchPicker></div>
+            <p v-if="themeStorageError" class="error" role="alert">{{ themeStorageError }}</p>
+          </div>
         </template>
         <slot v-else-if="selected === 'about'" name="about" />
       </div>
@@ -294,7 +321,7 @@ p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 
 .settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; }
 .settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
 .settings-nav > button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
-.settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, transparent); color: var(--color-accent-text); }
+.settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
 .nav-copy { flex: 1; }
 .nav-description, .nav-chevron { display: none; }
@@ -334,7 +361,7 @@ fieldset { border: 0; padding: 0; margin: 22px 0 0; }
 legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
 .emoji-picker { display: flex; flex-wrap: wrap; gap: 8px; }
 .settings-panel .emoji-picker button { width: 38px; height: 38px; border-radius: 6px; padding: 0; font-size: 22px; border-color: transparent; }
-.settings-panel .emoji-picker button.chosen { background: color-mix(in srgb, var(--color-accent) 12%, transparent); border-color: var(--color-accent); }
+.settings-panel .emoji-picker button.chosen { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); border-color: var(--color-accent); }
 .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 .error { color: var(--color-danger-text); margin-top: 14px; overflow-wrap: anywhere; }
 .success { color: var(--color-accent-text); margin-top: 14px; }
@@ -397,7 +424,7 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .has-section .settings-panel { display: block; }
   .mobile-back { display: flex; gap: 10px; align-items: center; padding: 8px 0; margin-bottom: 10px; border: 0; border-radius: 3px; color: var(--color-text-muted); font-size: 14px; }
   .setting-row { align-items: flex-start; flex-wrap: wrap; gap: 14px; }
-  .setting-row > div { flex: 1; min-width: 180px; }
+  .setting-row > div:first-child { flex: 1; min-width: 180px; }
   .setting-row :deep(.settings-switch) { margin-top: 2px; }
   .folder-card { padding: 16px; }
   .settings-panel button:not(.settings-switch) { min-height: 40px; }

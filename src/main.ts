@@ -1,6 +1,6 @@
 import { createApp, type Directive } from "vue";
 import App from "./App.vue";
-import { applyTheme, DEFAULT_THEME } from "./theme";
+import { startTheme } from "./composables/useTheme";
 import "./styles/appearance.css";
 import "./styles/base.css";
 import "./styles/glass.css";
@@ -19,7 +19,7 @@ const horizontalScroll: Directive = {
   },
 };
 
-applyTheme(DEFAULT_THEME);
+startTheme();
 
 createApp(App)
   .directive("horizontal-scroll", horizontalScroll)

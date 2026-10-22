@@ -6797,7 +6797,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: linear-gradient(180deg, #4a2d8a 0%, #1f1b3a 30%, var(--color-bg-elevated) 58%);
+  background: linear-gradient(180deg, var(--color-hero) 0%, color-mix(in oklab, var(--color-hero) 33%, var(--color-bg-elevated)) 30%, var(--color-bg-elevated) 58%);
 }
 
 
@@ -6888,7 +6888,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   text-align: left;
 }
 .onboarding-music-card:focus-visible {
-  outline: 2px solid #8ff9df;
+  outline: 2px solid var(--color-accent);
   outline-offset: -2px;
 }
 .onboarding-action-cover {
