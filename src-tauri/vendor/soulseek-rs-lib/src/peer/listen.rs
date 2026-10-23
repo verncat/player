@@ -195,7 +195,13 @@ async fn handle_incoming_connection(stream: TcpStream, context: ConnectionContex
 
         ConnectionType::F => {
             // Pre-fetch the download token from the buffered data before spawn_blocking
-            let buffer = reader.get_buffer();
+            let mut buffer = reader.get_buffer();
+            // TCP may split PeerInit and the raw token into separate reads.
+            if buffer.len() < 4 {
+                let mut remaining = vec![0; 4 - buffer.len()];
+                if !matches!(tokio::time::timeout(PEER_INIT_TIMEOUT, stream.read_exact(&mut remaining)).await, Ok(Ok(_))) { return; }
+                buffer.extend_from_slice(&remaining);
+            }
             let Some(download_token) = parse_token_from_buffer(&buffer, &init_data.username) else {
                 error!(
                     "[listener:{}:{}] No download token in buffer for F connection",
@@ -218,6 +224,7 @@ async fn handle_incoming_connection(stream: TcpStream, context: ConnectionContex
                 );
                 return;
             };
+            if download.username != init_data.username { return; }
 
             let std_stream = stream.into_std().unwrap();
             spawn_direct_download(

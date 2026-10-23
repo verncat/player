@@ -15,6 +15,7 @@ import { THEME_MODE_OPTIONS, useTheme } from '../composables/useTheme';
 import CustomColorSwatch from './CustomColorSwatch.vue';
 import SegmentedControl from './SegmentedControl.vue';
 import SwatchPicker from './SwatchPicker.vue';
+import { useDiscordFriends } from '../composables/useDiscordFriends';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 
 const props = defineProps<{
@@ -72,6 +73,7 @@ const emit = defineEmits<{
 }>();
 
 const selected = computed(() => props.section ?? 'library');
+const social = useDiscordFriends();
 const sections = computed(() => SETTINGS_SECTIONS.filter((item) => item.id !== 'discord' || (props.discordReady && props.discordAvailable)));
 const sectionInfo = computed(() => SETTINGS_SECTIONS.find((section) => section.id === selected.value)!);
 const panel = ref<HTMLElement | null>(null);
@@ -314,6 +316,13 @@ onMounted(() => { void loadConfig(); });
             <p class="help">{{ discordConfigured ? 'Requires the Discord desktop app. Your activity is hidden while paused.' : 'Discord integration is not configured in this build.' }}</p>
             <div class="setting-row"><div><h4>Discord discovery</h4><p>Share your public key in Discord Rich Presence so other Players can recognize your profile.</p></div><SettingsToggle :model-value="discordDiscoveryEnabled" label="Discord discovery" :disabled="!discordConfigured" @update:model-value="emit('toggleDiscordDiscovery', $event)" /></div>
             <p v-if="discordError" class="error" role="alert">{{ discordError }}</p>
+            <div class="setting-row"><div><h4>Discord friends</h4><p>Connect Discord to match Player friends by their shared Profile ID and see what they are listening to.</p></div>
+              <button v-if="social.status.value.connected || social.status.value.connecting" :disabled="social.busy.value" @click="social.disconnect">Disconnect</button>
+              <button v-else :disabled="social.busy.value || !social.status.value.supported" @click="social.connect">Connect Discord</button>
+            </div>
+            <p v-if="!social.status.value.supported" class="help">Discord friends requires a build with the Discord Social SDK.</p>
+            <p v-else class="help">{{ social.status.value.connecting ? 'Approve the sign-in in Discord or your browser.' : social.status.value.connected ? 'Discord friends connected. Friends must enable Discord discovery in Player to share their current track.' : 'Optional. Sign in each session to allow Player to read your Discord friends and their Player activity.' }}</p>
+            <p v-if="social.error.value || social.status.value.error" class="error" role="alert">{{ social.error.value || social.status.value.error }}</p>
           </div>
         </template>
 

@@ -13,18 +13,71 @@ struct ChangelogEntry {
 }
 
 fn main() {
+    configure_discord_social();
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=DISCORD_CLIENT_ID");
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing CARGO_MANIFEST_DIR"));
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap_or(&manifest_dir).to_path_buf();
     configure_git_rerun(&repo_root);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("missing OUT_DIR"));
     let about_build_path = out_dir.join("about_build.rs");
-    fs::write(&about_build_path, render_about_build(&repo_root)).expect("failed to write about build metadata");
+    fs::write(&about_build_path, render_about_build(&repo_root))
+        .expect("failed to write about build metadata");
 
     tauri_build::build()
+}
+
+fn configure_discord_social() {
+    println!("cargo:rustc-check-cfg=cfg(discord_social_sdk)");
+    println!("cargo:rerun-if-env-changed=DISCORD_SOCIAL_SDK_PATH");
+    println!("cargo:rerun-if-changed=native/discord_social.cpp");
+    if env::var_os("CARGO_FEATURE_DISCORD_SOCIAL").is_none() {
+        return;
+    }
+    let Some(root) = env::var_os("DISCORD_SOCIAL_SDK_PATH").map(PathBuf::from) else {
+        return;
+    };
+    let target = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if !matches!(target.as_str(), "macos" | "windows" | "linux") {
+        return;
+    }
+    let include = root.join("include");
+    let mut lib = root.join("lib/release");
+    if target == "windows" && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        lib = lib.join("arm64");
+    }
+    assert!(
+        include.join("discordpp.h").exists(),
+        "DISCORD_SOCIAL_SDK_PATH must contain include/discordpp.h"
+    );
+    println!("cargo:rerun-if-changed={}", include.display());
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .include(include)
+        .file("native/discord_social.cpp");
+    if target == "windows" {
+        build.flag("/std:c++20");
+    } else {
+        build.flag("-std=c++20");
+    }
+    build.compile("player_discord_social");
+    println!("cargo:rustc-link-search=native={}", lib.display());
+    println!("cargo:rustc-link-lib=dylib=discord_partner_sdk");
+    // Development path. Release bundles must also ship the SDK runtime libraries.
+    if target != "windows" {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
+    }
+    if target == "macos" {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
+    }
+    if target == "linux" {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib/player");
+    }
+    println!("cargo:rustc-cfg=discord_social_sdk");
 }
 
 fn configure_git_rerun(repo_root: &Path) {

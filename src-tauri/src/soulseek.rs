@@ -119,7 +119,10 @@ impl SoulseekState {
 
         if inner.client.is_none() {
             if let Some(config) = desired {
-                inner.client = Some(Client::new(config.username, config.password));
+                let mut settings = soulseek_rs::ClientSettings::new(config.username, config.password);
+                settings.shared_files = 0;
+                settings.shared_folders = 0;
+                inner.client = Some(Client::with_settings(settings));
             }
         }
 

@@ -19,6 +19,7 @@ export interface FriendMessage {
   body: string;
   timestamp: number;
   state: 'received' | 'sending' | 'submitted' | 'unknown' | 'failed';
+  track_request: { id: string; title: string; artist: string; album: string; incoming: boolean; state: string; error: string } | null;
 }
 
 export interface FriendMessagePage {

@@ -9,6 +9,7 @@ pub mod peer;
 pub mod search_rate_limiter;
 pub mod token;
 pub mod types;
+pub mod uploads;
 #[macro_use]
 pub mod utils;
 

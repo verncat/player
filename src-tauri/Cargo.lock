@@ -3486,6 +3486,7 @@ version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "cc",
  "cpal",
  "discord-rich-presence",
  "encoding_rs",

@@ -33,6 +33,7 @@ pub struct ConnectedWorker {
     pub downloads: DownloadManager,
     /// All active searches keyed by token.
     pub searches: HashMap<SearchToken, Search>,
+    pub pending_uploads: Vec<(std::time::Instant, crate::uploads::Upload)>,
 }
 
 impl ConnectedWorker {
@@ -58,6 +59,14 @@ impl ConnectedWorker {
 
     async fn handle_operation(&mut self, op: ClientOperation) {
         match op {
+            ClientOperation::UploadFile(upload) => {
+                self.pending_uploads.retain(|(at, _)| at.elapsed() < std::time::Duration::from_secs(30));
+                if self.pending_uploads.len() < 32 {
+                    let _ = self.server_handle.send(ServerCommand::GetPeerAddress(upload.username.clone()));
+                    self.pending_uploads.push((std::time::Instant::now(), upload));
+                }
+            }
+
             // ── Server lifecycle ─────────────────────────────────────────────
             ClientOperation::ServerDisconnected => {
                 self.downloads.on_server_disconnected();
@@ -208,6 +217,23 @@ impl ConnectedWorker {
                     username, host, port, obfuscation_type, obfuscated_port
                 );
 
+                let mut index = 0;
+                while index < self.pending_uploads.len() {
+                    if self.pending_uploads[index].1.username == username {
+                        let (at, upload) = self.pending_uploads.swap_remove(index);
+                        if at.elapsed() < std::time::Duration::from_secs(30) {
+                            let host = host.clone();
+                            let own_username = self.own_username.clone();
+                            let cancel = self.cancellation_token.clone();
+                            tokio::spawn(async move { tokio::select! {
+                                _ = cancel.cancelled() => {},
+                                result = crate::uploads::send(upload, host, port, own_username) => {
+                                    if result.is_err() { crate::debug!("Approved upload failed"); }
+                                }
+                            }});
+                        }
+                    } else { index += 1; }
+                }
                 let peer_exists = self.context.peer_registry.contains(&username);
 
                 if !peer_exists {

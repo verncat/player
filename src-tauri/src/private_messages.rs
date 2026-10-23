@@ -10,6 +10,7 @@ pub struct ChatMessage {
     body: String,
     timestamp: i64,
     state: String,
+    track_request: Option<crate::track_requests::TrackRequest>,
 }
 
 #[derive(Serialize)]
@@ -28,6 +29,7 @@ pub struct MessagePage {
 }
 
 pub(crate) fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
+    crate::track_requests::init_schema(conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS friend_chat_accounts (
             owner_id TEXT NOT NULL, friend_id TEXT NOT NULL, username TEXT NOT NULL,
@@ -51,11 +53,16 @@ pub(crate) fn receive(
     account: &str,
     message: &UserMessage,
 ) -> rusqlite::Result<()> {
-    conn.execute(
+    let transaction = conn.unchecked_transaction()?;
+    let inserted = transaction.execute(
         "INSERT INTO soulseek_messages (owner_id, account, username, direction, body, timestamp, state, server_id)
          VALUES (?1, ?2, ?3, 'incoming', ?4, ?5, 'received', ?6) ON CONFLICT DO NOTHING",
         params![owner, account, message.username, message.message, message.timestamp, message.id],
     )?;
+    if inserted > 0 {
+        crate::track_requests::receive(&transaction, owner, account, message)?;
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -82,7 +89,7 @@ fn friend_accounts(
     Ok((friend, usernames))
 }
 
-fn authorize_target(
+pub(crate) fn authorize_target(
     conn: &Connection,
     owner: &str,
     friend_id: &str,
@@ -109,10 +116,14 @@ fn read_page(
         .query_map(
             params![owner, account, username, before_id.unwrap_or(i64::MAX)],
             |row| {
+                let body: String = row.get(2)?;
+                let track_request =
+                    crate::track_requests::message_card(conn, owner, account, username, &body)?;
                 Ok(ChatMessage {
                     id: row.get(0)?,
                     direction: row.get(1)?,
-                    body: row.get(2)?,
+                    body: crate::track_requests::display_body(&body),
+                    track_request,
                     timestamp: row.get(3)?,
                     state: row.get(4)?,
                 })

@@ -42,6 +42,8 @@ const SUPPORTED: bool = cfg!(all(
 
 #[derive(Default)]
 pub struct DiscordPresenceState {
+    pub social: crate::discord_social::SocialState,
+    latest: std::sync::Mutex<LatestPresence>,
     #[cfg(all(
         feature = "discord-rpc",
         any(target_os = "macos", target_os = "windows", target_os = "linux")
@@ -49,8 +51,63 @@ pub struct DiscordPresenceState {
     worker: desktop::Worker,
 }
 
+#[derive(Default)]
+struct LatestPresence {
+    enabled: bool,
+    playback: Option<PlaybackPresence>,
+    received: Option<std::time::Instant>,
+}
+impl LatestPresence {
+    fn snapshot(&self) -> (bool, Option<PlaybackPresence>) {
+        let mut playback = self.playback.clone();
+        if let Some(p) = playback.as_mut().filter(|p| p.playing) {
+            p.position += self
+                .received
+                .map(|at| at.elapsed().as_secs_f64())
+                .unwrap_or_default();
+            if p.duration.is_finite() && p.duration > 0. {
+                p.position = p.position.min(p.duration);
+            }
+        }
+        (self.enabled, playback)
+    }
+}
+
 impl DiscordPresenceState {
+    pub fn connect_social(&self) -> Result<(), String> {
+        if !cfg!(discord_social_sdk) {
+            return Err("This build does not include the Discord Social SDK.".into());
+        }
+        let id = client_id()
+            .and_then(|id| id.parse().ok())
+            .ok_or("Discord application is not configured")?;
+        // One adapter owns Rich Presence at a time. Connecting the SDK can clear legacy RPC.
+        #[cfg(all(
+            feature = "discord-rpc",
+            any(target_os = "macos", target_os = "windows", target_os = "linux")
+        ))]
+        if let Some(id) = client_id() {
+            self.worker.update(id, false, None)?;
+        }
+        self.social.connect(id)?;
+        let (enabled, playback) = self.latest.lock().map_err(|e| e.to_string())?.snapshot();
+        self.social.update(enabled, playback);
+        Ok(())
+    }
+    pub fn disconnect_social(&self) -> Result<(), String> {
+        self.social.disconnect();
+        #[cfg(all(
+            feature = "discord-rpc",
+            any(target_os = "macos", target_os = "windows", target_os = "linux")
+        ))]
+        if let Some(id) = client_id() {
+            let (enabled, playback) = self.latest.lock().map_err(|e| e.to_string())?.snapshot();
+            self.worker.update(id, enabled, playback)?;
+        }
+        Ok(())
+    }
     pub fn shutdown(&self) {
+        self.social.disconnect();
         #[cfg(all(
             feature = "discord-rpc",
             any(target_os = "macos", target_os = "windows", target_os = "linux")
@@ -81,6 +138,19 @@ pub fn discord_update_presence(
         } else {
             None
         };
+    }
+    *state.latest.lock().map_err(|e| e.to_string())? = LatestPresence {
+        enabled,
+        playback: playback.clone(),
+        received: Some(std::time::Instant::now()),
+    };
+    if state
+        .social
+        .active
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        state.social.update(enabled, playback);
+        return Ok(());
     }
     #[cfg(all(
         feature = "discord-rpc",
@@ -430,7 +500,10 @@ mod desktop {
                 self.last_title = p.title.clone();
                 let assets = serde_json::to_value(activity_assets(p)).unwrap();
                 self.last_large_text = assets["large_text"].as_str().unwrap().into();
-                self.last_small_url = assets.get("small_url").and_then(|url| url.as_str()).map(str::to_owned);
+                self.last_small_url = assets
+                    .get("small_url")
+                    .and_then(|url| url.as_str())
+                    .map(str::to_owned);
                 if self.fail {
                     Err("disconnected".into())
                 } else {
@@ -499,7 +572,10 @@ mod desktop {
             d.playback.as_mut().unwrap().discovery_public_key = Some("public-key".into());
             let mut engine = Engine::new(Fake::default());
             engine.tick(&d, now, 100_000);
-            assert_eq!(engine.transport.last_small_url.as_deref(), Some("adhd://v1/public-key"));
+            assert_eq!(
+                engine.transport.last_small_url.as_deref(),
+                Some("adhd://v1/public-key")
+            );
             assert_eq!(engine.transport.last_large_text, "Album");
             d.version += 1;
             d.playback.as_mut().unwrap().discovery_public_key = None;

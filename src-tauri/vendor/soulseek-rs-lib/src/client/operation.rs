@@ -32,6 +32,7 @@ pub enum ClientOperation {
     // ── Download events ───────────────────────────────────────────────────────
     /// Initiate or queue a download; routed by ConnectedWorker.
     RequestDownload(Download),
+    UploadFile(crate::uploads::Upload),
     DownloadFromPeer(PeerTransferToken, Peer, bool),
     UpdateDownloadTokens(Transfer, String),
     /// Peer told us our position in their upload queue; transitions download to QueuedRemotely.

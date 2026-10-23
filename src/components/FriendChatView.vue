@@ -2,10 +2,15 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import AppIcon from './AppIcon.vue';
+import { useDiscordFriends } from '../composables/useDiscordFriends';
 import ResponsivePopup from './ResponsivePopup.vue';
 import type { FriendChat, FriendMessage, FriendMessagePage, FriendProfile } from '../types/friends';
 
 const props = defineProps<{ profileId: string }>();
+const discord = useDiscordFriends();
+const discordFriend = computed(() => discord.byProfile.value.get(props.profileId));
+const trackBusy = ref(false);
+const pendingTrack = computed(() => messages.value.some(message => message.track_request && !message.track_request.incoming && message.track_request.state === 'requested'));
 const emit = defineEmits<{ loaded: [friend: FriendProfile]; openSoulseekSettings: [] }>();
 const chat = ref<FriendChat | null>(null);
 const loading = ref(true);
@@ -139,6 +144,26 @@ async function send() {
     }
   } finally { sending.value = false; }
 }
+async function requestTrack() {
+  if (!chat.value || !selectedUser.value || trackBusy.value) return;
+  const current = generation;
+  trackBusy.value = true; messageError.value = '';
+  try {
+    await invoke('request_friend_track', { profileId: props.profileId, account: chat.value.account, username: selectedUser.value });
+    if (!disposed && current === generation) { await fetchMessages(current); await scrollBottom(); }
+  } catch (cause) { if (!disposed && current === generation) messageError.value = String(cause); }
+  finally { trackBusy.value = false; }
+}
+async function respondTrack(id: string, accept: boolean) {
+  if (!chat.value || trackBusy.value) return;
+  const current = generation;
+  trackBusy.value = true; messageError.value = '';
+  try {
+    await invoke('respond_friend_track', { profileId: props.profileId, account: chat.value.account, username: selectedUser.value, requestId: id, accept });
+  } catch (cause) { if (!disposed && current === generation) messageError.value = String(cause); }
+  finally { trackBusy.value = false; if (!disposed && current === generation) await fetchMessages(current); }
+}
+const requestStateLabel = (state: string) => ({ requested: 'Waiting for approval', approving: 'Preparing track...', shared: 'Shared for this request', declined: 'Declined', ready: 'Starting download...', downloading: 'Downloading...', completed: 'Added to your library', failed: 'Request failed', expired: 'Request expired' }[state] || state);
 function composerKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send(); }
 }
@@ -174,10 +199,11 @@ onUnmounted(() => {
     <div v-else-if="error" class="chat-empty"><p role="alert">{{ error }}</p><button class="chat-action" @click="loadContext">Try again</button></div>
     <template v-else-if="chat">
       <div class="chat-toolbar">
-        <div class="chat-avatar" aria-hidden="true">{{ [...chat.friend.name][0]?.toUpperCase() || '' }}<AppIcon v-if="!chat.friend.name" name="friends" :size="24" /></div>
+        <div class="chat-avatar" aria-hidden="true"><img v-if="discordFriend?.avatar" :src="discordFriend.avatar" alt="" referrerpolicy="no-referrer" /><template v-else>{{ [...chat.friend.name][0]?.toUpperCase() || '' }}<AppIcon v-if="!chat.friend.name" name="friends" :size="24" /></template></div>
         <div class="chat-identity">
           <span class="chat-service">Soulseek PM</span>
           <span class="chat-profile-id">{{ chat.friend.profile_id }}</span>
+          <span v-if="discordFriend" class="chat-discord-name">Discord: {{ discordFriend.name }}</span>
         </div>
         <ResponsivePopup :open="accountMenu" panel-class="chat-account-popup" @close="accountMenu = false">
           <template #trigger>
@@ -190,6 +216,10 @@ onUnmounted(() => {
           </div>
         </ResponsivePopup>
         <button class="chat-icon-button" title="Find Soulseek accounts" aria-label="Find Soulseek accounts" :disabled="refreshing || sending" @click="findAccounts"><AppIcon name="refresh" :size="18" /></button>
+      </div>
+      <div v-if="discordFriend?.track" class="chat-listening">
+        <AppIcon name="playback" :size="22" /><div><span class="chat-listening-label">Listening on Player</span><strong>{{ discordFriend.track.title }}</strong><span>{{ discordFriend.track.artist }}<template v-if="discordFriend.track.album"><br />{{ discordFriend.track.album }}</template></span></div>
+        <button class="chat-action" :disabled="trackBusy || pendingTrack || !selectedUser || !chat.enabled || !chat.configured" @click="requestTrack">{{ pendingTrack ? 'Requested' : 'Request track' }}</button>
       </div>
       <p v-if="!chat.enabled || !chat.configured" class="chat-notice">Enable and configure Soulseek to send and receive messages. <a href="#" @click.prevent="emit('openSoulseekSettings')">Open settings</a></p>
       <p v-else-if="selectedUser" class="chat-account-note">Chatting with {{ selectedUser }} as {{ chat.account }}. This Soulseek account is unverified.</p>
@@ -209,7 +239,18 @@ onUnmounted(() => {
           <template v-for="(message, index) in messages" :key="message.id">
             <div v-if="index === 0 || dateLabel(message.timestamp) !== dateLabel(messages[index - 1].timestamp)" class="chat-date">{{ dateLabel(message.timestamp) }}</div>
             <article class="chat-message" :class="{ outgoing: message.direction === 'outgoing', unconfirmed: message.state === 'unknown' }" :aria-label="message.direction === 'outgoing' ? 'Message from you' : `Message from ${selectedUser}`">
-              <p>{{ message.body }}</p>
+              <template v-if="message.track_request">
+                <span class="chat-listening-label">{{ message.track_request.incoming ? 'Track request' : 'You requested a track' }}</span>
+                <p><strong>{{ message.track_request.title }}</strong><br />{{ message.track_request.artist }}</p>
+                <p v-if="message.track_request.incoming && message.track_request.state === 'requested'" class="chat-share-note">Accept to share this audio file with {{ selectedUser }} through Soulseek. The share expires after 10 minutes.</p>
+                <div v-if="message.track_request.incoming && message.track_request.state === 'requested'" class="chat-request-actions">
+                  <button class="chat-action" :disabled="trackBusy || !chat.enabled || !chat.configured" @click="respondTrack(message.track_request.id, true)">Accept and share</button>
+                  <button class="chat-action" :disabled="trackBusy || !chat.enabled || !chat.configured" @click="respondTrack(message.track_request.id, false)">Decline</button>
+                </div>
+                <p v-else class="chat-share-note">{{ requestStateLabel(message.track_request.state) }}</p>
+                <p v-if="message.track_request.error" class="chat-error">{{ message.track_request.error }}</p>
+              </template>
+              <p v-else>{{ message.body }}</p>
               <div class="chat-message-meta"><time :datetime="new Date(message.timestamp * 1000).toISOString()">{{ timeLabel(message.timestamp) }}</time><span v-if="stateLabel(message)">{{ stateLabel(message) }}</span></div>
             </article>
           </template>
@@ -233,6 +274,15 @@ onUnmounted(() => {
 .chat-account-list button:focus-visible { outline: 2px solid #1db954; outline-offset: -2px; }
 </style>
 <style scoped>
+.chat-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.chat-discord-name { color: #a7a7a7; font-size: 12px; }
+.chat-listening { display: flex; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,.1); color: #8de2a7; }
+.chat-listening > div { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 4px; }
+.chat-listening strong { color: #fff; font-size: 14px; overflow-wrap: anywhere; }
+.chat-listening > div > span:last-child { color: #a7a7a7; font-size: 13px; }
+.chat-listening-label { display: block; color: #a7a7a7; font-size: 11px; margin-bottom: 4px; }
+.chat-message p.chat-share-note { color: #a7a7a7; font-size: 12px; line-height: 1.6; margin-top: 8px; }
+.chat-request-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .friend-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; margin: 0; color: #fff; }
 .chat-toolbar { display: flex; align-items: center; gap: 14px; padding: 8px 0 16px; border-bottom: 1px solid rgba(255,255,255,.1); }
 .chat-avatar { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(29,185,84,.12); color: #8de2a7; font-size: 20px; font-weight: 600; flex-shrink: 0; }

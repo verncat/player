@@ -12,6 +12,8 @@ pub mod library;
 pub mod playback;
 pub mod profile;
 pub mod private_messages;
+pub mod track_requests;
+pub mod discord_social;
 pub mod soulseek;
 pub mod sync;
 
@@ -188,6 +190,7 @@ pub fn run() {
             app.manage(sync::SyncState::new(sync_enabled));
             if !demo_mode {
                 soulseek::start_profile_discovery(app.handle().clone());
+                track_requests::start(app.handle().clone());
                 // Auto-start discovery
                 let _ = discovery::discovery_start(
                     app.state::<discovery::DiscoveryState>(),
@@ -248,6 +251,8 @@ pub fn run() {
             private_messages::get_friend_chat,
             private_messages::get_friend_messages,
             private_messages::send_friend_message,
+            track_requests::request_friend_track,
+            track_requests::respond_friend_track,
             profile::local_profile_info,
             profile::local_profile_private_key,
             profile::profile_pairing_allow,
@@ -273,6 +278,9 @@ pub fn run() {
             about::about_do_update,
             discord_presence::discord_availability,
             discord_presence::discord_update_presence,
+            discord_social::discord_social_status,
+            discord_social::discord_social_connect,
+            discord_social::discord_social_disconnect,
             playback::playback_play,
             playback::playback_play_track,
             playback::playback_play_absolute,

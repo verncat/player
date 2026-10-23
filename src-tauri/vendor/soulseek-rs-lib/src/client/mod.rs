@@ -39,6 +39,7 @@ pub use settings::*;
 #[derive(Clone)]
 pub struct Client {
     settings: ClientSettings,
+    upload_shares: crate::uploads::UploadShares,
     connect_lock: Arc<tokio::sync::Mutex<()>>,
     private_message_handler: crate::actor::server_actor::SharedMessageHandler,
     /// Single lock for all mutable state.
@@ -77,6 +78,7 @@ impl Client {
 
         Self {
             settings,
+            upload_shares: Default::default(),
             connect_lock: Arc::new(tokio::sync::Mutex::new(())),
             private_message_handler: Default::default(),
             inner: Arc::new(Mutex::new(ClientInner {
@@ -126,6 +128,7 @@ impl Client {
                 self.settings.shared_folders,
                 self.settings.shared_files,
             );
+            peer_registry.set_upload_shares(self.upload_shares.clone());
             Arc::new(ClientContext::new(peer_registry))
         };
 
@@ -180,6 +183,7 @@ impl Client {
                 pre_downloads,
             ),
             searches: HashMap::new(),
+            pending_uploads: Vec::new(),
         };
         tokio::spawn(async move { worker.run().await });
 
@@ -253,7 +257,10 @@ impl Client {
             .map_err(|_| SoulseekRs::Timeout)?.map_err(|_| SoulseekRs::ConnectionClosed)?
     }
 
+    pub fn upload_shares(&self) -> crate::uploads::UploadShares { self.upload_shares.clone() }
+
     pub fn disconnect(&self) {
+        self.upload_shares.clear();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(active) = inner.active.take() { active.actor_system.shutdown(); }
         inner.state = ClientState::Disconnected;
