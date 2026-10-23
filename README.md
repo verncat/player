@@ -152,6 +152,8 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 
 ### Sync, discovery, and remote playback
 
+Devices can share a local profile without an account or a primary player. On an existing device choose **Allow linking** in Devices. On the new device choose **Use profile** next to it, compare the code, and confirm on both screens. The profile key is transferred over an encrypted session; each installation keeps its own device UUID. Music sync remains a separate action.
+
 - Peer discovery over mDNS.
 - Local network sync of files, metadata, playlists, and history between devices.
 - Merkle-style reconciliation, so a sync only transfers what changed.
@@ -299,6 +301,18 @@ connections only and starts collecting on demand. Trigger **Reindex** in the app
 to capture directory walking, database lock waits, metadata and cover reads,
 file hashing, SQLite writes, CUE indexing, stale cleanup, and watcher batches.
 
+### Test a friend over Soulseek
+
+Run an isolated echo bot with a separate Player profile and Soulseek account:
+
+```bash
+pnpm soulseek:test-friend --allow YOUR_SOULSEEK_USERNAME
+```
+
+The bot prints a Test Profile ID to add in Friends. It publishes that ID as a Soulseek interest and replies only to the account passed with `--allow`. It uses the same Soulseek library as Player, shares no files and stops after ten minutes or 50 replies. Replies are limited to ten per minute. Credentials and the profile key stay in a private temporary directory outside the repository; use the printed path with `--state-dir PATH` to reuse the same identity. Nothing is written to the regular Player profile or database.
+
+Use `--help` for runtime limits and the local test server option. Ctrl+C stops the bot and attempts to remove its discovery marker. An uncertain send is not retried automatically.
+
 ### Build desktop app
 
 Native builds compile libopus from source (see Prerequisites), so no separate
@@ -318,6 +332,21 @@ Run `pnpm contributors:sync` to refresh the snapshot separately. The script uses
 `GITHUB_TOKEN` or `GH_TOKEN` for authenticated API requests. Release builds pass
 the GitHub Actions token automatically. Tokens are never included in the credits
 or sent when downloading avatars.
+
+### Discord friends and track requests
+
+Discord friends is optional. Download the official Discord Social SDK from the Discord Developer Portal and extract it outside the repository. Point the build at its discord_social_sdk directory:
+
+```sh
+DISCORD_SOCIAL_SDK_PATH=/path/to/discord_social_sdk pnpm tauri dev
+DISCORD_SOCIAL_SDK_PATH=/path/to/discord_social_sdk pnpm tauri build
+```
+
+The Tauri wrapper includes the SDK runtime libraries in desktop bundles. Builds without this variable retain legacy Rich Presence and do not require SDK libraries. Disable both Discord adapters with Cargo --no-default-features. A fork must use its own public Discord Application ID and OAuth configuration.
+
+In Settings, Discord RPC, use Connect Discord and approve the sign-in. Friends who enable Discord Rich Presence and Discord discovery in Player can appear with their avatar and current track. Discovered Player profiles can be saved with Add friend. OAuth tokens are kept in memory, so reconnect after restarting Player.
+
+For track requests, both players must save each other and discover their Soulseek accounts. Open the friend chat and select Request track. The recipient accepts or declines in the chat. Acceptance shares only the matching local audio file for ten minutes; the requester downloads, verifies and adds it to the library. CUE segments and ambiguous metadata matches are unsupported. The downloader currently needs a reachable Soulseek listening port. See [DESIGN.md](./DESIGN.md) for protocol and trust boundaries.
 
 ### Android
 

@@ -11,10 +11,13 @@ export interface PlaybackPresence {
 }
 
 const STORAGE_KEY = 'player.discord-presence';
+const DISCOVERY_STORAGE_KEY = 'player.discord-discovery';
+type PresenceUpdate = { enabled: boolean; discoveryEnabled: boolean; playback: PlaybackPresence | null };
 
 /** Playback adapter only: the integration can later move behind a plugin boundary. */
-export function useDiscordPresence(playback: () => PlaybackPresence | null) {
+export function useDiscordPresence(playback: () => PlaybackPresence | null, profilePublicKey: () => string | null = () => null) {
   const enabled = ref(false);
+  const discoveryEnabled = ref(false);
   const available = ref(false);
   const configured = ref(false);
   const ready = ref(false);
@@ -22,11 +25,12 @@ export function useDiscordPresence(playback: () => PlaybackPresence | null) {
   const updateError = ref('');
   const error = computed(() => storageError.value || updateError.value);
   let disposed = false;
-  let last: { enabled: boolean; playback: PlaybackPresence | null; at: number } | null = null;
-  let pending: { enabled: boolean; playback: PlaybackPresence | null } | null = null;
+  let last: (PresenceUpdate & { profileKey: string | null; at: number }) | null = null;
+  let pending: PresenceUpdate | null = null;
   let sending = false;
 
   try { enabled.value = localStorage.getItem(STORAGE_KEY) === 'true'; } catch { /* Keep disabled if storage is unavailable. */ }
+  try { discoveryEnabled.value = localStorage.getItem(DISCOVERY_STORAGE_KEY) === 'true'; } catch { /* Discovery is opt-in. */ }
 
   async function flush() {
     if (sending) return;
@@ -51,8 +55,9 @@ export function useDiscordPresence(playback: () => PlaybackPresence | null) {
     if (!ready.value || !available.value || !configured.value || disposed) return;
     const snapshot = enabled.value ? playback() : null;
     const current = snapshot?.playing ? snapshot : null;
+    const profileKey = discoveryEnabled.value ? profilePublicKey() : null;
     const now = performance.now();
-    if (last && last.enabled === enabled.value) {
+    if (last && last.enabled === enabled.value && last.discoveryEnabled === discoveryEnabled.value && last.profileKey === profileKey) {
       if (!last.playback && !current) return;
       if (last.playback && current) {
         const previous = last.playback;
@@ -61,8 +66,8 @@ export function useDiscordPresence(playback: () => PlaybackPresence | null) {
           && previous.duration === current.duration && Math.abs(expectedPosition - current.position) < 2) return;
       }
     }
-    last = { enabled: enabled.value, playback: current ? { ...current } : null, at: now };
-    pending = { enabled: enabled.value, playback: last.playback };
+    last = { enabled: enabled.value, discoveryEnabled: discoveryEnabled.value, profileKey, playback: current ? { ...current } : null, at: now };
+    pending = { enabled: enabled.value, discoveryEnabled: discoveryEnabled.value, playback: last.playback };
     void flush();
   }
 
@@ -80,7 +85,20 @@ export function useDiscordPresence(playback: () => PlaybackPresence | null) {
     }
   }
 
-  watch([enabled, playback], publish);
+  function setDiscoveryEnabled(value: boolean) {
+    try {
+      if (!value) discoveryEnabled.value = false;
+      localStorage.setItem(DISCOVERY_STORAGE_KEY, String(value));
+      discoveryEnabled.value = value;
+      storageError.value = '';
+      publish();
+    } catch {
+      storageError.value = 'Could not save Discord preferences on this device.';
+      if (!value) publish();
+    }
+  }
+
+  watch([enabled, discoveryEnabled, playback, profilePublicKey], publish);
   onMounted(async () => {
     try {
       const status = await invoke<{ supported: boolean; configured: boolean }>('discord_availability');
@@ -102,5 +120,5 @@ export function useDiscordPresence(playback: () => PlaybackPresence | null) {
       void invoke('discord_update_presence', { enabled: false, playback: null }).catch(() => {});
     }
   });
-  return { enabled, available, configured, ready, error, setEnabled };
+  return { enabled, discoveryEnabled, available, configured, ready, error, setEnabled, setDiscoveryEnabled };
 }

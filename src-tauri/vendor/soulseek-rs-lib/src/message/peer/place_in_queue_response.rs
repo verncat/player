@@ -9,7 +9,7 @@ pub struct PlaceInQueueResponse;
 
 impl MessageHandler<PeerSignal> for PlaceInQueueResponse {
     fn get_code(&self) -> u32 {
-        43
+        44
     }
 
     fn handle(&self, message: &mut Message, sender: UnboundedSender<PeerSignal>) {

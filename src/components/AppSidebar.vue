@@ -17,6 +17,7 @@ const emit = defineEmits<{
   navigatePlaylists: [];
   navigateSmartPlaylists: [];
   navigateDiscovery: [];
+  navigateFriends: [];
   navigateSettings: [];
 }>();
 </script>
@@ -60,6 +61,10 @@ const emit = defineEmits<{
         Devices
         <span v-if="syncActive" class="nav-sync-spinner" aria-label="Sync in progress" />
         <span v-else-if="peersCount" class="peer-badge">{{ peersCount }}</span>
+      </a>
+      <a class="nav-item" :class="{ active: activeNav === 'friends' || activeNav === 'friend' }" @click.prevent="emit('navigateFriends')" href="#">
+        <AppIcon name="friends" :size="22" />
+        Friends
       </a>
     </nav>
     <nav class="sidebar-settings">

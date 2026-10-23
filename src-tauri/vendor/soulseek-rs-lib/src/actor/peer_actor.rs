@@ -28,6 +28,8 @@ pub enum PeerCommand {
 
 pub(crate) enum PeerSignal {
     ProcessRead,
+    UploadRequested(String),
+    UploadDenied(String),
     ConnectionEstablished(TcpStream),
     ConnectionFailed(io::Error),
     SendMessage(Message),
@@ -60,6 +62,7 @@ pub struct PeerActor {
     needs_handshake: bool,
     shared_folders: u32,
     shared_files: u32,
+    pub(crate) upload_shares: crate::uploads::UploadShares,
 }
 
 impl PeerActor {
@@ -94,12 +97,15 @@ impl PeerActor {
             needs_handshake,
             shared_folders,
             shared_files,
+            upload_shares: Default::default(),
         }
     }
 
     fn initialize_dispatcher(&mut self) {
         let mut handlers = Handlers::new();
         handlers.register_handler(FileSearchResponse);
+        handlers.register_handler(crate::uploads::QueueUpload);
+        handlers.register_handler(crate::uploads::UploadDenied);
         handlers.register_handler(TransferRequest);
         handlers.register_handler(TransferResponse);
         handlers.register_handler(GetShareFileList {
@@ -147,6 +153,14 @@ impl PeerActor {
 
     fn handle_signal(&mut self, sig: PeerSignal) {
         match sig {
+            PeerSignal::UploadDenied(alias) => { let _ = self.client_channel.send(ClientOperation::UploadFailed(self.peer.username.clone(), SoulseekPath::from_wire(alias))); }
+            PeerSignal::UploadRequested(alias) => {
+                if let Some((token, size)) = self.upload_shares.offer(&self.peer.username, &alias) {
+                    self.send_message(Message::new().write_int32(40).write_int32(1).write_int32(token).write_string(&alias).write_int64(size).clone());
+                } else {
+                    self.send_message(Message::new().write_int32(50).write_string(&alias).write_string("File not shared").clone());
+                }
+            }
             PeerSignal::SendMessage(message) => {
                 self.send_message(message);
             }
@@ -174,6 +188,10 @@ impl PeerActor {
                 allowed,
                 reason,
             } => {
+                if let Some(upload) = self.upload_shares.take(&self.peer.username, token.0) {
+                    if allowed { let _ = self.client_channel.send(ClientOperation::UploadFile(upload)); }
+                    return;
+                }
                 let _username = self.peer.username.clone();
                 debug!(
                     "[peer:{}] transfer response token: {} allowed: {}",
@@ -449,11 +467,15 @@ impl PeerActor {
         };
 
         if self.needs_handshake {
-            let handshake_msg = MessageFactory::build_pierce_firewall_message(token.0);
+            let handshake_msg = if token.0 == 0 {
+                MessageFactory::build_peer_init_message(&self.own_username, crate::peer::ConnectionType::P, 0)
+            } else {
+                MessageFactory::build_pierce_firewall_message(token.0)
+            };
             match stream.try_write(&handshake_msg.get_buffer()) {
                 Ok(_) => {
                     debug!(
-                        "[peer:{}] Sent PierceFireWall handshake (token={})",
+                        "[peer:{}] Sent peer handshake (token={})",
                         _username, token
                     );
                 }

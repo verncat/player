@@ -29,6 +29,9 @@ const BROWSE_RESTART_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Serialize, PartialEq)]
 pub struct Peer {
+    pub device_id: Option<String>, // Stable installation UUID, absent on older peers.
+    pub user_id: Option<String>,
+    pub profile_public_key: Option<String>,
     pub name: String,  // instance name (human-readable hostname)
     pub host: String,  // resolved hostname or IP
     pub port: u16,
@@ -109,6 +112,9 @@ fn fetch_remote_status(host: &str, port: u16) -> Option<crate::sync::DeviceStatu
         if let Ok(status) = resp.json::<crate::sync::TracksResponse>() {
             return Some(crate::sync::DeviceStatusResponse {
                 version: status.version,
+                device_id: status.device_id,
+                user_id: status.user_id,
+                profile_public_key: status.profile_public_key,
                 device_name: status.device_name,
                 device_emoji: status.device_emoji,
                 playback: None,
@@ -121,6 +127,11 @@ fn fetch_remote_status(host: &str, port: u16) -> Option<crate::sync::DeviceStatu
 
 fn apply_remote_status(peer: &Peer, status: crate::sync::DeviceStatusResponse) -> Peer {
     let mut updated = peer.clone();
+    if status.device_id.is_some() {
+        updated.device_id = status.device_id;
+    }
+    updated.user_id = status.user_id;
+    updated.profile_public_key = status.profile_public_key;
     if status.device_name.is_some() {
         updated.device_name = status.device_name;
     }
@@ -253,6 +264,9 @@ pub fn discovery_start(
                     let remote_status = fetch_remote_status(&host, port);
 
                     let peer = apply_remote_status(&Peer {
+                        device_id: None,
+                        user_id: None,
+                        profile_public_key: None,
                         name: hostname,
                         host,
                         port,
@@ -262,6 +276,9 @@ pub fn discovery_start(
                         playback: None,
                     }, remote_status.unwrap_or(crate::sync::DeviceStatusResponse {
                         version: String::new(),
+                        device_id: None,
+                        user_id: None,
+                        profile_public_key: None,
                         device_name: None,
                         device_emoji: None,
                         playback: None,

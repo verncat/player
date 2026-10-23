@@ -5,10 +5,15 @@ mod audio_codecs;
 pub mod demo;
 pub mod discovery;
 pub mod discord_presence;
+pub mod friends;
 pub mod identify;
 pub mod import;
 pub mod library;
 pub mod playback;
+pub mod profile;
+pub mod private_messages;
+pub mod track_requests;
+pub mod discord_social;
 pub mod soulseek;
 pub mod sync;
 
@@ -172,6 +177,11 @@ pub fn run() {
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?
                 .sync_enabled;
             app.manage(library);
+            let profile_path = if demo_mode { None } else {
+                Some(app.path().app_local_data_dir()?.join("identity/profile.key"))
+            };
+            app.manage(profile::LocalProfileState::open(profile_path)
+                .map_err(std::io::Error::other)?);
             app.manage(audio::AudioState::new());
             app.manage(discord_presence::DiscordPresenceState::default());
             app.manage(playback::PlaybackState::new(app.handle().clone()));
@@ -179,6 +189,8 @@ pub fn run() {
             app.manage(soulseek::SoulseekState::new());
             app.manage(sync::SyncState::new(sync_enabled));
             if !demo_mode {
+                soulseek::start_profile_discovery(app.handle().clone());
+                track_requests::start(app.handle().clone());
                 // Auto-start discovery
                 let _ = discovery::discovery_start(
                     app.state::<discovery::DiscoveryState>(),
@@ -232,7 +244,24 @@ pub fn run() {
             library::set_device_emoji,
             library::get_device_settings,
             library::set_device_settings,
+            friends::get_friends,
+            friends::add_friend,
+            friends::remove_friend,
+            friends::resolve_friend,
+            private_messages::get_friend_chat,
+            private_messages::get_friend_messages,
+            private_messages::send_friend_message,
+            track_requests::request_friend_track,
+            track_requests::respond_friend_track,
+            profile::local_profile_info,
+            profile::local_profile_private_key,
+            profile::profile_pairing_allow,
+            profile::profile_pairing_join,
+            profile::profile_pairing_confirm,
+            profile::profile_pairing_poll,
+            profile::profile_pairing_cancel,
             soulseek::soulseek_get_status,
+            soulseek::set_soulseek_discovery,
             soulseek::soulseek_search,
             soulseek::soulseek_fetch_cover,
             soulseek::soulseek_download,
@@ -249,6 +278,9 @@ pub fn run() {
             about::about_do_update,
             discord_presence::discord_availability,
             discord_presence::discord_update_presence,
+            discord_social::discord_social_status,
+            discord_social::discord_social_connect,
+            discord_social::discord_social_disconnect,
             playback::playback_play,
             playback::playback_play_track,
             playback::playback_play_absolute,

@@ -2,7 +2,7 @@ import { h, type Component, type FunctionalComponent } from 'vue';
 import {
   ArrowLeft, ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight,
   CircleCheck, Download, ExternalLink, FolderOpen, Headphones, Heart, House,
-  Info, LibraryBig, List, ListFilter, ListMusic, ListPlus, Menu, Minus,
+  Info, KeyRound, Link2, MessageCircle, Send, UserPlus, Users, LibraryBig, List, ListFilter, ListMusic, ListPlus, Menu, Minus,
   Palette, Pause, Pencil, Pin, Play, Plus, Radio, RefreshCw, Repeat, Repeat1, Search,
   Settings, Shuffle, SkipBack, SkipForward, Speaker, Square, Trash2,
   Volume2, VolumeX, WandSparkles, Wifi, X,
@@ -17,6 +17,14 @@ function filled(icon: Component): FunctionalComponent {
 // Icons are named by what they mean in the app, not by how they look, so an
 // icon set can give each meaning its own glyph. Several names may share one.
 export const icons = {
+  // Profiles and friends
+  friends: Users,
+  'add-friend': UserPlus,
+  'profile-key': KeyRound,
+  'pair-device': Link2,
+  chat: MessageCircle,
+  send: Send,
+
   // Navigation
   home: House,
   search: Search,

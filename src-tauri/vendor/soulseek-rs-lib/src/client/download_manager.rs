@@ -256,6 +256,12 @@ impl DownloadManager {
 
     /// Peer's `TransferRequest` received: record peer token, abort queue timeout, → `QueuedRemotely`.
     pub fn on_transfer_request(&mut self, transfer: &Transfer, username: &str) {
+        if let Some((token, expected)) = self.downloads.values().find(|d| d.username == username && d.filename == transfer.filename).map(|d| (d.token, d.size)) {
+            if transfer.direction != 1 || (expected != 0 && transfer.size != expected) {
+                self.on_completed(token, Err(crate::error::SoulseekRs::InvalidMessage("Peer changed the expected file size".into())));
+                return;
+            }
+        }
         if let Some(download) = self
             .downloads
             .values_mut()

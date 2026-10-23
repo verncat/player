@@ -143,10 +143,12 @@ enum SmartPlaylistEntry {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct DeviceSettings {
+    pub device_id: String,
     pub emoji: String,
     pub device_name: String,
     pub sync_enabled: bool,
     pub soulseek_enabled: bool,
+    pub soulseek_discovery_enabled: bool,
     pub soulseek_username: String,
     pub soulseek_password: String,
 }
@@ -523,69 +525,31 @@ impl LibraryState {
 
     pub fn get_device_settings(&self) -> Result<DeviceSettings, BoxError> {
         let conn = self.conn.lock().unwrap();
-        let existing: Result<(String, String, i64, i64, String, String), _> = conn.query_row(
+        Ok(conn.query_row(
             "SELECT emoji,
                     COALESCE(device_name, ''),
                     COALESCE(sync_enabled, 0),
                     COALESCE(soulseek_enabled, 0),
                     COALESCE(soulseek_username, ''),
-                    COALESCE(soulseek_password, '')
+                    COALESCE(soulseek_password, ''),
+                    device_id,
+                    soulseek_discovery_enabled
                FROM device_config
               WHERE id = 1",
             [],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            },
-        );
-
-        match existing {
-            Ok((
-                emoji,
-                device_name,
-                sync_enabled,
-                soulseek_enabled,
-                soulseek_username,
-                soulseek_password,
-            )) => Ok(DeviceSettings {
-                emoji,
-                device_name,
-                sync_enabled: sync_enabled != 0,
-                soulseek_enabled: soulseek_enabled != 0,
-                soulseek_username,
-                soulseek_password,
-            }),
-            Err(_) => {
-                let emoji = random_emoji();
-                let device_name = whoami::devicename().trim().to_string();
-                conn.execute(
-                    "INSERT OR REPLACE INTO device_config (
-                        id,
-                        emoji,
-                        device_name,
-                        sync_enabled,
-                        soulseek_enabled,
-                        soulseek_username,
-                        soulseek_password
-                    ) VALUES (1, ?1, ?2, 0, 0, '', '')",
-                    params![&emoji, &device_name],
-                )?;
                 Ok(DeviceSettings {
-                    emoji,
-                    device_name,
-                    sync_enabled: false,
-                    soulseek_enabled: false,
-                    soulseek_username: String::new(),
-                    soulseek_password: String::new(),
+                    emoji: row.get(0)?,
+                    device_name: row.get(1)?,
+                    sync_enabled: row.get::<_, i64>(2)? != 0,
+                    soulseek_enabled: row.get::<_, i64>(3)? != 0,
+                    soulseek_username: row.get(4)?,
+                    soulseek_password: row.get(5)?,
+                    device_id: row.get(6)?,
+                    soulseek_discovery_enabled: row.get::<_, i64>(7)? != 0,
                 })
-            }
-        }
+            },
+        )?)
     }
 
     pub fn set_device_settings(
@@ -599,15 +563,23 @@ impl LibraryState {
     ) -> Result<(), BoxError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO device_config (
+            "INSERT INTO device_config (
                 id,
                 emoji,
                 device_name,
                 sync_enabled,
                 soulseek_enabled,
                 soulseek_username,
-                soulseek_password
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+                soulseek_password,
+                device_id
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(id) DO UPDATE SET
+                emoji = excluded.emoji,
+                device_name = excluded.device_name,
+                sync_enabled = excluded.sync_enabled,
+                soulseek_enabled = excluded.soulseek_enabled,
+                soulseek_username = excluded.soulseek_username,
+                soulseek_password = excluded.soulseek_password",
             params![
                 emoji,
                 device_name,
@@ -615,8 +587,15 @@ impl LibraryState {
                 if soulseek_enabled { 1 } else { 0 },
                 soulseek_username.trim(),
                 soulseek_password,
+                uuid::Uuid::new_v4().to_string(),
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn set_soulseek_discovery(&self, enabled: bool) -> Result<(), BoxError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE device_config SET soulseek_discovery_enabled = ?1 WHERE id = 1", [enabled])?;
         Ok(())
     }
 
@@ -931,6 +910,7 @@ fn random_emoji() -> String {
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
 fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
+    crate::friends::init_schema(conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS tracks (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1006,6 +986,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_played_at ON play_history(played_at DESC);
         CREATE TABLE IF NOT EXISTS device_config (
             id        INTEGER PRIMARY KEY CHECK(id=1),
+            device_id TEXT NOT NULL DEFAULT '',
             emoji     TEXT NOT NULL DEFAULT '🎵',
             device_name TEXT NOT NULL DEFAULT '',
             sync_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1031,6 +1012,14 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     let _ = conn
         .execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
+    // Existing installations keep all preferences and receive an ID exactly once.
+    let has_device_id = conn.prepare("PRAGMA table_info(device_config)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter().any(|name| name == "device_id");
+    if !has_device_id {
+        conn.execute_batch("ALTER TABLE device_config ADD COLUMN device_id TEXT NOT NULL DEFAULT ''")?;
+    }
     let _ = conn.execute_batch(
         "ALTER TABLE device_config ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 0",
     );
@@ -1043,6 +1032,22 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch(
         "ALTER TABLE device_config ADD COLUMN soulseek_password TEXT NOT NULL DEFAULT ''",
     );
+    let has_soulseek_discovery = conn.prepare("PRAGMA table_info(device_config)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter().any(|name| name == "soulseek_discovery_enabled");
+    if !has_soulseek_discovery {
+        conn.execute_batch("ALTER TABLE device_config ADD COLUMN soulseek_discovery_enabled INTEGER NOT NULL DEFAULT 0")?;
+    }
+    conn.execute(
+        "INSERT INTO device_config (
+            id, emoji, device_name, device_id, sync_enabled,
+            soulseek_enabled, soulseek_username, soulseek_password
+         ) VALUES (1, ?1, ?2, ?3, 0, 0, '', '')
+         ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id
+         WHERE device_config.device_id IS NULL OR device_config.device_id = ''",
+        params![random_emoji(), whoami::devicename().trim(), uuid::Uuid::new_v4().to_string()],
+    )?;
     let _ =
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE playlists ADD COLUMN pinned_at INTEGER");
@@ -4412,6 +4417,86 @@ pub fn unmark_duplicates(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn soulseek_publication_is_opt_in_and_survives_other_settings() {
+        let state = library_with("");
+        assert!(!state.get_device_settings().unwrap().soulseek_discovery_enabled);
+        state.set_soulseek_discovery(true).unwrap();
+        state.set_device_settings("🎧", "Renamed", true, true, "listener", "secret").unwrap();
+        state.set_device_emoji("🎵").unwrap();
+        assert!(state.get_device_settings().unwrap().soulseek_discovery_enabled);
+        state.set_soulseek_discovery(false).unwrap();
+        assert!(!state.get_device_settings().unwrap().soulseek_discovery_enabled);
+        assert!(state.get_device_settings().unwrap().soulseek_enabled);
+    }
+
+    #[test]
+    fn device_id_is_unique_and_survives_settings_changes() {
+        let first = library_with("");
+        let second = library_with("");
+        let original = first.get_device_settings().unwrap().device_id;
+        let parsed = uuid::Uuid::parse_str(&original).unwrap();
+        assert_eq!(parsed.get_version_num(), 4);
+        assert_ne!(original, second.get_device_settings().unwrap().device_id);
+        first.set_device_settings("🎧", "Renamed", true, true, "listener", "secret").unwrap();
+        first.set_device_emoji("🎵").unwrap();
+        let changed = first.get_device_settings().unwrap();
+        assert_eq!(changed.device_id, original);
+        assert_eq!(changed.device_name, "Renamed");
+        assert!(changed.sync_enabled && changed.soulseek_enabled);
+        assert_eq!(changed.soulseek_username, "listener");
+        assert_eq!(changed.soulseek_password, "secret");
+    }
+
+    #[test]
+    fn device_id_migration_preserves_existing_settings() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE device_config (
+                id INTEGER PRIMARY KEY CHECK(id=1), emoji TEXT NOT NULL,
+                device_name TEXT NOT NULL, sync_enabled INTEGER NOT NULL,
+                soulseek_enabled INTEGER NOT NULL, soulseek_username TEXT NOT NULL,
+                soulseek_password TEXT NOT NULL);
+             INSERT INTO device_config VALUES (1, '🎧', 'Existing', 1, 1, 'listener', 'secret');"
+        ).unwrap();
+        init_schema(&conn).unwrap();
+        let first_id: String = conn.query_row("SELECT device_id FROM device_config", [], |r| r.get(0)).unwrap();
+        uuid::Uuid::parse_str(&first_id).unwrap();
+        init_schema(&conn).unwrap();
+        let state = LibraryState { conn: Arc::new(Mutex::new(conn)), data_dir: PathBuf::new() };
+        let settings = state.get_device_settings().unwrap();
+        assert_eq!(settings.device_id, first_id);
+        assert!(!settings.soulseek_discovery_enabled);
+        assert_eq!(settings.emoji, "🎧");
+        assert_eq!(settings.device_name, "Existing");
+        assert!(settings.sync_enabled && settings.soulseek_enabled);
+        assert_eq!(settings.soulseek_username, "listener");
+        assert_eq!(settings.soulseek_password, "secret");
+    }
+
+    #[test]
+    fn device_id_survives_reopening_database() {
+        let path = std::env::temp_dir().join(format!("player-device-{}.db", uuid::Uuid::new_v4()));
+        let read_id = || {
+            let conn = Connection::open(&path).unwrap();
+            init_schema(&conn).unwrap();
+            conn.query_row::<String, _, _>("SELECT device_id FROM device_config", [], |r| r.get(0)).unwrap()
+        };
+        let original = read_id();
+        assert_eq!(read_id(), original);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn peer_identity_is_optional_for_older_versions() {
+        let old_status = r#"{"version":"0.3.0","device_name":"Old","device_emoji":null,"playback":null}"#;
+        let status: crate::sync::DeviceStatusResponse = serde_json::from_str(old_status).unwrap();
+        assert!(status.device_id.is_none());
+        let old_tracks = r#"{"version":"0.3.0","device_name":"Old","device_emoji":null,"tracks":[]}"#;
+        let tracks: crate::sync::TracksResponse = serde_json::from_str(old_tracks).unwrap();
+        assert!(tracks.device_id.is_none());
+    }
 
     fn entries(rules: Vec<SmartPlaylistRule>) -> Vec<SmartPlaylistEntry> {
         rules.into_iter().map(SmartPlaylistEntry::Rule).collect()

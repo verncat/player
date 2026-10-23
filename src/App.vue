@@ -41,6 +41,10 @@ import AppTopbar from "./components/AppTopbar.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 import ResponsivePopup from "./components/ResponsivePopup.vue";
+import DevicePairing from "./components/DevicePairing.vue";
+import FriendsView from "./components/FriendsView.vue";
+import FriendChatView from "./components/FriendChatView.vue";
+import type { FriendProfile } from "./types/friends";
 import { useDiscordPresence } from "./composables/useDiscordPresence";
 import SettingsView from "./components/SettingsView.vue";
 import AboutPanel from "./components/AboutPanel.vue";
@@ -101,6 +105,18 @@ function openSettings(section: SettingsSection | null = null) {
   showDeviceMenu.value = false;
   showQueueMenu.value = false;
 }
+const friendTitles = ref<Record<string, string>>({});
+function onFriendLoaded(friend: FriendProfile) {
+  friendTitles.value[friend.profile_id] = friend.name || 'Player friend';
+}
+function openFriend(friend: FriendProfile) {
+  onFriendLoaded(friend);
+  navTarget.value = friend.profile_id;
+  navTargetArtist.value = '';
+  activeNav.value = 'friend';
+  pushNavHistory({ nav: 'friend', target: friend.profile_id, targetArtist: '' });
+  showMobileNav.value = false;
+}
 const navTarget = ref('');
 const navTargetArtist = ref('');
 interface NavEntry { nav: string; target: string; targetArtist: string }
@@ -121,7 +137,7 @@ function pushNavHistory(entry: NavEntry) {
 }
 watch(activeNav, (nav) => {
   if (_navSkipHistory) return;
-  const hasTarget = nav === 'artist' || nav === 'album';
+  const hasTarget = nav === 'artist' || nav === 'album' || nav === 'friend';
   pushNavHistory({
     nav,
     target: hasTarget ? navTarget.value : '',
@@ -402,6 +418,7 @@ const queuedPagedSource = ref<QueuedPagedSource | null>(null);
 const queuedPageLoading = ref(false);
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
+const localProfile = ref<{ user_id: string; public_key: string } | null>(null);
 const discord = useDiscordPresence(() => nowPlaying.value ? {
   title: nowPlaying.value.title || 'Unknown track',
   artist: nowPlaying.value.artist || 'Unknown artist',
@@ -409,7 +426,7 @@ const discord = useDiscordPresence(() => nowPlaying.value ? {
   position: currentTime.value,
   duration: duration.value,
   playing: isPlaying.value,
-} : null);
+} : null, () => localProfile.value?.public_key ?? null);
 const recentTracks = ref<Track[]>([]);
 const showQueueMenu = ref(false);
 
@@ -1408,12 +1425,18 @@ interface PeerPlayback {
 
 interface RemoteDeviceStatus {
   version: string;
+  device_id?: string | null;
+  user_id?: string | null;
+  profile_public_key?: string | null;
   device_name?: string | null;
   device_emoji?: string | null;
   playback?: PeerPlayback | null;
 }
 
 interface Peer {
+  device_id?: string | null;
+  user_id?: string | null;
+  profile_public_key?: string | null;
   name: string;
   host: string;
   port: number;
@@ -1423,6 +1446,7 @@ interface Peer {
   playback?: PeerPlayback | null;
 }
 const peers = ref<Peer[]>([]);
+const profilePairing = ref<InstanceType<typeof DevicePairing> | null>(null);
 const remoteOutputPeer = ref<Peer | null>(null);
 const remoteControlled = ref(false);
 let lastRemoteBeatSeq = 0;
@@ -4581,6 +4605,8 @@ const pageTitle = computed(() => {
         : editingSP.value?.name || smartView.value?.name || 'Flexible Playlists';
     case 'dedup': return 'Duplicates';
     case 'discovery': return 'Devices on Network';
+    case 'friends': return 'Friends';
+    case 'friend': return friendTitles.value[navTarget.value] || 'Friend';
     default: return undefined;
   }
 });
@@ -5009,6 +5035,7 @@ onUnmounted(() => {
       @navigate-playlists="activeNav = 'playlists'; playlistView = null; playlistTab = 'regular'; showMobileNav = false"
       @navigate-smart-playlists="activeNav = 'playlists'; playlistTab = 'smart'; playlistView = null; editingSP = null; smartView = null; showMobileNav = false"
       @navigate-discovery="activeNav = 'discovery'; showMobileNav = false"
+      @navigate-friends="activeNav = 'friends'; showMobileNav = false"
       @navigate-settings="openSettings()"
     />
 
@@ -5028,7 +5055,7 @@ onUnmounted(() => {
         </template>
       </AppTopbar>
 
-      <div ref="contentRef" class="content" @scroll.passive="maybeLoadMoreSoulseekResults">
+      <div ref="contentRef" class="content" :class="{ 'friend-content': activeNav === 'friend' }" @scroll.passive="maybeLoadMoreSoulseekResults">
         <!-- Home view -->
         <template v-if="activeNav === 'home'">
           <section>
@@ -5900,11 +5927,16 @@ onUnmounted(() => {
           </section>
         </template>
 
+        <FriendsView v-else-if="activeNav === 'friends'" :key="localProfile?.user_id" :profile-id="localProfile?.user_id" @open-device-settings="openDeviceSettings" @open-friend="openFriend" />
+
+        <FriendChatView v-else-if="activeNav === 'friend'" :key="`${localProfile?.user_id}:${navTarget}`" :profile-id="navTarget" @loaded="onFriendLoaded" @open-soulseek-settings="openSettings('soulseek')" />
+
         <!-- Discovery view -->
         <template v-else-if="activeNav === 'discovery'">
           <section>
             <div class="library-header discovery-header page-toolbar">
               <div class="discovery-toolbar">
+                <button class="sync-toggle" @click="profilePairing?.allow()"><AppIcon name="pair-device" :size="14" /> Allow linking</button>
                 <button class="sync-toggle" @click="openDeviceSettings"><span class="device-emoji">{{ deviceEmoji }}</span> Settings</button>
                 <button
                   class="sync-toggle"
@@ -5917,11 +5949,6 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
-            <div class="search-summary discovery-summary">
-              <span><strong>{{ peers.length }}</strong> devices</span>
-              <span><strong>{{ syncEnabled ? 'On' : 'Off' }}</strong> sync</span>
-              <span><strong>mDNS</strong> auto discovery</span>
-            </div>
             <div v-if="!peers.length" class="library-empty discovery-empty">
               <span>No other instances found.</span>
               <span class="discovery-help-text">Make sure devices are on the same Wi-Fi network.</span>
@@ -5932,6 +5959,7 @@ onUnmounted(() => {
                 <div class="track-info discovery-info">
                   <div class="track-title-row">
                     <span class="track-title">{{ peer.device_name || peerDeviceNames[peer.name] || peer.name }}</span>
+                    <span v-if="localProfile && peer.profile_public_key === localProfile.public_key" class="discovery-profile-label">Shared profile</span>
                     <span v-if="isRemoteOutputPeer(peer)" class="track-playback-badge next discovery-output-pill">Output</span>
                     <span class="discovery-status-pill" :class="peerPlaybackClass(peer)">
                       <span class="peer-playback-icon" aria-hidden="true">
@@ -5963,6 +5991,11 @@ onUnmounted(() => {
                   </template>
                 </div>
                 <button
+                  v-if="peer.device_id && peer.profile_public_key && localProfile && peer.profile_public_key !== localProfile.public_key"
+                  class="sync-toggle discovery-link-btn" title="Use this device profile on this player"
+                  @click="profilePairing?.useProfile(peer)"
+                ><AppIcon name="pair-device" :size="14" /> Use profile</button>
+                <button
                   v-if="syncEnabled"
                   class="sync-now-btn discovery-sync-btn"
                   @click="syncPeer(peer)"
@@ -5991,8 +6024,10 @@ onUnmounted(() => {
             :sync-enabled="syncEnabled" :sync-busy="syncBusy" :sync-error="syncError" :sync-active="syncActive" :peers-count="peers.length"
             :update-available="hasAvailableUpdate"
             :discord-enabled="discord.enabled.value" :discord-available="discord.available.value"
+            :discord-discovery-enabled="discord.discoveryEnabled.value"
             :discord-configured="discord.configured.value" :discord-ready="discord.ready.value" :discord-error="discord.error.value"
             @toggle-discord="discord.setEnabled"
+            @toggle-discord-discovery="discord.setDiscoveryEnabled"
             :cover-url="currentCoverUrl" :cover-colors="currentTrack.colors"
             @navigate="openSettings" @open-folder="openSettingsFolder" @reindex="doReindex" @identify="identifyFromSettings"
             @duplicates="activeNav = 'dedup'; openDedup()" @devices="activeNav = 'discovery'"
@@ -6045,6 +6080,7 @@ onUnmounted(() => {
     </main>
 
     <!-- Context menus -->
+    <DevicePairing ref="profilePairing" @profile="localProfile = $event" />
     <ResponsivePopup
       :open="!!trackContextMenu"
       :anchor-x="trackContextMenu?.x ?? null"
@@ -6565,9 +6601,6 @@ onUnmounted(() => {
   gap: 10px;
   flex-wrap: wrap;
 }
-.discovery-summary {
-  margin: 0 0 18px;
-}
 .discovery-empty {
   display: flex;
   flex-direction: column;
@@ -6750,6 +6783,8 @@ onUnmounted(() => {
 .sync-now-btn:hover:not(:disabled) { background: var(--color-accent); color: var(--color-on-accent); }
 .sync-now-btn:disabled { opacity: 0.4; cursor: default; }
 .discovery-sync-btn { margin-left: 10px; }
+.discovery-link-btn { flex-shrink: 0; margin-left: 10px; }
+.discovery-profile-label { font-size: 11px; color: #8de2a7; }
 
 .sync-bar-wrap {
   position: relative;
@@ -6832,6 +6867,7 @@ onUnmounted(() => {
   scrollbar-gutter: stable;
   padding: 0 24px 32px;
 }
+.content.friend-content { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding-bottom: 16px; }
 .content::-webkit-scrollbar { width: 8px; }
 .content::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 4px; }
 .content::-webkit-scrollbar-track { background: transparent; }
@@ -7791,9 +7827,9 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .track-row { gap: 8px; padding: 6px 4px; }
   .track-cover-sm { width: 32px; height: 32px; }
   .discovery-toolbar { justify-content: flex-start; }
-  .discovery-summary { margin-bottom: 14px; }
   .discovery-row { align-items: center; }
   .discovery-sync-btn { margin-left: 0; }
+  .discovery-link-btn { margin-left: 0; padding: 6px 8px; font-size: 11px; }
   .soulseek-row { align-items: center; }
   .soulseek-side { min-width: 0; gap: 8px; }
   .soulseek-speed { display: none; }

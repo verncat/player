@@ -54,6 +54,9 @@ pub struct RemoteTrack {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TracksResponse {
     pub version: String,
+    pub device_id: Option<String>,
+    pub user_id: Option<String>,
+    pub profile_public_key: Option<String>,
     pub device_name: Option<String>,
     pub device_emoji: Option<String>,
     pub tracks: Vec<RemoteTrack>,
@@ -82,6 +85,9 @@ pub struct RemotePlaybackVolumeRequest {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeviceStatusResponse {
     pub version: String,
+    pub device_id: Option<String>,
+    pub user_id: Option<String>,
+    pub profile_public_key: Option<String>,
     pub device_name: Option<String>,
     pub device_emoji: Option<String>,
     pub playback: Option<RemotePlaybackInfo>,
@@ -1054,9 +1060,11 @@ fn handle_request(
     app: AppHandle,
 ) {
     let url = request.url().to_string();
-    if url == "/status" {
+    if url.starts_with("/profile-pairing/") {
+        crate::profile::serve(request, &app);
+    } else if url == "/status" {
         let playback = app.state::<crate::playback::PlaybackState>();
-        serve_status(request, &conn, &data_dir, &playback);
+        serve_status(request, &conn, &data_dir, &playback, &app.state::<crate::profile::LocalProfileState>());
     } else if url == "/control/play-hash" {
         let playback = app.state::<crate::playback::PlaybackState>();
         serve_control_play_hash(request, &conn, &data_dir, &playback, &app);
@@ -1076,7 +1084,7 @@ fn handle_request(
         let playback = app.state::<crate::playback::PlaybackState>();
         serve_control_volume(request, &conn, &data_dir, &playback, &app);
     } else if url == "/tracks" {
-        serve_tracks(request, &conn, &data_dir);
+        serve_tracks(request, &conn, &data_dir, &app.state::<crate::profile::LocalProfileState>());
     } else if url == "/sync-data" {
         serve_sync_data(request, &conn);
     } else if url == "/sync-merkle/root" {
@@ -1108,18 +1116,18 @@ fn handle_request(
     }
 }
 
-fn device_identity(conn: &Connection) -> (Option<String>, Option<String>) {
+fn device_identity(conn: &Connection) -> (Option<String>, Option<String>, Option<String>) {
     conn.query_row(
-        "SELECT COALESCE(device_name, ''), emoji FROM device_config WHERE id = 1",
+        "SELECT COALESCE(device_name, ''), emoji, NULLIF(device_id, '') FROM device_config WHERE id = 1",
         [],
         |row| {
             let name: String = row.get(0)?;
             let emoji: String = row.get(1)?;
             let name_opt = if name.trim().is_empty() { None } else { Some(name) };
-            Ok((name_opt, Some(emoji)))
+            Ok((name_opt, Some(emoji), row.get(2)?))
         },
     )
-    .unwrap_or((None, None))
+    .unwrap_or((None, None, None))
 }
 
 fn normalize_rel_path(path: &Path) -> String {
@@ -1236,10 +1244,11 @@ fn serve_status(
     conn: &Arc<Mutex<Connection>>,
     data_dir: &Path,
     playback: &crate::playback::PlaybackState,
+    profile: &crate::profile::LocalProfileState,
 ) {
     let body = {
         let c = conn.lock().unwrap();
-        let status = build_device_status(&c, data_dir, playback);
+        let status = build_device_status(&c, data_dir, playback, profile);
         serde_json::to_vec(&status).unwrap_or_default()
     };
     let content_type = Header::from_bytes(b"Content-Type", b"application/json").unwrap();
@@ -1250,11 +1259,16 @@ fn build_device_status(
     conn: &Connection,
     data_dir: &Path,
     playback: &crate::playback::PlaybackState,
+    profile: &crate::profile::LocalProfileState,
 ) -> DeviceStatusResponse {
-    let (device_name, device_emoji) = device_identity(conn);
+    let profile = profile.info();
+    let (device_name, device_emoji, device_id) = device_identity(conn);
     let playback = current_playback_info(conn, data_dir, playback);
     DeviceStatusResponse {
         version: APP_VERSION.to_string(),
+        device_id,
+        user_id: Some(profile.user_id),
+        profile_public_key: Some(profile.public_key),
         device_name,
         device_emoji,
         playback,
@@ -1385,14 +1399,18 @@ fn attach_remote_track_file_sizes(data_dir: &Path, tracks: &mut [RemoteTrack]) {
     }
 }
 
-fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>, data_dir: &Path) {
+fn serve_tracks(request: tiny_http::Request, conn: &Arc<Mutex<Connection>>, data_dir: &Path, profile: &crate::profile::LocalProfileState) {
+    let profile = profile.info();
     let body = {
         let c = conn.lock().unwrap();
         let mut tracks = load_remote_tracks(&c);
         attach_remote_track_file_sizes(data_dir, &mut tracks);
-        let (device_name, device_emoji) = device_identity(&c);
+        let (device_name, device_emoji, device_id) = device_identity(&c);
         serde_json::to_vec(&TracksResponse {
             version: APP_VERSION.to_string(),
+            device_id,
+            user_id: Some(profile.user_id),
+            profile_public_key: Some(profile.public_key),
             device_name,
             device_emoji,
             tracks,

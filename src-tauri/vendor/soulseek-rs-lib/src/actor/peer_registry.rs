@@ -19,6 +19,7 @@ pub struct PeerRegistry {
     own_username: String,
     shared_folders: u32,
     shared_files: u32,
+    upload_shares: Arc<Mutex<crate::uploads::UploadShares>>,
 }
 
 impl PeerRegistry {
@@ -36,8 +37,11 @@ impl PeerRegistry {
             own_username,
             shared_folders,
             shared_files,
+            upload_shares: Default::default(),
         }
     }
+
+    pub fn set_upload_shares(&self, shares: crate::uploads::UploadShares) { *self.upload_shares.lock().unwrap() = shares; }
 
     pub fn register_peer(
         &self,
@@ -47,7 +51,7 @@ impl PeerRegistry {
     ) -> Result<ActorHandle<PeerCommand>, String> {
         let username = peer.username.clone();
 
-        let actor = PeerActor::new(
+        let mut actor = PeerActor::new(
             peer,
             stream,
             reader,
@@ -57,6 +61,7 @@ impl PeerRegistry {
             self.shared_files,
         );
 
+        actor.upload_shares = self.upload_shares.lock().unwrap().clone();
         let handle = self.actor_system.spawn(actor);
 
         let mut peers = self.peers.lock().unwrap();
@@ -113,6 +118,7 @@ impl Clone for PeerRegistry {
     fn clone(&self) -> Self {
         Self {
             peers: self.peers.clone(),
+            upload_shares: self.upload_shares.clone(),
             actor_system: self.actor_system.clone(),
             client_channel: self.client_channel.clone(),
             own_username: self.own_username.clone(),
