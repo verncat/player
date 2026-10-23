@@ -11,8 +11,12 @@ Player is a local-first music player built with Vue 3 on the frontend and Rust o
 - Store and edit metadata, covers, likes, history, and playlists.
 - Support smart playlists defined by filter rules.
 - Discover peer devices on the same LAN and sync music and metadata.
+- Hand playback over to another device on the LAN, and control it from there.
+- Search, preview and download music from the Soulseek network.
+- Find and flag duplicate tracks, and replace a track's file with a better copy.
 - Run on desktop and Android with a native Android media notification.
 - Provide a richer now-playing experience, including beat-reactive visuals and a WebGL album renderer.
+- Check for and install updates.
 
 The project is not designed as a cloud service, a streaming client, or a multi-user system.
 
@@ -28,24 +32,51 @@ The project is not designed as a cloud service, a streaming client, or a multi-u
 - Metadata extraction: lofty.
 - LAN discovery: mdns-sd.
 - Peer sync transport: tiny_http server + reqwest blocking client.
+- Soulseek client: soulseek-rs, vendored at `src-tauri/vendor/soulseek-rs-lib` (the `soulseek-rs-repo/` submodule is an upstream workbench copy, not a build dependency).
+- Cover resizing: image.
 - Audio identification: rusty-chromaprint + AcoustID.
 - Rich now-playing visual: Three.js in a dedicated Vue component.
+- Discord Rich Presence (desktop, optional): discord-rich-presence.
+- Icons: Lucide (`@lucide/vue`).
+- Logging and profiling: tracing, with optional Tracy output (`tracy` feature).
 
 ## 3. Repository Structure
 
-The project is split into a small number of high-value surfaces:
+Frontend:
 
-- [src/App.vue](src/App.vue): the main application shell and almost all frontend behavior.
-- [src/components/WebGLAlbumRenderer.vue](src/components/WebGLAlbumRenderer.vue): isolated WebGL renderer for the now-playing card.
-- [src-tauri/src/lib.rs](src-tauri/src/lib.rs): Tauri bootstrap, managed state registration, and command exposure.
-- [src-tauri/src/library.rs](src-tauri/src/library.rs): local library, indexing, persistence, playlists, history, and covers.
+- [src/App.vue](src/App.vue): the application shell: navigation, queue, playback coordination, modals, and most event listeners.
+- [src/components/](src/components/): extracted UI. `AppSidebar`, `AppTopbar`, `PlayerBar` (footer player with queue and device menus), `ResponsivePopup`, `TrackRow` and `TrackMeta` (track lists), `ArtistView`, `AlbumView`, `AlbumCard` and `PageHeader` (artist and album pages), `CoverImage`, `ImagePreview` (full-window cover view), `SettingsView`, `SettingsToggle` and `AboutPanel` (the settings page), `AppIcon` (Lucide icons), `AppSelect` (a styled native select, outlined or filled, used with `v-model`), `PlaylistArtwork` (the placeholder cover of playlists), and `WebGLAlbumRenderer` (the 3D now-playing card).
+- [src/composables/useTrackActions.ts](src/composables/useTrackActions.ts): the track actions (like, edit, menus, opening artist and album pages) that App.vue provides to track lists.
+- [src/composables/useHistoryNavigation.ts](src/composables/useHistoryNavigation.ts): back/forward navigation kept in the browser history, and transient history entries for UI state that back should undo.
+- [src/composables/useTheme.ts](src/composables/useTheme.ts): theme mode and accent preferences, and animated theme switches.
+- [src/composables/useAppearance.ts](src/composables/useAppearance.ts) and [src/composables/useDiscordPresence.ts](src/composables/useDiscordPresence.ts): appearance preferences and the Discord Rich Presence adapter.
+- [src/api.ts](src/api.ts): the start of a frontend API layer (artist and album queries).
+- [src/utils/](src/utils/): formatting, rarity helpers, special artist names, cover URLs and placeholder cover gradients, color math.
+- [src/icons.ts](src/icons.ts) and [src/types/settings.ts](src/types/settings.ts): the icon registry, and the settings sections and types.
+- [src/theme.ts](src/theme.ts) and [src/styles/](src/styles/): theme colors, applied as CSS variables, and the global stylesheets (static size tokens, element defaults, shared component styles).
+
+Backend, one module per subsystem:
+
+- [src-tauri/src/lib.rs](src-tauri/src/lib.rs): Tauri bootstrap, managed state registration, the `cover://` scheme, and command exposure.
+- [src-tauri/src/library.rs](src-tauri/src/library.rs): SQLite library, indexing, file watcher, metadata, playlists, history, duplicates, CUE tracks.
+- [src-tauri/src/covers.rs](src-tauri/src/covers.rs): the cover store and the `cover://` URI scheme.
 - [src-tauri/src/playback.rs](src-tauri/src/playback.rs): audio playback engine, seek, beat detection, spectrum generation.
+- [src-tauri/src/audio_codecs.rs](src-tauri/src/audio_codecs.rs): the codec registry playback uses: Symphonia's codecs plus an Opus decoder.
 - [src-tauri/src/audio.rs](src-tauri/src/audio.rs): output device enumeration and auxiliary audio settings state.
 - [src-tauri/src/discovery.rs](src-tauri/src/discovery.rs): mDNS peer discovery.
-- [src-tauri/src/sync.rs](src-tauri/src/sync.rs): peer HTTP server, file transfer, and metadata merge.
+- [src-tauri/src/sync.rs](src-tauri/src/sync.rs): peer HTTP server, file transfer, metadata merge, and remote playback.
+- [src-tauri/src/soulseek.rs](src-tauri/src/soulseek.rs): Soulseek search, preview, and download.
 - [src-tauri/src/identify.rs](src-tauri/src/identify.rs): audio fingerprinting and AcoustID lookup.
+- [src-tauri/src/import.rs](src-tauri/src/import.rs): drag-and-drop import into the library.
+- [src-tauri/src/about.rs](src-tauri/src/about.rs): version info and updates.
+- [src-tauri/src/discord_presence.rs](src-tauri/src/discord_presence.rs): optional Discord Rich Presence.
+- [src-tauri/src/demo.rs](src-tauri/src/demo.rs): the `--demo` mode library.
+
+Android:
+
 - [src-tauri/gen/android/app/src/main/java/dev/verncat/player/MainActivity.kt](src-tauri/gen/android/app/src/main/java/dev/verncat/player/MainActivity.kt): Android WebView bridge and OS integration.
 - [src-tauri/gen/android/app/src/main/java/dev/verncat/player/MediaPlaybackService.kt](src-tauri/gen/android/app/src/main/java/dev/verncat/player/MediaPlaybackService.kt): Android media notification and media session service.
+- [src-tauri/gen/android/app/src/main/java/dev/verncat/player/FolderPlugin.kt](src-tauri/gen/android/app/src/main/java/dev/verncat/player/FolderPlugin.kt): Tauri plugin that opens a folder in the system file manager.
 
 ## 4. High-Level Architecture
 
@@ -58,18 +89,25 @@ flowchart LR
   Tauri --> Discovery[Discovery subsystem]
   Tauri --> Sync[Sync subsystem]
   Tauri --> Identify[Identify subsystem]
+  Tauri --> Soulseek[Soulseek subsystem]
+  Tauri --> DiscordRPC[Discord presence]
+  UI -->|cover:// URLs| Covers[Cover store]
 
   Library --> DB[(SQLite app.db)]
-  Library --> FS[Music files + covers]
+  Library --> FS[Music files]
+  Library --> Covers
+  Soulseek --> SLSK[Soulseek network]
+  DiscordRPC --> DiscordApp[Local Discord client]
   Playback --> AudioOut[CPAL output stream]
   Discovery --> LAN[mDNS LAN]
-  Sync --> HTTP[Peer HTTP protocol]
+  Sync --> HTTP[Peer HTTP protocol + remote control]
 
   Playback -->|events| UI
   Library -->|events| UI
   Discovery -->|events| UI
   Sync -->|events| UI
   Identify -->|events| UI
+  Soulseek -->|events| UI
 
   UI -->|AndroidBridge| Android[MainActivity + MediaPlaybackService]
   Android -->|media controls| UI
@@ -97,21 +135,26 @@ The frontend is centered around [src/App.vue](src/App.vue). This file acts as:
 - The event listener hub for Tauri events.
 - The responsive/mobile layout host.
 
-This is a deliberately pragmatic but monolithic design: most state is colocated with the UI that consumes it, at the cost of a very large single-file component.
+This is a deliberately pragmatic but monolithic design: most state is colocated with the UI that consumes it, at the cost of a very large single-file component. Parts have been moved out into components and composables (section 3), and new UI goes there rather than into App.vue.
 
 ### 5.2 Navigation model
 
 `activeNav` in [src/App.vue](src/App.vue) selects the major screen. Current views are:
 
-- `home`: recent tracks and a curated/demo "Made For You" section.
-- `library`: full library grouped by artist.
-- `search`: currently a placeholder view.
+- `home`: recently played tracks, pinned playlists, and a curated/demo "Made For You" section.
+- `library`: the library grouped by artist, loaded in pages while scrolling.
+- `search`: paged search of the local library, plus Soulseek search.
+- `artist` and `album`: artist and album pages, opened from track rows. `navTarget` and `navTargetArtist` say which one, with back/forward history.
 - `history`: play history.
 - `playlists`: regular playlists and smart playlists.
-- `discovery`: peer devices and sync controls.
+- `discovery`: peer devices, sync controls, and remote playback.
+- `dedup`: review groups of duplicate tracks and flag duplicates.
+- `track-replace`: find a better copy of a track on Soulseek and replace its file.
 - `friends`: local Player contacts added by Profile ID.
 - `friend`: a friend page addressed by Profile ID, with Soulseek private messaging.
-- `settings`: preferences, with addressable Library, Playback, Devices & Sync, Soulseek, Appearance, and About sections.
+- `settings`: preferences, with addressable Library, Playback, Devices & Sync, Soulseek, Discord RPC, Appearance, and About sections (`settings/<section>`).
+
+Back/forward history is kept in the browser history (`useHistoryNavigation`), so the topbar arrows, the mouse back/forward buttons and Android's back button all walk the same stack. On Android, Wry goes back inside the webview while it can, and only leaves the app from the first page. UI state that back should undo, like the open cover preview, gets a transient entry (`useTransientHistoryEntry`): back ends it, forward never brings it back, and the pages that were ahead of it stay reachable with forward.
 
 On mobile, navigation is presented as a side drawer opened by a burger button instead of a permanently visible desktop sidebar.
 
@@ -119,14 +162,17 @@ On mobile, navigation is presented as a side drawer opened by a burger button in
 
 The main UI currently supports:
 
-- Recent tracks on the home screen.
-- Library browsing grouped by artist.
+- Recent tracks and pinned playlists on the home screen.
+- Library browsing grouped by artist, and artist and album pages.
 - Inline playback badges for current track and next track.
 - Regular playlists backed by SQLite.
-- Smart playlists defined by rules and evaluated against the loaded library snapshot.
+- Smart playlists defined by rules, evaluated in SQL by the backend.
+- Soulseek search with streaming previews and downloads into the library.
+- Drag-and-drop import of files and folders.
+- Duplicate detection and track file replacement.
 - Play history view.
 - Discovery and sync dashboard.
-- Device settings modal for sync identity.
+- A settings page (section 5.9).
 - Track edit modal, identify workflow, playlist menus, and long-press mobile context menus.
 - A persistent footer player and a larger detail/now-playing card.
 
@@ -138,11 +184,11 @@ Frontend state is stored in Vue refs and computed values rather than a dedicated
 
 - Playback presentation state: `isPlaying`, `currentTime`, `duration`, `volume`.
 - Queue state: `queueSource`, `queueSourceIndex`, `queue`, `nowPlaying`, `queuePlaylistTracks`.
-- Library state: `libraryTracks`, `recentTracks`, `historyEntries`.
+- Library state: `libraryTracks` (one or more loaded pages, with `libraryOffset`, `libraryTotal`, `libraryHasMore`), `recentTracks`, `historyEntries`.
 - Playlist state: `playlists`, `playlistView`, smart playlist editing/view state.
 - Discovery/sync state: `peers`, `syncEnabled`, `syncProgress`, device identity state.
 - Visual state: detail card transforms, beat animation, spectrum levels.
-- Modal/menu state: settings, device menu, queue menu, add-to-playlist menu, track context menu.
+- Modal/menu state: device menu, queue menu, add-to-playlist menu, track context menu.
 
 The design favors directness over abstraction. Most actions are plain functions inside [src/App.vue](src/App.vue) that call Tauri commands and then update refs.
 
@@ -153,6 +199,7 @@ Queue behavior is frontend-owned:
 - `playTrackFrom(...)` chooses a source list and starts playback of a single file.
 - `playNext()` and `playPrev()` are implemented in Vue using local queue state.
 - `refillQueue()` computes up to five upcoming items.
+- Source lists are paged. `queuedPagedSource` remembers which list (and query) the queue came from, so later pages are fetched as playback moves past what's loaded.
 - Repeat and shuffle modes are UI-level concerns.
 - Track list badges such as "now playing" and "up next" are derived from Vue state.
 
@@ -169,6 +216,9 @@ The frontend listens to native/backend events emitted by Rust:
 - `identify-progress`: shows track identification progress.
 - `library-changed`: reload trigger after indexing, identification, or sync.
 - `playback-finished`: fallback path for end-of-track handling.
+- `remote-playback`: another device has taken over playback on this one; the UI mirrors its state.
+- `soulseek-download` and `soulseek-preview`: Soulseek transfer progress.
+- `tauri://resumed`: the app came back to the foreground (Android); reload data and playback state.
 
 On Android there is also a direct JS bridge surface:
 
@@ -177,12 +227,14 @@ On Android there is also a direct JS bridge surface:
 
 ### 5.7 Visual design
 
-Interface icons use the official `@lucide/vue` package through [src/components/AppIcon.vue](src/components/AppIcon.vue), with an explicit icon registry in [src/icons.ts](src/icons.ts). Icons share a 24px viewBox and a stroke width of 2. Liked hearts use a filled state. Native select arrows use bundled SVG exports of Lucide ChevronDown. The Lucide license is included in [public/licenses/lucide.txt](public/licenses/lucide.txt). Application artwork and device emoji remain separate assets.
+Interface icons use the official `@lucide/vue` package through [src/components/AppIcon.vue](src/components/AppIcon.vue), with an explicit icon registry in [src/icons.ts](src/icons.ts). Icons are named by their meaning in the app (`back`, `queue`, `now-playing`), not by their Lucide glyph, so an icon set can replace each meaning separately; several names may share a glyph. Icons share a 24px viewBox and a stroke width of 2. Selects go through [src/components/AppSelect.vue](src/components/AppSelect.vue), which draws its arrow with the `dropdown` icon, so the arrow follows the text color and icon set. The Lucide license is included in [public/licenses/lucide.txt](public/licenses/lucide.txt). Application artwork and device emoji remain separate assets.
+
+Colors come from a theme plus three user choices. The theme's own data, its two palettes, is a `ThemeDefinition` in [src/themes/default.ts](src/themes/default.ts), the shape user theme files can take later. The choices are the accent color, the header gradient and the tint; the accent and gradient presets offered in settings live separately in [src/colorPresets.ts](src/colorPresets.ts), since they belong to the app's settings rather than to a theme. Each preset has a color per mode; a custom color is used as picked in both. [src/theme.ts](src/theme.ts) turns a definition and the choices into colors, and `applyTheme` sets them on the document root as `--color-<name>` variables, along with `color-scheme` so native controls and scrollbars match. [src/composables/useTheme.ts](src/composables/useTheme.ts) keeps the device-local preferences (mode `system`, `dark` or `light`, the accent, the header gradient and the tint) in localStorage, applies the saved theme before the app mounts, and animates later switches: a cross-fade through the View Transitions API where available, otherwise a short color transition, and no animation with reduced motion. It also matches the desktop title bar through Tauri's `setTheme` ([src/utils/nativeTheme.ts](src/utils/nativeTheme.ts)). Android's status and navigation bars are system interface and keep following the system's dark mode. Both palettes are literal values. The light grays keep the dark palette's contrast steps (each has the contrast against white that its dark counterpart has against black), with the sidebar and content area swapped so the sidebar stays as unobtrusive as the black one. The grays are neutral in the palettes and take on the accent's hue at runtime, as strongly as the tint setting says (0 to 100% of `FULL_TINT_CHROMA` in OKLCH), but never more colorfully than the accent itself, so black, white and gray accents leave the grays neutral. The content area stays neutral, since it carries the header gradient. Preset accents have a lighter, calmer light-mode color so black text on accent buttons reads easily; the text color on accent backgrounds is black or white by contrast, and the accent's hover and text shades are `color-mix`ed in the palettes. The home header's glow (`hero`) is a gradient preset's top color for the current mode, a custom color, or nothing, in which case `hero` is the content color and the page is flat. Gradient presets share one perceived lightness and colorfulness per mode, and so do the accent presets. Sizes that don't change with the theme (font sizes and their phone overrides, radii, the body font) are variables on `:root` in [src/styles/tokens.css](src/styles/tokens.css). Both are defined on the root rather than inside the app element, so content teleported to `<body>` (popups, the image preview, the now-playing detail view) resolves them too. Component styles use the tokens throughout, with translucent shades mixed from them (`color-mix(in srgb, var(--color-text) 8%, transparent)`). Both palettes are literal values. Only the accent is computed at runtime, because users can pick any color: it keeps its hue and aims for the WCAG minimums against the content area (3:1 for controls, 4.5:1 for accent text). In light mode it is first made a little less colorful and may darken only slightly, so vivid accents calm down without becoming a different color. The home header's glow (`hero`) is one of the definition's gradient presets, each with a dark and a light top color picked at the same perceived lightness and colorfulness; a custom color, which keeps its hue and takes the first preset's lightness and at most its colorfulness in each mode; or none, in which case `hero` is the content color and the page is flat. The accent presets likewise share one perceived lightness and colorfulness. Literal colors remain only in artwork: the vinyl record, onboarding art, the mascot glow, the 3D cover's lighting and materials, and the static "Made For You" covers. Cover placeholders are generated from file hashes by `placeholderCoverColors`: the hash picks the hues and a little variation, the mode the base saturation and lightness (`PLACEHOLDER_TONES` in [src/utils/covers.ts](src/utils/covers.ts)), so they are dark in dark mode and pastel in light mode. Art without a file hash (and the empty now-playing art) uses the theme's surface colors. A theme definition may also set its own accent, gradient and tint, which then take precedence over the user's choices, and settings hides those choices (`userColorChoices`). Rarity colors are part of the theme (`rarity-common` to `rarity-mythic`); code that needs a color value rather than a CSS variable, like the 3D cover, reads `activeThemeColors`. Styles built in TypeScript, such as the now-playing backdrop and spectrum ring, mix theme colors through `translucent()`.
 
 The current visual system combines music metadata with generated decoration:
 
-- Cover art is shown when available.
-- When no cover is available, the UI derives gradients from the track hash.
+- Cover art is shown when available, as `cover://` URLs through `CoverImage` (section 7.6).
+- When no cover is available, or while it loads, the UI shows a gradient derived from the file hash.
 - Tracks have rarity metadata that controls tinting and some animation.
 - The now-playing detail view combines a WebGL-rendered album object with a CSS-driven spectrum ring.
 - Beat events animate player controls and art using a decaying pulse model.
@@ -192,9 +244,9 @@ The current visual system combines music metadata with generated decoration:
 
 [src/components/WebGLAlbumRenderer.vue](src/components/WebGLAlbumRenderer.vue) isolates the 3D portion of the now-playing detail card. It receives:
 
-- `coverUrl`
+- `coverUrl` (the medium-size cover)
 - two palette colors
-- rarity color
+- rarity color, or `null` for a neutral sheen (tracks without a highlighted rarity)
 - beat scale
 - play/pause state
 - pointer tilt and offset
@@ -218,10 +270,10 @@ This keeps the rendering code separate while the rest of the visual chrome remai
 - Library shows the data folder, indexing progress, a Show duplicates switch, and access to duplicate review and identification. The switch controls the existing shared duplicate filter.
 - About includes a Licenses link opening `public/licenses/third-party.txt` in the GitHub repository default branch. The file must be published with the app source for the link to resolve. `pnpm build` runs `scripts/generate-licenses.mjs` to collect installed npm runtime dependencies and Cargo dependencies for the build target into `public/licenses/third-party.txt`. Bundled license and notice files are preserved; packages declaring only an SPDX identifier use standard texts from `spdx-license-list`. Packages with no license metadata are explicitly identified. `LICENSES_TARGET` can override the target, otherwise the Tauri target, Cargo target, or Rust host is used. Run `pnpm licenses:generate` to refresh the file for development.
 - Playback shares audio output and sample rate state with the footer device picker.
-- Discord RPC has its own settings section for the optional desktop integration. It is disabled by default and stored per device. See [Discord Rich Presence](#510-discord-rich-presence) for setup, architecture, and checks.
+- Discord RPC has its own settings section for the optional Discord Rich Presence integration. It is disabled by default and stored per device. The frontend adapter sends playback snapshots to an isolated native worker with throttled updates and reconnects. The `discord-rpc` Cargo feature (on by default, desktop only) can omit the implementation and dependency; `DISCORD_CLIENT_ID` overrides the built-in public application ID at compile time ([src-tauri/src/discord_presence.rs](src-tauri/src/discord_presence.rs)). See [Discord Rich Presence](#510-discord-rich-presence) for setup, architecture, and checks.
 - Devices & Sync edits this device identity and controls the existing LAN sync setting. Peer management stays in the Devices view.
 - Soulseek owns credential drafts with explicit Save and Cancel actions. Device and Soulseek forms read the latest saved configuration before writing, so saving one form preserves the other settings.
-- Appearance stores device-local preferences in localStorage through [src/composables/useAppearance.ts](src/composables/useAppearance.ts). Reduced motion also respects the system preference, stops beat and cover motion, and uses a still cover. The 3D cover and rarity animations can be controlled independently.
+- Appearance holds the theme mode, accent color, header gradient and tint (through `useTheme`, built from the generic `SegmentedControl`, `SwatchPicker`, `CustomColorSwatch` and `RangeSlider` components) and the motion preferences, all device-local in localStorage. Motion preferences go through [src/composables/useAppearance.ts](src/composables/useAppearance.ts). Reduced motion also respects the system preference, stops beat and cover motion, and uses a still cover. The 3D cover and rarity animations can be controlled independently.
 - About uses [src/components/AboutPanel.vue](src/components/AboutPanel.vue) for version information, the existing updater flow, release notes, and contributor profiles. Each frontend build runs [scripts/sync-contributors.mjs](scripts/sync-contributors.mjs) to refresh GitHub contributors and download their avatars into bundled assets. A checked-in snapshot keeps development and offline builds usable. The application makes no network requests to display these credits.
 
 Device identity and Soulseek credentials keep their existing SQLite persistence. Appearance preferences are separate from music metadata and are not synced. Long-running actions report progress, and setting failures remain visible next to the affected controls.
@@ -282,84 +334,38 @@ The unit tests cover disabled behavior, immediate pause and disable cleanup, upd
 
 ### 6.1 Tauri bootstrap
 
-[src-tauri/src/lib.rs](src-tauri/src/lib.rs) does four things:
+[src-tauri/src/lib.rs](src-tauri/src/lib.rs):
 
-- Creates the Tauri application.
-- Registers managed state objects.
-- Auto-starts peer discovery during setup.
+- Creates the Tauri application, with the `cover://` URI scheme and, on desktop, the process and updater plugins.
+- Sets up the data directory (or, with `--demo`, a seeded demo library) and registers managed state objects.
+- Unless in demo mode, starts peer discovery and the peer HTTP server.
 - Exposes the Rust command surface to the Vue frontend.
+- On exit, shuts down the Discord presence worker.
 
 Managed state currently includes:
 
 - `LibraryState`
 - `AudioState`
+- `DiscordPresenceState`
 - `PlaybackState`
 - `DiscoveryState`
+- `SoulseekState`
 - `SyncState`
 
 ### 6.2 Command surface
 
-The command layer is wide but straightforward.
+The complete list is the `generate_handler![...]` call in [src-tauri/src/lib.rs](src-tauri/src/lib.rs); a command that isn't registered there can't be called. By module:
 
-Library commands:
-
-- `search_tracks`
-- `get_all_tracks`
-- `reindex`
-- `update_track`
-- `toggle_like`
-- `get_data_dir`
-- `record_play`
-- `get_recent_tracks`
-- `get_play_history`
-- `get_playlists`
-- `create_playlist`
-- `rename_playlist`
-- `delete_playlist`
-- `get_playlist_tracks`
-- `add_track_to_playlist`
-- `remove_track_from_playlist`
-- `get_smart_playlists`
-- `save_smart_playlist`
-- `delete_smart_playlist`
-- `get_device_emoji`
-- `set_device_emoji`
-- `get_device_settings`
-- `set_device_settings`
-
-Audio commands:
-
-- `get_output_devices`
-- `set_output_device`
-- `get_volume`
-- `set_volume`
-
-Playback commands:
-
-- `playback_play`
-- `playback_pause`
-- `playback_resume`
-- `playback_stop`
-- `playback_seek`
-- `playback_set_volume`
-- `playback_spectrum`
-- `playback_status`
-
-Discovery commands:
-
-- `discovery_start`
-- `discovery_stop`
-- `discovery_peers`
-
-Sync commands:
-
-- `sync_set_enabled`
-- `sync_get_enabled`
-- `sync_with_peer`
-
-Identify commands:
-
-- `identify_tracks`
+- Library: paged track queries (`get_tracks_page`, `get_smart_playlist_tracks_page`, `get_playlist_tracks_page`), search, artist albums, track editing and likes, track file replacement (`replace_track_with_file`), plays and history, playlists and smart playlists (including pinning), duplicates, indexing, device settings, revealing a file in the system file manager.
+- Import: `import_dropped_files`.
+- Playback: `playback_play_track` (by track id, including CUE segments), `playback_play` and `playback_play_absolute` (by path), pause, resume, stop, seek, volume, `playback_status`, `playback_spectrum`.
+- Audio: output devices, sample rate, and volume.
+- Soulseek: status, search, cover previews, download, preview (playback while downloading), and promoting a preview into the library.
+- Discovery: start, stop, list peers.
+- Sync: enable, run a sync with a peer, and `remote_playback_*` (status, transfer, pause, resume, stop, seek, volume).
+- Identify: `identify_tracks`.
+- Discord: `discord_availability`, `discord_update_presence`.
+- About: `about_info`, and `about_check_updates` and `about_do_update` for Android updates (desktop uses the updater plugin from the frontend).
 
 ## 7. Library and Persistence Design
 
@@ -378,16 +384,18 @@ Persistence is centered around a single SQLite file: `app.db` under the data dir
 
 Main tables:
 
-- `tracks`: core metadata, path, duration, cover hash, file hash, rarity, manual edits, likes, play count, year, genre, date added.
+- `tracks`: path, metadata (including album artist, disc number, tags), duration, cover hash, file hash, rarity, manual edits, likes, play count, date added, duplicate flag, and CUE segment fields (`source_kind`, `source_path`, `cue_path`, segment start and end). `cover_data` and `cover_mime` are legacy.
+- `library_tracks` (view): every `tracks` column plus `album_artist_or_artist`, the artist an album is listed under (album artist tag, else the track artist; Various Artists spellings normalized). Tags aren't borrowed from other tracks with the same album name, because different releases often share one ("Greatest Hits"), so an untagged compilation splits by track artist. Albums are identified by album name plus this column, and track queries read the view, not the table.
 - `play_history`: playback history tied to track IDs.
 - `device_config`: local device UUID, emoji, user-visible device name, sync preferences, and Soulseek settings.
-- `playlists`: regular playlists.
+- `playlists`: regular playlists, with pinning to the home screen.
 - `playlist_tracks`: ordered membership of tracks in playlists.
-- `smart_playlists`: saved smart playlist definitions.
+- `smart_playlists`: saved rule sets (`rules_json`, `match_mode`), with pinning.
 
 Design notes:
 
 - Schema migration is handled inline with additive `ALTER TABLE` statements, not with a separate migration framework.
+- A new column filled from tags stays empty for existing tracks, since unchanged files aren't re-read. For album artist and disc number, a background pass at startup reads just those tags for rows that predate the columns (`album_artist IS NULL`; a missing tag is stored as `''`). Files it can't open stay `NULL` and are retried at the next start.
 - Covers are extracted during indexing and kept once per distinct image as small resized files (`covers.rs`); tracks reference them by `cover_hash`.
 - Local track identity is the SQLite row ID.
 - Cross-device identity is the file hash.
@@ -410,7 +418,9 @@ The library subsystem in [src-tauri/src/library.rs](src-tauri/src/library.rs) is
 - Opening and initializing the database.
 - Performing a full scan on first launch.
 - Starting a filesystem watcher for incremental updates.
-- Extracting metadata and covers from audio files.
+- Extracting metadata and covers from audio files, falling back to a sidecar image (`cover.jpg`, `folder.jpg`, ...) when a file has no embedded art.
+- Turning each CUE sheet into one virtual track per segment, pointing at the shared audio file.
+- Skipping its own folders inside the library root (`.covers`, `.soulseek-*`).
 - Hashing files for deduplication and sync.
 - Emitting progress and library change events.
 
@@ -419,23 +429,27 @@ Important design decision:
 - A full scan only happens automatically on first database creation.
 - Later launches rely on the filesystem watcher plus user-triggered manual reindex.
 
-This keeps startup cost lower after the initial import.
+This keeps startup cost lower after the initial import. Indexing holds the database lock per file, and all database access goes through one `Mutex<Connection>`.
 
 ### 7.5 Playlists
 
 There are two playlist systems:
 
-- Regular playlists: stored in SQLite as explicit ordered track memberships.
-- Smart playlists: stored in SQLite as saved rule sets, but evaluated in the frontend against the loaded library snapshot.
+- Regular playlists: stored in SQLite as explicit ordered track memberships, loaded in pages.
+- Smart playlists: stored in SQLite as rule sets, compiled to SQL in Rust (`compile_smart_playlist_sql`), and loaded in pages.
 
-Smart playlist rules can currently target fields such as title, artist, album, genre, extension, year, play count, like state, and date added.
+Rules can be nested in any/all groups, which the editor doesn't create yet. The artist and album pages fetch their tracks through the same rules ([src/api.ts](src/api.ts)). Text fields support `contains`, `in` (exact match, blank values ignored) and `is_empty` (missing or blank); album pages use `is_empty` for albums without an artist, and the editor doesn't offer it yet.
 
-This is a hybrid design:
+### 7.6 Covers
 
-- Persistence lives in Rust/SQLite.
-- Evaluation currently lives in Vue.
+[src-tauri/src/covers.rs](src-tauri/src/covers.rs) keeps each distinct cover once, named by the blake3 hash of the original image:
 
-That makes iteration on UI rules easy, but it means smart playlist results are computed on the client side and depend on the currently loaded full library state.
+- At index time a cover is resized to 128 px and 512 px JPEGs in `<data>/.covers` (SVGs are kept as they are). Originals aren't stored.
+- `tracks.cover_hash` names a track's cover, and albums share one copy.
+- The webview loads them over the `cover://` URI scheme (`cover://localhost/<hash>-small`, `-medium`), off the main thread. `-full` reads the original back from a track's audio file or sidecar.
+- WebKitGTK only loads custom-scheme images in CORS mode, so covers are shown with `<img crossorigin="anonymous">` (`CoverImage`), not CSS backgrounds.
+- At startup a background pass deletes stored covers that no track references.
+- Soulseek search-result covers go into the same store.
 
 ## 8. Playback Design
 
@@ -450,9 +464,11 @@ That makes iteration on UI rules easy, but it means smart playlist results are c
 - Real-time beat and spectrum analysis.
 - End-of-track notification back into the frontend.
 
+A track source is a whole file, a CUE segment of a file, or a Soulseek preview: a file that is still downloading, where the decoder waits for more data.
+
 ### 8.2 Playback pipeline
 
-[src-tauri/src/audio_codecs.rs](src-tauri/src/audio_codecs.rs) provides a shared codec registry with all enabled Symphonia codecs and an Opus adapter backed by the `opus` crate. Libopus is compiled and linked statically. The adapter validates OpusHead, applies its output gain, handles packets up to 120 ms, and maps mono through 7.1 channel layouts into Symphonia channel order. Ogg Opus uses gapless packet trimming and 80 ms of seek pre-roll, discarding decoded samples before the requested position.
+[src-tauri/src/audio_codecs.rs](src-tauri/src/audio_codecs.rs) provides the codec registry playback decodes with, with all enabled Symphonia codecs and an Opus adapter backed by the `opus` crate. Libopus is compiled and linked statically. The adapter validates OpusHead, applies its output gain, handles packets up to 120 ms, and maps mono through 7.1 channel layouts into Symphonia channel order. Ogg Opus uses gapless packet trimming and 80 ms of seek pre-roll, discarding decoded samples before the requested position.
 
 The local `symphonia-format-ogg` Cargo patch fixes Opus pre-skip and end padding, including streams containing only one audio page and packets queued before start/end probing. Its provenance and changes are recorded in [src-tauri/vendor/symphonia-format-ogg/PATCHES.md](src-tauri/vendor/symphonia-format-ogg/PATCHES.md). Other Ogg codecs retain the upstream demuxer behavior. Synthetic fixtures cover Opus decoding and seeking, channel order, long packets, and FLAC/MP3/Vorbis regression checks without an audio device.
 
@@ -503,7 +519,7 @@ There are two related but not fully unified backend surfaces:
 - `AudioState` in [src-tauri/src/audio.rs](src-tauri/src/audio.rs) exposes device enumeration and a generic volume state.
 - `PlaybackState` in [src-tauri/src/playback.rs](src-tauri/src/playback.rs) owns the actual playback stream volume and selected output device used by the stream.
 
-Today, the UI uses `playback_set_volume` for real playback volume, but device selection flows through `AudioState`. This is a known architectural split and should eventually be unified so the device picker controls the same state the playback stream actually uses.
+`set_output_device` stores the selected device and sample rate in both, so the stream follows the device picker. Volume is still duplicated: the UI uses `playback_set_volume` for the real playback volume, while `AudioState` keeps a value of its own.
 
 ### 8.6 End-of-track behavior
 
@@ -529,24 +545,27 @@ Each instance:
 - Tracks peer host, addresses, port, device name, and emoji.
 - Emits `discovery-peers` whenever the peer list changes.
 
-Discovery is started automatically during app setup.
+Discovery is started automatically during app setup, except in demo mode.
 
 ### 9.2 Sync protocol
 
 [src-tauri/src/sync.rs](src-tauri/src/sync.rs) provides both server and client behavior.
 
-When sync is enabled, the local app serves a small HTTP API on port `57322`:
+The HTTP server on port `57322` starts at launch (not in demo mode) and stays up; the sync setting controls whether this device pulls from peers. Endpoints:
 
-- `GET /tracks`: index of available tracks with hashes and metadata.
-- `GET /file/<hash>`: raw file content for a specific track hash.
-- `GET /sync-data`: track metadata, playlists, smart playlists, and history.
+- `GET /status`: version, device name, and current playback.
+- `GET /tracks`: available tracks with hashes and metadata.
+- `GET /file/<hash>`: raw file content for a track hash. `GET /cue/<hash>`: the CUE sheet of a CUE track.
+- `GET /sync-merkle/*`: Merkle summaries of track metadata, playlists, smart playlists, and history (in daily chunks), so peers fetch only what differs.
+- `GET /sync-data`: all metadata, playlists, smart playlists, and history at once; the fallback for peers without Merkle support.
+- `POST /control/*`: remote playback (section 9.4).
 
 Sync is hash-based:
 
 - Files are identified by `file_hash`.
-- Missing files are downloaded from peers.
+- Missing files are downloaded from peers, then the library is reindexed.
 - Hash collisions are treated as duplicates rather than separate items.
-- Metadata and playlists are merged after transfer.
+- Metadata, playlists, and history are then merged through the Merkle endpoints, falling back to `/sync-data`.
 
 Frontend interaction model:
 
@@ -601,6 +620,16 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 pnpm exec vue-tsc --noEmit
 ```
 
+### 9.5 Remote playback
+
+A device can hand its current track to a peer and keep controlling it:
+
+- `remote_playback_transfer` posts the file hash and position to the peer's `/control/play-hash`, and the peer plays its own copy of that file.
+- `remote_playback_pause`, `_resume`, `_stop`, `_seek`, and `_volume` map to the other `/control/*` endpoints; `remote_playback_status` reads the peer's `/status`.
+- The controlled device emits `remote-playback`, and its UI mirrors the remote state instead of advancing its own queue.
+
+The protocol has no authentication, like the rest of the peer server.
+
 ## 10. Track Identification Design
 
 [src-tauri/src/identify.rs](src-tauri/src/identify.rs) provides metadata enrichment for existing local files.
@@ -613,11 +642,32 @@ Pipeline:
 - Write matched metadata back into the local library.
 - Emit `identify-progress` to drive the frontend progress UI.
 
+It decodes with Symphonia's default codecs, not the playback registry in `audio_codecs.rs`, so it can't fingerprint Opus files.
+
 This subsystem is intentionally asynchronous and event-driven because identification can be slow and network-bound.
 
-## 11. Android Design
+## 11. Soulseek and Other Subsystems
 
-### 11.1 Why Android needs a native layer
+### 11.1 Soulseek
+
+[src-tauri/src/soulseek.rs](src-tauri/src/soulseek.rs) wraps the vendored soulseek-rs client, logging in with the credentials from device settings:
+
+- Search returns audio files, each with a cover file from the same remote folder when there is one.
+- Preview downloads into `.soulseek-preview-cache` and starts playback while the file is still growing. A finished preview can be promoted into the library.
+- Download saves into the library as `Artist/Album/filename` (or less, when tags are missing), along with the folder's cover as a sidecar, and indexes it.
+- Track replacement (the `track-replace` view) uses search and download to swap a track's file through `replace_track_with_file`, keeping its metadata, likes, and history.
+- Progress is reported through `soulseek-download` and `soulseek-preview` events.
+
+### 11.2 Import, duplicates, about, demo mode
+
+- [src-tauri/src/import.rs](src-tauri/src/import.rs): dropped files and folders are copied (never moved) into the library with the same path convention as Soulseek downloads, then indexed.
+- Duplicates: `find_duplicates` groups likely duplicates and `apply_dedup` flags them. Nothing is deleted from disk or the database; flagged tracks are hidden unless duplicates are shown.
+- Updates: on desktop the About section of Settings uses the signed Tauri updater from the frontend (`check()`, `downloadAndInstall()`, then `relaunch()`), with a `latest.json` manifest published to GitHub Releases. Android can't install through the Tauri updater, so [src-tauri/src/about.rs](src-tauri/src/about.rs) checks the GitHub releases of the repository the build came from (`about_check_updates`), and `about_do_update` downloads the APK into Downloads and opens it with the system installer. `about_info` provides version info for both.
+- [src-tauri/src/demo.rs](src-tauri/src/demo.rs): the `--demo` flag uses a separate data directory (`demo-data`, or `/sdcard/Player Demo` on Android) and an in-memory database seeded with demo tracks, playlists, and history, without discovery or the sync server. It's used for the README screenshots.
+
+## 12. Android Design
+
+### 12.1 Why Android needs a native layer
 
 Tauri provides the embedded app shell, but Android playback UX still needs direct native integration for:
 
@@ -627,7 +677,7 @@ Tauri provides the embedded app shell, but Android playback UX still needs direc
 - File-system permission handling.
 - WebView-to-native bridging.
 
-### 11.2 MainActivity bridge
+### 12.2 MainActivity bridge
 
 [src-tauri/gen/android/app/src/main/java/dev/verncat/player/MainActivity.kt](src-tauri/gen/android/app/src/main/java/dev/verncat/player/MainActivity.kt) adds Android-specific behavior around the Tauri activity.
 
@@ -645,8 +695,9 @@ Bridge methods exposed to JS:
 - `updatePlayback(title, artist, isPlaying, positionSec, durationSec)`
 - `stopPlayback()`
 - `openFolder(relativePath)`
+- `shareFile(relativePath)`
 
-### 11.3 MediaPlaybackService
+### 12.3 MediaPlaybackService
 
 [src-tauri/gen/android/app/src/main/java/dev/verncat/player/MediaPlaybackService.kt](src-tauri/gen/android/app/src/main/java/dev/verncat/player/MediaPlaybackService.kt) owns Android's playback notification and media session.
 
@@ -657,7 +708,7 @@ Responsibilities:
 - Maintain a MediaSession with play/pause/next/previous/seek actions.
 - Forward notification actions back into the WebView through `MainActivity.sendToJs(...)`.
 
-### 11.4 Frontend/native contract
+### 12.4 Frontend/native contract
 
 The Android notification is not driven directly by Rust playback state. Instead:
 
@@ -667,19 +718,19 @@ The Android notification is not driven directly by Rust playback state. Instead:
 
 This is an intentional consequence of frontend-owned queue behavior: the native layer mirrors the UI state rather than independently deriving playlist flow.
 
-## 12. Events and Data Flow
+## 13. Events and Data Flow
 
-### 12.1 Frontend to backend
+### 13.1 Frontend to backend
 
 Most frontend actions use direct Tauri `invoke(...)` calls. Typical flow:
 
 1. User clicks a track.
 2. Vue decides the source list and queue implications.
-3. Vue invokes `playback_play` with a file path.
-4. Vue starts polling `playback_status` and `playback_spectrum` as needed.
+3. Vue invokes `playback_play_track` with the track id (Soulseek previews go through `soulseek_play_preview`).
+4. Vue polls `playback_status` every 250 ms while playing, and `playback_spectrum` every 50 ms while the detail view is open.
 5. Vue pushes current state into Android via `syncAndroid()` when applicable.
 
-### 12.2 Backend to frontend
+### 13.2 Backend to frontend
 
 Background or long-running subsystems communicate through events:
 
@@ -694,48 +745,54 @@ This gives the app a mixed model:
 - Commands for request/response operations.
 - Events for asynchronous, background, or streaming updates.
 
-## 13. Build and Runtime Targets
+## 14. Build and Runtime Targets
 
 Relevant package scripts in [package.json](package.json):
 
-- `pnpm dev`: Vite-only frontend dev server.
-- `pnpm build`: frontend typecheck and bundle.
-- `pnpm tauri dev`: Tauri desktop/mobile dev.
+- `pnpm dev`: Vite-only frontend dev server (no Rust backend).
+- `pnpm build`: regenerates the third-party license file and the contributor snapshot, then typechecks and bundles the frontend.
+- `pnpm licenses:generate` and `pnpm contributors:sync`: run those two steps alone; `pnpm test:licenses` and `pnpm test:contributors` test their scripts.
+- `pnpm tauri dev`: Tauri desktop/mobile dev. `pnpm tauri dev -- -- --demo` runs demo mode.
+- `pnpm tauri:tracy`: release build with Tracy profiling.
+- `pnpm version:sync`: copies the `package.json` version to `Cargo.toml`, `Cargo.lock`, and `tauri.conf.json` (also runs before every `pnpm tauri ...`).
+- `pnpm updater:manifest`: generates the updater manifest for a release.
 - `pnpm android:build`: Android build.
 - `pnpm android:sign`: signs the release APK.
 - `pnpm android:deploy`: installs a previously built signed APK.
 - `pnpm android:build-deploy`: full Android build followed by deploy.
 
+Releases: pushing a changed `Cargo.toml` version to `main` creates a `v<version>` tag, which triggers the workflow that builds signed desktop and Android artifacts.
+
 The repository currently includes generated Android project files under `src-tauri/gen/android`. Those files are part of the build output surface for Android, but some of them also contain project-specific customizations and should be treated as part of the effective runtime design.
 
-## 14. Known Tradeoffs and Constraints
+## 15. Known Tradeoffs and Constraints
 
 The current design is functional and pragmatic, but several tradeoffs are explicit:
 
 - [src/App.vue](src/App.vue) is a very large, stateful single-file component.
 - Queue logic is in Vue, while playback execution is in Rust; this keeps UI control flexible but requires explicit synchronization.
-- Smart playlist definitions are stored in SQLite, but rule evaluation is still frontend-side.
-- The search view exists in the UI shell but is not implemented yet.
 - The home screen includes hardcoded demo cards for "Made For You".
 - Android media state depends on explicit frontend-to-native synchronization rather than a native-only playback source of truth.
-- Output device state is currently split between `AudioState` and `PlaybackState`.
+- Volume state is duplicated between `AudioState` and `PlaybackState`.
+- Library commands are synchronous Tauri commands, so they run on the main thread, and all database access goes through one `Mutex<Connection>` that indexing also holds.
+- Per-frame visual state (beat pulse, card tilt, spectrum) lives in App.vue, so these animations re-render the whole shell.
+- The library list isn't virtualized; loaded rows stay in the DOM.
+- Soulseek credentials are stored unencrypted in `app.db`.
 - Schema migration is additive and inline, not centrally versioned.
 - Sync is optimized for trusted local networks and does not implement authentication, encryption, or conflict-heavy collaborative semantics.
 
 These are not hidden bugs in the document; they are part of the current design reality.
 
-## 15. Recommended Refactoring Directions
+## 16. Recommended Refactoring Directions
 
 If the project grows, the highest-value refactors are:
 
-- Split [src/App.vue](src/App.vue) into feature components and composables.
-- Move smart playlist evaluation into Rust so results are queryable and consistent across screens and devices.
-- Unify output device and volume ownership so the UI talks to a single playback settings surface.
+- Keep splitting [src/App.vue](src/App.vue) into feature components and composables.
+- Unify volume ownership so the UI talks to a single playback settings surface.
 - Introduce a clearer playback state machine shared by Rust, Vue, and Android sync code.
 - Tighten the sync protocol with version negotiation, optional auth, and better conflict policy.
-- Refresh [README.md](README.md) so repository-level documentation matches the real product instead of the default template.
 
-## 16. Summary
+## 17. Summary
 
 The project is a local-first music player with a deliberately mixed architecture:
 

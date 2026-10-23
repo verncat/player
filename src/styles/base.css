@@ -1,0 +1,20 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #app { height: 100%; overflow: hidden; }
+body { background: var(--color-bg); font-family: var(--font-body); }
+button, input, select, textarea { font: inherit; }
+a, button, [role="button"] {
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+
+/* Theme switches: a cross-fade where view transitions exist, otherwise a short color transition. */
+::view-transition-old(root),
+::view-transition-new(root) { animation-duration: var(--theme-transition-duration); }
+html.theme-transition *,
+html.theme-transition *::before,
+html.theme-transition *::after {
+  transition: background-color var(--theme-transition-duration), color var(--theme-transition-duration),
+    border-color var(--theme-transition-duration), outline-color var(--theme-transition-duration),
+    fill var(--theme-transition-duration), stroke var(--theme-transition-duration),
+    box-shadow var(--theme-transition-duration) !important;
+}

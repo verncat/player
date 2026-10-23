@@ -26,13 +26,13 @@ const emit = defineEmits<{
   <aside class="sidebar" :class="{ 'sidebar-open': open }">
     <div class="sidebar-mobile-header">
       <button class="icon-btn sidebar-close-btn" @click="emit('close')" aria-label="Close menu">
-        <AppIcon name="x" :size="22" />
+        <AppIcon name="close" :size="22" />
       </button>
     </div>
 
     <nav>
       <a class="nav-item" :class="{ active: activeNav === 'home' }" @click.prevent="emit('navigateHome')" href="#">
-        <AppIcon name="house" :size="22" />
+        <AppIcon name="home" :size="22" />
         Home
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'search' }" @click.prevent="emit('navigateSearch')" href="#">
@@ -40,15 +40,15 @@ const emit = defineEmits<{
         Search
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'library' }" @click.prevent="emit('navigateLibrary')" href="#">
-        <AppIcon name="library-big" :size="22" />
+        <AppIcon name="library" :size="22" />
         Your Library
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'playlists' }" @click.prevent="emit('navigatePlaylists')" href="#">
-        <AppIcon name="list-music" :size="22" />
+        <AppIcon name="playlist" :size="22" />
         Playlists
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'playlists' && playlistTab === 'smart' }" @click.prevent="emit('navigateSmartPlaylists')" href="#">
-        <AppIcon name="list-filter" :size="22" />
+        <AppIcon name="smart-playlist" :size="22" />
         Flexible Playlists
       </a>
     </nav>
@@ -57,13 +57,13 @@ const emit = defineEmits<{
 
     <nav>
       <a class="nav-item" :class="{ active: activeNav === 'discovery' }" @click.prevent="emit('navigateDiscovery')" href="#">
-        <AppIcon name="wifi" :size="22" />
+        <AppIcon name="network" :size="22" />
         Devices
         <span v-if="syncActive" class="nav-sync-spinner" aria-label="Sync in progress" />
         <span v-else-if="peersCount" class="peer-badge">{{ peersCount }}</span>
       </a>
       <a class="nav-item" :class="{ active: activeNav === 'friends' || activeNav === 'friend' }" @click.prevent="emit('navigateFriends')" href="#">
-        <AppIcon name="users" :size="22" />
+        <AppIcon name="friends" :size="22" />
         Friends
       </a>
     </nav>
@@ -71,7 +71,7 @@ const emit = defineEmits<{
       <a class="nav-item" :class="{ active: activeNav === 'settings' || activeNav.startsWith('settings/') || activeNav === 'about' }" href="#" @click.prevent="emit('navigateSettings')">
         <AppIcon name="settings" :size="22" />
         Settings
-        <span v-if="updateAvailable" class="peer-badge" aria-label="Update available"><AppIcon name="plus" :size="12" /></span>
+        <span v-if="updateAvailable" class="peer-badge" aria-label="Update available"><AppIcon name="update-available" :size="12" /></span>
       </a>
     </nav>
   </aside>
@@ -80,7 +80,8 @@ const emit = defineEmits<{
 <style scoped>
 .sidebar {
   grid-row: 1 / 2;
-  background: #000;
+  background: var(--color-bg);
+  border-right: 1px solid color-mix(in srgb, var(--color-shadow) 20%, transparent);
   padding: 20px 8px;
   display: flex;
   flex-direction: column;
@@ -96,7 +97,7 @@ const emit = defineEmits<{
   gap: 14px;
   padding: 9px 12px;
   border-radius: 6px;
-  color: #b3b3b3;
+  color: var(--color-text-muted);
   text-decoration: none;
   font-size: var(--fs-nav);
   font-weight: 600;
@@ -105,14 +106,14 @@ const emit = defineEmits<{
   user-select: none;
   position: relative;
 }
-.nav-item:hover { color: #fff; }
-.nav-item:focus-visible { outline: 2px solid #1db954; outline-offset: -2px; }
-.nav-item.active { color: #fff; }
+.nav-item:hover { color: var(--color-text); }
+.nav-item:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.nav-item.active { color: var(--color-text); }
 
 .peer-badge {
   margin-left: auto;
-  background: #1db954;
-  color: #000;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
   font-size: var(--fs-eyebrow);
   font-weight: 700;
   width: 18px;
@@ -128,8 +129,8 @@ const emit = defineEmits<{
   margin-left: auto;
   width: 18px;
   height: 18px;
-  border: 2px solid #555;
-  border-top-color: #1db954;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 0.75s linear infinite;
   flex-shrink: 0;
@@ -137,14 +138,14 @@ const emit = defineEmits<{
 
 .sidebar-divider {
   height: 1px;
-  background: #282828;
+  background: var(--color-border);
   margin: 8px 12px;
 }
 
 .icon-btn {
   background: none;
   border: none;
-  color: #b3b3b3;
+  color: var(--color-text-muted);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -154,7 +155,7 @@ const emit = defineEmits<{
   border-radius: 4px;
   transition: color .1s;
 }
-.icon-btn:hover { color: #fff; }
+.icon-btn:hover { color: var(--color-text); }
 
 .mobile-nav-overlay { display: none; }
 .sidebar-mobile-header { display: none; }
@@ -178,8 +179,8 @@ const emit = defineEmits<{
     overflow-x: hidden;
     overflow-y: auto;
     border-bottom: none;
-    border-right: 1px solid #282828;
-    background: #121212;
+    border-right: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
     transform: translateX(-100%);
     transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
   }
@@ -194,7 +195,7 @@ const emit = defineEmits<{
     flex-shrink: 0;
   }
   .sidebar-close-btn {
-    color: #b3b3b3;
+    color: var(--color-text-muted);
     padding: 8px;
   }
   .sidebar nav {

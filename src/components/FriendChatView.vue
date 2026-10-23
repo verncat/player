@@ -174,7 +174,7 @@ onUnmounted(() => {
     <div v-else-if="error" class="chat-empty"><p role="alert">{{ error }}</p><button class="chat-action" @click="loadContext">Try again</button></div>
     <template v-else-if="chat">
       <div class="chat-toolbar">
-        <div class="chat-avatar" aria-hidden="true">{{ [...chat.friend.name][0]?.toUpperCase() || '' }}<AppIcon v-if="!chat.friend.name" name="users" :size="24" /></div>
+        <div class="chat-avatar" aria-hidden="true">{{ [...chat.friend.name][0]?.toUpperCase() || '' }}<AppIcon v-if="!chat.friend.name" name="friends" :size="24" /></div>
         <div class="chat-identity">
           <span class="chat-service">Soulseek PM</span>
           <span class="chat-profile-id">{{ chat.friend.profile_id }}</span>
@@ -182,30 +182,30 @@ onUnmounted(() => {
         <ResponsivePopup :open="accountMenu" panel-class="chat-account-popup" @close="accountMenu = false">
           <template #trigger>
             <button v-if="chat.usernames.length" ref="accountTrigger" class="chat-action chat-account chat-account-trigger" :aria-expanded="accountMenu" :disabled="sending" @click="accountMenu = !accountMenu">
-              {{ selectedUser || 'Choose account' }} <AppIcon name="chevron-down" :size="16" />
+              {{ selectedUser || 'Choose account' }} <AppIcon name="dropdown" :size="16" />
             </button>
           </template>
           <div class="chat-account-list" aria-label="Soulseek accounts">
-            <button v-for="username in chat.usernames" :key="username" @click="chooseUser(username)">{{ username }}<AppIcon v-if="selectedUser === username" name="check" :size="16" /></button>
+            <button v-for="username in chat.usernames" :key="username" @click="chooseUser(username)">{{ username }}<AppIcon v-if="selectedUser === username" name="selected" :size="16" /></button>
           </div>
         </ResponsivePopup>
-        <button class="chat-icon-button" title="Find Soulseek accounts" aria-label="Find Soulseek accounts" :disabled="refreshing || sending" @click="findAccounts"><AppIcon name="refresh-cw" :size="18" /></button>
+        <button class="chat-icon-button" title="Find Soulseek accounts" aria-label="Find Soulseek accounts" :disabled="refreshing || sending" @click="findAccounts"><AppIcon name="refresh" :size="18" /></button>
       </div>
       <p v-if="!chat.enabled || !chat.configured" class="chat-notice">Enable and configure Soulseek to send and receive messages. <a href="#" @click.prevent="emit('openSoulseekSettings')">Open settings</a></p>
       <p v-else-if="selectedUser" class="chat-account-note">Chatting with {{ selectedUser }} as {{ chat.account }}. This Soulseek account is unverified.</p>
 
       <div v-if="!chat.usernames.length" class="chat-empty">
-        <AppIcon name="message-circle" :size="40" />
+        <AppIcon name="chat" :size="40" />
         <h2>No Soulseek account linked yet</h2>
         <p>This friend is saved. A Soulseek username is needed to start a conversation.</p>
         <button class="chat-action" :disabled="refreshing || !chat.enabled || !chat.configured" @click="findAccounts">{{ refreshing ? 'Searching...' : 'Find Soulseek account' }}</button>
       </div>
-      <div v-else-if="!selectedUser" class="chat-empty"><AppIcon name="message-circle" :size="40" /><h2>Choose an account</h2><p>Select the Soulseek account you want to message.</p></div>
+      <div v-else-if="!selectedUser" class="chat-empty"><AppIcon name="chat" :size="40" /><h2>Choose an account</h2><p>Select the Soulseek account you want to message.</p></div>
       <template v-else>
         <div ref="history" class="chat-history" aria-label="Conversation" tabindex="0" @scroll.passive="nearBottom() && (hasNew = false)">
           <div v-if="hasOlder" class="chat-older"><button class="chat-action" :disabled="olderLoading" @click="loadOlder">{{ olderLoading ? 'Loading...' : 'Load older messages' }}</button></div>
           <div v-if="messagesLoading && !messages.length" class="chat-empty" role="status">Loading messages...</div>
-          <div v-else-if="!messages.length" class="chat-empty"><AppIcon name="message-circle" :size="36" /><h2>Start a conversation</h2><p>Your messages will be sent through Soulseek.</p></div>
+          <div v-else-if="!messages.length" class="chat-empty"><AppIcon name="chat" :size="36" /><h2>Start a conversation</h2><p>Your messages will be sent through Soulseek.</p></div>
           <template v-for="(message, index) in messages" :key="message.id">
             <div v-if="index === 0 || dateLabel(message.timestamp) !== dateLabel(messages[index - 1].timestamp)" class="chat-date">{{ dateLabel(message.timestamp) }}</div>
             <article class="chat-message" :class="{ outgoing: message.direction === 'outgoing', unconfirmed: message.state === 'unknown' }" :aria-label="message.direction === 'outgoing' ? 'Message from you' : `Message from ${selectedUser}`">
@@ -214,7 +214,7 @@ onUnmounted(() => {
             </article>
           </template>
         </div>
-        <button v-if="hasNew" class="chat-new" @click="scrollBottom">New messages <AppIcon name="chevron-down" :size="14" /></button>
+        <button v-if="hasNew" class="chat-new" @click="scrollBottom">New messages <AppIcon name="dropdown" :size="14" /></button>
         <form class="chat-composer" @submit.prevent="send">
           <textarea ref="composer" v-model="draft" rows="2" maxlength="4096" :placeholder="`Message ${selectedUser}`" aria-label="Message" :disabled="!chat.enabled || !chat.configured" @keydown="composerKeydown" />
           <button class="chat-send" type="submit" :disabled="!canSend" aria-label="Send message" title="Send message"><AppIcon name="send" :size="20" /></button>

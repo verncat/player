@@ -115,7 +115,7 @@ onUnmounted(() => { disposed = true; document.removeEventListener('keydown', onK
     <div class="friends-toolbar">
       <input v-model="query" class="friends-search" type="text" placeholder="Search friends" aria-label="Search friends" />
       <button ref="addButton" class="friends-add" @click="openAdd">
-        <AppIcon name="user-plus" :size="18" /> Add friend
+        <AppIcon name="add-friend" :size="18" /> Add friend
       </button>
     </div>
     <div v-if="error" class="friends-error" role="alert">
@@ -123,7 +123,7 @@ onUnmounted(() => { disposed = true; document.removeEventListener('keydown', onK
     </div>
     <div v-if="loading" class="friends-empty" role="status">Loading friends...</div>
     <div v-else-if="!friends.length && !error" class="friends-empty">
-      <AppIcon name="users" :size="40" />
+      <AppIcon name="friends" :size="40" />
       <h2>No friends yet</h2>
       <p>Add a friend using their Player Profile ID.</p>
       <p class="friends-note">Find your Profile ID in <a href="#" class="friends-settings-link" @click.prevent="emit('openDeviceSettings')">Devices &amp; Sync</a></p>
@@ -134,7 +134,7 @@ onUnmounted(() => { disposed = true; document.removeEventListener('keydown', onK
         <button class="friend-open" :aria-label="`Open chat with ${friend.name || 'Player friend'}`" @click="emit('openFriend', friend)">
         <div class="friend-avatar" aria-hidden="true">
           <span v-if="friend.name">{{ [...friend.name][0]?.toUpperCase() }}</span>
-          <AppIcon v-else name="users" :size="22" />
+          <AppIcon v-else name="friends" :size="22" />
         </div>
         <div class="friend-info">
           <span class="friend-name">{{ friend.name || 'Player friend' }}</span>
@@ -144,10 +144,10 @@ onUnmounted(() => { disposed = true; document.removeEventListener('keydown', onK
         </div>
         </button>
         <button class="friend-remove" :disabled="!!resolving || !!removing" :aria-label="`Find ${friend.name || friend.profile_id} on Soulseek`" title="Find on Soulseek" @click="resolveFriend(friend.profile_id)">
-          <AppIcon name="refresh-cw" :size="18" :class="{ 'friend-searching': resolving === friend.profile_id }" />
+          <AppIcon name="refresh" :size="18" :class="{ 'friend-searching': resolving === friend.profile_id }" />
         </button>
         <button class="friend-remove" :disabled="!!removing || resolving === friend.profile_id" :aria-label="`Remove ${friend.name || friend.profile_id}`" title="Remove friend" @click="removeFriend(friend)">
-          <AppIcon name="x" :size="18" />
+          <AppIcon name="close" :size="18" />
         </button>
       </li>
     </ul>
@@ -157,7 +157,7 @@ onUnmounted(() => { disposed = true; document.removeEventListener('keydown', onK
       <form data-friend-dialog class="friends-form" role="dialog" aria-modal="true" aria-label="Add friend" :aria-busy="busy" @submit.prevent="addFriend">
         <div class="friends-dialog-heading">
           <h2>Add friend</h2>
-          <button type="button" class="friend-remove" aria-label="Close" :disabled="busy" @click="closeAdd"><AppIcon name="x" :size="20" /></button>
+          <button type="button" class="friend-remove" aria-label="Close" :disabled="busy" @click="closeAdd"><AppIcon name="close" :size="20" /></button>
         </div>
         <p>Enter their Player Profile ID to add them to your friends.</p>
         <p class="friends-note">Soulseek discovery is optional. Your friend can be saved without a Soulseek account.</p>

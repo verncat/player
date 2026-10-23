@@ -34,23 +34,23 @@ const emit = defineEmits<{
   flex-shrink: 0;
   padding: 12px;
   border-radius: var(--radius-card, 6px);
-  background: var(--color-card, #181818);
+  background: var(--color-card);
   cursor: pointer;
   transition: background .18s;
 }
-.album-card:hover { background: var(--color-card-hover, #282828); }
+.album-card:hover { background: var(--color-card-hover); }
 .album-card-cover {
   aspect-ratio: 1;
   border-radius: 4px;
   margin-bottom: 10px;
-  background-color: var(--color-surface, #282828);
+  background-color: var(--color-surface);
   background-size: cover;
   background-position: center;
 }
 .album-card-title {
   font-size: var(--fs-card-title);
   font-weight: 700;
-  color: var(--color-text, #fff);
+  color: var(--color-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -58,7 +58,7 @@ const emit = defineEmits<{
 .album-card-meta {
   margin-top: 4px;
   font-size: var(--fs-card-meta);
-  color: var(--color-text-muted, #a7a7a7);
+  color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

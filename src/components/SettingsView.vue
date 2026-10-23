@@ -7,6 +7,14 @@ import { useAppearance } from '../composables/useAppearance';
 import { formatSampleRate } from '../utils/format';
 import SettingsToggle from './SettingsToggle.vue';
 import AppIcon from './AppIcon.vue';
+import AppSelect from './AppSelect.vue';
+import { activeThemeColors, userColorChoices } from '../theme';
+import { ACCENT_PRESETS, GRADIENT_PRESETS, isCustomColor } from '../colorPresets';
+import RangeSlider from './RangeSlider.vue';
+import { THEME_MODE_OPTIONS, useTheme } from '../composables/useTheme';
+import CustomColorSwatch from './CustomColorSwatch.vue';
+import SegmentedControl from './SegmentedControl.vue';
+import SwatchPicker from './SwatchPicker.vue';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 
 const props = defineProps<{
@@ -136,6 +144,18 @@ const identityDirty = computed(() => !!config.value && (deviceName.value !== con
 const soulseekDirty = computed(() => !!config.value && (username.value !== config.value.soulseek_username || password.value !== config.value.soulseek_password));
 const soulseekEnabled = computed(() => config.value?.soulseek_enabled ?? false);
 const { preferences, reducedMotion, systemReducedMotion, storageError, setPreference } = useAppearance();
+const { preferences: themePreferences, theme, storageError: themeStorageError, setThemePreference } = useTheme();
+const NO_GRADIENT_SWATCH = 'linear-gradient(135deg, transparent 46%, var(--color-text-faint) 46% 54%, transparent 54%), var(--color-bg-elevated)';
+const accentOptions = computed(() => ACCENT_PRESETS.map((preset) => ({ value: preset.id, label: preset.label, background: preset.colors[theme.value.mode] })));
+const customAccent = computed(() => isCustomColor(themePreferences.accent) ? themePreferences.accent : null);
+const gradientOptions = computed(() => [
+  { value: null, label: 'No gradient', background: NO_GRADIENT_SWATCH },
+  ...GRADIENT_PRESETS.map((preset) => ({ value: preset.id, label: preset.label, background: preset.colors[theme.value.mode] })),
+]);
+const customGradient = computed(() => {
+  const gradient = themePreferences.gradient;
+  return gradient && isCustomColor(gradient) ? gradient : null;
+});
 
 async function loadConfig() {
   configLoading.value = true;
@@ -230,14 +250,14 @@ onMounted(() => { void loadConfig(); });
 
 <template>
   <section class="settings-page" :class="{ 'has-section': section !== null }">
-    <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="arrow-left" :size="18" /> Settings</button>
+    <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="back" :size="18" /> Settings</button>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
         <button v-for="item in sections" :key="item.id" :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
           <AppIcon :name="item.icon" />
           <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
           <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
-          <AppIcon class="nav-chevron" name="chevron-right" :size="20" />
+          <AppIcon class="nav-chevron" name="disclosure" :size="20" />
         </button>
         <p class="local-note">Preferences stay on this device.</p>
       </nav>
@@ -246,7 +266,7 @@ onMounted(() => { void loadConfig(); });
           <div class="settings-group">
             <h3>Music folder</h3>
             <p>Your files are the source of your library.</p>
-            <div class="folder-card"><AppIcon name="folder-open" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button></div>
+            <div class="folder-card"><AppIcon name="folder" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button></div>
           </div>
           <div class="settings-group">
             <h3>Library maintenance</h3>
@@ -266,18 +286,18 @@ onMounted(() => { void loadConfig(); });
             <div class="setting-row"><div><h3>Audio output</h3><p>Choose where Player sends audio on this device.</p></div><button :disabled="audioLoading || audioBusy" @click="emit('refreshAudio')">{{ audioLoading ? 'Refreshing...' : 'Refresh' }}</button></div>
             <label class="field">
               <span>Output device</span>
-              <select class="audio-select" :value="selectedDevice ?? ''" :disabled="audioLoading || audioBusy" @change="emit('selectOutput', ($event.target as HTMLSelectElement).value)">
+              <AppSelect :model-value="selectedDevice ?? ''" :disabled="audioLoading || audioBusy" @update:model-value="emit('selectOutput', $event)">
                 <option value="">System default</option>
                 <option v-if="currentDevice && !currentOutput" :value="currentDevice">{{ currentDevice }}</option>
                 <option v-for="device in outputDevices" :key="device.name" :value="device.name">{{ device.name }}</option>
-              </select>
+              </AppSelect>
             </label>
             <label class="field">
               <span>Sample rate</span>
-              <select class="audio-select" :value="currentSampleRate ?? ''" :disabled="audioLoading || audioBusy || !outputDevices.length" @change="emit('selectSampleRate', ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)">
-                <option value="">Auto</option>
+              <AppSelect :model-value="currentSampleRate ?? null" :disabled="audioLoading || audioBusy || !outputDevices.length" @update:model-value="emit('selectSampleRate', $event)">
+                <option :value="null">Auto</option>
                 <option v-for="rate in sampleRates" :key="rate" :value="rate">{{ formatSampleRate(rate) }}</option>
-              </select>
+              </AppSelect>
             </label>
             <p class="help">Auto uses the track sample rate. Available rates depend on your output device.</p>
             <p v-if="nativeSampleRate" class="help">Current track: {{ formatSampleRate(nativeSampleRate) }}</p>
@@ -323,7 +343,7 @@ onMounted(() => { void loadConfig(); });
                 <p v-if="profileError" class="error" role="alert">{{ profileError }}</p>
                 <button v-if="!profile && !profileLoading && profileError" type="button" @click="loadProfile">Try again</button>
               </div>
-              <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="icon-label" @click="emit('devices')">Open devices <AppIcon name="arrow-right" /></button></div></div>
+              <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="icon-label" @click="emit('devices')">Open devices <AppIcon name="go" /></button></div></div>
             </template>
             <template v-else>
               <div class="settings-group"><div class="setting-row"><div><h3>Soulseek search</h3><p>Search music, download tracks and chat with Player friends through Soulseek.</p></div><SettingsToggle :model-value="soulseekEnabled" label="Soulseek search" :disabled="soulseekSaving || identitySaving" @update:model-value="toggleSoulseek" /></div></div>
@@ -343,10 +363,21 @@ onMounted(() => { void loadConfig(); });
 
         <template v-else-if="selected === 'appearance'">
           <div class="appearance-preview" :class="{ 'preview-flat': !preferences.album3d || reducedMotion }" aria-label="Appearance preview">
-            <div class="preview-art"><WebGLAlbumRenderer v-if="preferences.album3d && !reducedMotion" :cover-url="coverUrl" :colors="coverColors" rarity-color="#ff8000" :beat-scale="1" :is-playing="false" :tilt-x="4" :tilt-y="-12" :offset-x="0" :offset-y="0" :dragging="false" /><div v-else class="flat-art" :style="coverUrl ? { backgroundImage: `url(${coverUrl})` } : { background: `linear-gradient(135deg, ${coverColors[0]}, ${coverColors[1]})` }" /></div>
+            <div class="preview-art"><WebGLAlbumRenderer v-if="preferences.album3d && !reducedMotion" :cover-url="coverUrl" :colors="coverColors" :rarity-color="activeThemeColors['rarity-legendary']" :beat-scale="1" :is-playing="false" :tilt-x="4" :tilt-y="-12" :offset-x="0" :offset-y="0" :dragging="false" /><div v-else class="flat-art" :style="coverUrl ? { backgroundImage: `url(${coverUrl})` } : { background: `linear-gradient(135deg, ${coverColors[0]}, ${coverColors[1]})` }" /></div>
             <div class="preview-track" role="list" aria-label="Track rarity previews"><slot name="appearance-track" /></div>
           </div>
           <div class="settings-group"><div class="setting-row"><div><h4>Reduce motion</h4><p>{{ systemReducedMotion ? 'Enabled by your system preferences.' : 'Keep covers still and turn off decorative animations.' }}</p></div><SettingsToggle :model-value="reducedMotion" label="Reduce motion" :disabled="systemReducedMotion" @update:model-value="setPreference('reduceMotion', $event)" /></div><div class="setting-row"><div><h4>3D album cover</h4><p>{{ reducedMotion ? 'A still cover is used while reduced motion is on.' : 'Show the interactive album cover in now playing.' }}</p></div><SettingsToggle :model-value="preferences.album3d" label="3D album cover" :disabled="reducedMotion" @update:model-value="setPreference('album3d', $event)" /></div><div class="setting-row"><div><h4>Rarity animations</h4><p>{{ reducedMotion ? 'Animations are paused while reduced motion is on.' : 'Animate rare tracks while keeping their rarity colors.' }}</p></div><SettingsToggle :model-value="preferences.rarityAnimations" label="Rarity animations" :disabled="reducedMotion" @update:model-value="setPreference('rarityAnimations', $event)" /></div><p v-if="storageError" class="error" role="alert">{{ storageError }}</p></div>
+          <div class="settings-group">
+            <h3>Theme</h3>
+            <div class="setting-row"><div><h4>Mode</h4><p>Follow your system, or always use dark or light.</p></div><SegmentedControl :model-value="themePreferences.mode" :options="THEME_MODE_OPTIONS" label="Theme mode" @update:model-value="setThemePreference('mode', $event)" /></div>
+          </div>
+          <div v-if="userColorChoices.accent || userColorChoices.gradient || userColorChoices.tint" class="settings-group">
+            <h3>Colors</h3>
+            <div v-if="userColorChoices.accent" class="setting-row"><div><h4>Accent color</h4><p>Used for buttons, highlights and what's playing.</p></div><SwatchPicker :model-value="themePreferences.accent" :options="accentOptions" label="Accent color" @update:model-value="setThemePreference('accent', $event)"><CustomColorSwatch :color="customAccent" label="Custom accent color" @pick="setThemePreference('accent', $event)" /></SwatchPicker></div>
+            <div v-if="userColorChoices.gradient" class="setting-row"><div><h4>Background gradient</h4><p>A soft glow at the top of the page.</p></div><SwatchPicker :model-value="themePreferences.gradient" :options="gradientOptions" label="Background gradient" @update:model-value="setThemePreference('gradient', $event)"><CustomColorSwatch :color="customGradient" label="Custom gradient color" @pick="setThemePreference('gradient', $event)" /></SwatchPicker></div>
+            <div v-if="userColorChoices.tint" class="setting-row"><div><h4>Tint</h4><p>Gives the app a tint in the accent color's hue.</p></div><RangeSlider :model-value="themePreferences.tint" label="Tint" unit="%" @update:model-value="setThemePreference('tint', $event)" /></div>
+            <p v-if="themeStorageError" class="error" role="alert">{{ themeStorageError }}</p>
+          </div>
         </template>
         <slot v-else-if="selected === 'about'" name="about" />
       </div>
@@ -355,62 +386,62 @@ onMounted(() => { void loadConfig(); });
 </template>
 
 <style scoped>
-.settings-page { max-width: 1120px; margin: 0 auto; padding: 12px 8px 48px; }
-p { color: #a7a7a7; font-size: 13px; line-height: 1.65; margin: 0; }
+.settings-page { --settings-page-top: 12px; max-width: 1120px; margin: 0 auto; padding: var(--settings-page-top) 8px 48px; }
+p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 0; }
 .settings-layout { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 44px; align-items: start; }
-.settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; }
-.settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: #a7a7a7; background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
-.settings-nav > button:where(:hover, :active) { background: rgb(255 255 255 / 6%); color: #fff; }
-.settings-nav > button.selected { background: #1b2920; color: #81dfa2; }
+.settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: var(--settings-page-top); }
+.settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
+.settings-nav > button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
+.settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
 .nav-copy { flex: 1; }
 .nav-description, .nav-chevron { display: none; }
 .local-note { font-size: 11px; padding: 20px 12px 0; }
-.update-dot { width: 6px; height: 6px; border-radius: 50%; background: #1db954; }
+.update-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-accent); }
 .settings-panel { min-width: 0; max-width: 700px; background: transparent; }
 .settings-panel:focus { outline: none; }
 h3 { font-size: 15px; margin: 0 0 7px; font-weight: 700; }
 h4 { font-size: 14px; margin: 0 0 5px; font-weight: 500; }
 .settings-group { margin-bottom: 32px; }
-.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 21px 0; border-bottom: 1px solid #242424; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 21px 0; border-bottom: 1px solid var(--color-border); }
 .setting-row > div { min-width: 0; }
 .setting-row p { max-width: 390px; }
 button, input { font: inherit; }
-.settings-panel button:where(:not(.settings-switch)), .mobile-back { border: 1px solid #505050; background: transparent; color: #fff; border-radius: 99px; padding: 9px 16px; font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
+.settings-panel button:where(:not(.settings-switch)), .mobile-back { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); border-radius: 99px; padding: 9px 16px; font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
 .settings-panel .icon-label { display: inline-flex; align-items: center; gap: 6px; }
-.settings-panel button:where(:not(.settings-switch):enabled):is(:hover, :active) { background: rgb(255 255 255 / 6%); border-color: #777; }
+.settings-panel button:where(:not(.settings-switch):enabled):is(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); border-color: var(--color-text-faint); }
 .settings-panel button:not(.settings-switch):disabled { opacity: .45; cursor: default; }
-button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #1db954; outline-offset: 3px; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 .settings-panel :deep(.settings-switch) { padding: 3px; border-radius: 99px; }
-.settings-panel .primary { background: #1db954; border-color: #1db954; color: #061d0e; padding-inline: 24px; }
-.settings-panel .primary:enabled:is(:hover, :active) { background: #35cd6b; border-color: #35cd6b; }
+.settings-panel .primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); padding-inline: 24px; }
+.settings-panel .primary:enabled:is(:hover, :active) { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
 .folder-card { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 18px; padding: 18px; border-radius: 8px; }
-.folder-card svg { width: 24px; height: 24px; color: #a7a7a7; flex-shrink: 0; }
-.folder-card > span { flex: 1; min-width: 120px; overflow-wrap: anywhere; font-size: 13px; color: #d3d3d3; }
+.folder-card svg { width: 24px; height: 24px; color: var(--color-text-muted); flex-shrink: 0; }
+.folder-card > span { flex: 1; min-width: 120px; overflow-wrap: anywhere; font-size: 13px; color: var(--color-text); }
 .field { display: flex; flex-direction: column; gap: 9px; margin-top: 22px; font-size: 13px; font-weight: 600; }
-.field input { border: 1px solid #505050; background: transparent; color: #fff; border-radius: 5px; padding: 12px; width: 100%; min-height: 44px; font-size: 14px; }
+.field input { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); border-radius: 5px; padding: 12px; width: 100%; min-height: 44px; font-size: 14px; }
 .field input:disabled { opacity: .5; }
 .field input.profile-value { font-family: monospace; font-size: 13px; }
-.field .audio-select { width: 100%; min-height: 44px; }
+.field .app-select { min-height: 44px; }
 .help { font-size: 12px; margin-top: 12px; }
 .notice { border-radius: 8px; padding: 16px; margin-bottom: 24px; }
 .notice strong { font-size: 13px; display: block; margin-bottom: 6px; }
 .device-preview { display: flex; align-items: center; gap: 16px; padding: 20px; margin-top: 20px; border-radius: 8px; }
 .device-preview strong { font-size: 15px; overflow-wrap: anywhere; }
-.device-emoji { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 8px; background: #262626; font-size: 26px; flex-shrink: 0; }
+.device-emoji { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 8px; background: var(--color-surface); font-size: 26px; flex-shrink: 0; }
 fieldset { border: 0; padding: 0; margin: 22px 0 0; }
 legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
 .emoji-picker { display: flex; flex-wrap: wrap; gap: 8px; }
 .settings-panel .emoji-picker button { width: 38px; height: 38px; border-radius: 6px; padding: 0; font-size: 22px; border-color: transparent; }
-.settings-panel .emoji-picker button.chosen { background: #1b2920; border-color: #1db954; }
+.settings-panel .emoji-picker button.chosen { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); border-color: var(--color-accent); }
 .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
-.error { color: #ff939b; margin-top: 14px; overflow-wrap: anywhere; }
-.success { color: #81dfa2; margin-top: 14px; }
-.password-field { display: flex; border: 1px solid #505050; border-radius: 5px; background: transparent; }
+.error { color: var(--color-danger-text); margin-top: 14px; overflow-wrap: anywhere; }
+.success { color: var(--color-accent-text); margin-top: 14px; }
+.password-field { display: flex; border: 1px solid var(--color-border-strong); border-radius: 5px; background: transparent; }
 .password-field input { border: 0; background: transparent; min-width: 0; }
 .settings-panel .password-field button { border: 0; border-radius: 0 4px 4px 0; }
 .scan-progress { padding-top: 16px; }
-.scan-progress p { color: #a7a7a7; font-size: 12px; font-variant-numeric: tabular-nums; }
+.scan-progress p { color: var(--color-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .scan-progress progress {
   display: block;
   width: 100%;
@@ -421,14 +452,14 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   overflow: hidden;
   appearance: none;
   -webkit-appearance: none;
-  background: rgb(255 255 255 / 12%);
-  color: #1db954;
+  background: color-mix(in srgb, var(--color-text) 12%, transparent);
+  color: var(--color-accent);
 }
-.scan-progress progress::-webkit-progress-bar { background: rgb(255 255 255 / 12%); border-radius: 99px; }
-.scan-progress progress::-webkit-progress-value { background: #1db954; border-radius: 99px; }
-.scan-progress progress::-moz-progress-bar { background: #1db954; border-radius: 99px; }
+.scan-progress progress::-webkit-progress-bar { background: color-mix(in srgb, var(--color-text) 12%, transparent); border-radius: 99px; }
+.scan-progress progress::-webkit-progress-value { background: var(--color-accent); border-radius: 99px; }
+.scan-progress progress::-moz-progress-bar { background: var(--color-accent); border-radius: 99px; }
 .scan-progress progress:indeterminate {
-  background: linear-gradient(90deg, transparent, #1db954, transparent) -100% 0 / 50% 100% no-repeat, rgb(255 255 255 / 12%);
+  background: linear-gradient(90deg, transparent, var(--color-accent), transparent) -100% 0 / 50% 100% no-repeat, color-mix(in srgb, var(--color-text) 12%, transparent);
   animation: scan-search 1.6s ease-in-out infinite;
 }
 .scan-progress progress:indeterminate::-webkit-progress-bar { background: transparent; }
@@ -453,19 +484,19 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .appearance-preview { grid-template-columns: minmax(0, 1fr); }
   .settings-layout { display: block; }
   .settings-nav { position: static; gap: 0; }
-  .settings-nav > button { padding: 18px 4px; border-bottom: 1px solid #282828; border-radius: 0; gap: 16px; min-height: 76px; }
-  .settings-nav > button.selected { background: transparent; color: #b3b3b3; }
+  .settings-nav > button { padding: 18px 4px; border-bottom: 1px solid var(--color-border); border-radius: 0; gap: 16px; min-height: 76px; }
+  .settings-nav > button.selected { background: transparent; color: var(--color-text-muted); }
   .settings-nav svg { width: 22px; height: 22px; }
-  .nav-label { color: #fff; font-size: 15px; }
-  .nav-description { display: block; color: #a7a7a7; font-size: 12px; font-weight: 400; margin-top: 6px; }
-  .nav-chevron { display: block; color: #888; }
+  .nav-label { color: var(--color-text); font-size: 15px; }
+  .nav-description { display: block; color: var(--color-text-muted); font-size: 12px; font-weight: 400; margin-top: 6px; }
+  .nav-chevron { display: block; color: var(--color-text-faint); }
   .local-note { padding: 24px 4px; }
   .settings-panel { display: none; }
   .has-section .settings-nav { display: none; }
   .has-section .settings-panel { display: block; }
-  .mobile-back { display: flex; gap: 10px; align-items: center; padding: 8px 0; margin-bottom: 10px; border: 0; border-radius: 3px; color: #b3b3b3; font-size: 14px; }
+  .mobile-back { display: flex; gap: 10px; align-items: center; padding: 8px 0; margin-bottom: 10px; border: 0; border-radius: 3px; color: var(--color-text-muted); font-size: 14px; }
   .setting-row { align-items: flex-start; flex-wrap: wrap; gap: 14px; }
-  .setting-row > div { flex: 1; min-width: 180px; }
+  .setting-row > div:first-child { flex: 1; min-width: 180px; }
   .setting-row :deep(.settings-switch) { margin-top: 2px; }
   .folder-card { padding: 16px; }
   .settings-panel button:not(.settings-switch) { min-height: 40px; }

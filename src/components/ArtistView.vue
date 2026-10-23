@@ -169,7 +169,7 @@ const visibleTracks = computed(() =>
 
 <style scoped>
 .status {
-  color: var(--color-text-muted, #a7a7a7);
+  color: var(--color-text-muted);
   padding: 16px 0;
 }
 .artist-section {
@@ -184,18 +184,18 @@ const visibleTracks = computed(() =>
 .section-title {
   font-size: 20px;
   font-weight: 700;
-  color: var(--color-text, #fff);
+  color: var(--color-text);
   margin-bottom: 12px;
 }
 .show-all {
   background: none;
   border: none;
-  color: var(--color-text-muted, #a7a7a7);
+  color: var(--color-text-muted);
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
 }
-.show-all:hover { color: var(--color-text, #fff); text-decoration: underline; }
+.show-all:hover { color: var(--color-text); text-decoration: underline; }
 
 .album-list {
   display: flex;

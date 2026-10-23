@@ -60,7 +60,7 @@ function open(part: Part) {
   text-decoration: none;
 }
 .meta-link:hover {
-  color: var(--color-text, #fff);
+  color: var(--color-text);
   text-decoration: underline;
 }
 </style>

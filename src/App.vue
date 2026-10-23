@@ -8,7 +8,6 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
   TRACK_RARITY_OPTIONS,
-  rarityColors,
   type AudioDevice,
   type DeviceList,
   type SoulseekDownloadEvent,
@@ -32,9 +31,12 @@ import {
   parseTrackDateInput,
   trackDateInputValue,
 } from "./utils/tracks";
-import { hashToColors, rarityClass, rarityVars } from "./utils/rarity";
+import { highlightedRarity, rarityClass, rarityColorName, rarityVars } from "./utils/rarity";
+import { activeThemeColors, translucent } from "./theme";
 import AppSidebar from "./components/AppSidebar.vue";
 import AppIcon from "./components/AppIcon.vue";
+import AppSelect from "./components/AppSelect.vue";
+import PlaylistArtwork from "./components/PlaylistArtwork.vue";
 import AppTopbar from "./components/AppTopbar.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
@@ -56,7 +58,7 @@ import { provideTrackActions } from "./composables/useTrackActions";
 import { useHistoryNavigation } from "./composables/useHistoryNavigation";
 import { artistLabel, hasArtistPage } from "./utils/artists";
 import { countAlbumTracks } from "./api";
-import { coverUrl } from "./utils/covers";
+import { coverUrl, placeholderCoverColors } from "./utils/covers";
 
 const { preferences: appearance, reducedMotion } = useAppearance();
 watch([reducedMotion, () => appearance.rarityAnimations], ([reduce, rarity]) => {
@@ -1278,7 +1280,7 @@ const homePinnedSections = computed<HomePinnedPlaylistSection[]>(() => {
 });
 
 function homePinnedCoverStyle(item: HomePinnedPlaylistItem) {
-  const [left, right] = hashToColors(item.key);
+  const [left, right] = placeholderCoverColors(item.key);
   return `background: linear-gradient(135deg, ${left}, ${right})`;
 }
 
@@ -2813,7 +2815,7 @@ const currentTrack = computed<{ title: string; artist: string; colors: [string, 
     return {
       title: nowPlaying.value.title || nowPlaying.value.path,
       artist: artistLabel(nowPlaying.value.artist),
-      colors: hashToColors(nowPlaying.value.file_hash),
+      colors: placeholderCoverColors(nowPlaying.value.file_hash),
     };
   }
   const rp = remoteOutputPeer.value?.playback;
@@ -2821,10 +2823,10 @@ const currentTrack = computed<{ title: string; artist: string; colors: [string, 
     return {
       title: rp.title || 'Unknown',
       artist: artistLabel(rp.artist),
-      colors: hashToColors(rp.hash ?? null),
+      colors: placeholderCoverColors(rp.hash ?? null),
     };
   }
-  return { title: 'No track', artist: '', colors: ['#282828', '#181818'] };
+  return { title: 'No track', artist: '', colors: placeholderCoverColors(null) };
 });
 
 const beatIntensity = computed(() => {
@@ -2835,16 +2837,15 @@ const beatIntensity = computed(() => {
 const currentCoverUrl = computed(() => coverUrl(nowPlaying.value?.cover_hash, 'medium'));
 
 const currentRarityColor = computed(() => {
-  const rarity = nowPlaying.value?.rarity;
-  if (!rarity || rarity === 'Common') return '#d9dee8';
-  return rarityColors[rarity] ?? '#d9dee8';
+  const rarity = highlightedRarity(nowPlaying.value?.rarity ?? null);
+  return rarity ? activeThemeColors.value[rarityColorName(rarity)] : null;
 });
 
 const detailBackdropWashStyle = computed(() => {
   const [colorA, colorB] = currentTrack.value.colors;
   const pulse = beatIntensity.value;
   return {
-    background: `radial-gradient(circle at 18% 20%, ${colorA} 0%, transparent ${Math.max(28, 46 - pulse * 5)}%), radial-gradient(circle at 82% 18%, ${colorB} 0%, transparent ${Math.max(26, 44 - pulse * 4)}%), linear-gradient(180deg, rgba(4,6,12,0.22), rgba(4,6,12,0.74) 38%, rgba(4,6,12,0.95))`,
+    background: `radial-gradient(circle at 18% 20%, ${colorA} 0%, transparent ${Math.max(28, 46 - pulse * 5)}%), radial-gradient(circle at 82% 18%, ${colorB} 0%, transparent ${Math.max(26, 44 - pulse * 4)}%), linear-gradient(180deg, ${translucent('bg', 22)}, ${translucent('bg', 74)} 38%, ${translucent('bg', 95)})`,
     opacity: (0.62 + pulse * 0.18).toFixed(2),
   };
 });
@@ -2853,7 +2854,7 @@ const detailAuraStyle = computed(() => {
   const [colorA, colorB] = currentTrack.value.colors;
   const pulse = beatIntensity.value;
   return {
-    background: `radial-gradient(circle at 34% 34%, ${colorA} 0%, transparent 48%), radial-gradient(circle at 66% 62%, ${colorB} 0%, transparent 46%), radial-gradient(circle at 50% 50%, rgba(255,255,255,0.2) 0%, transparent 34%)`,
+    background: `radial-gradient(circle at 34% 34%, ${colorA} 0%, transparent 48%), radial-gradient(circle at 66% 62%, ${colorB} 0%, transparent 46%), radial-gradient(circle at 50% 50%, ${translucent('text', 20)} 0%, transparent 34%)`,
     opacity: (0.42 + pulse * 0.18).toFixed(2),
     transform: `scale(${(1.01 + pulse * 0.05).toFixed(3)})`,
     filter: `blur(${(24 + pulse * 10).toFixed(0)}px) saturate(${(1.02 + pulse * 0.2).toFixed(2)})`,
@@ -2903,8 +2904,8 @@ function spectrumBarStyle(segment: (typeof spectrumSegments)[number]) {
     '--bar-height': segment.height,
     '--bar-scale': scale.toFixed(3),
     '--bar-lift': `${lift.toFixed(1)}px`,
-    background: `linear-gradient(180deg, ${colorA} 0%, rgba(255,255,255,0.95) 58%, ${colorB} 100%)`,
-    boxShadow: `0 0 ${segment.glow} rgba(255,255,255,${(0.08 + level * 0.36).toFixed(3)})`,
+    background: `linear-gradient(180deg, ${colorA} 0%, ${translucent('text', 95)} 58%, ${colorB} 100%)`,
+    boxShadow: `0 0 ${segment.glow} ${translucent('text', Number((8 + level * 36).toFixed(1)))}`,
     filter: `saturate(${(1 + level * 0.7).toFixed(2)})`,
     opacity: opacity.toFixed(3),
   };
@@ -3905,9 +3906,8 @@ async function pickLocalDevice(name: string, sampleRate?: number | null, keepOpe
   const nextName = name === currentDevice.value && sampleRate === undefined && !remoteOutputPeer.value ? null : name;
   await applyLocalOutput(nextName, sampleRate ?? null, keepOpen);
 }
-async function pickLocalSampleRate(device: AudioDevice, event: Event) {
-  const value = (event.target as HTMLSelectElement).value;
-  await applyLocalOutput(device.name, value ? Number(value) : null, true);
+async function pickLocalSampleRate(device: AudioDevice, sampleRate: number | null) {
+  await applyLocalOutput(device.name, sampleRate, true);
 }
 function selectSettingsOutput(name: string) {
   void applyLocalOutput(name || null, null, true);
@@ -5071,9 +5071,9 @@ onUnmounted(() => {
             >
               <button type="button" class="card onboarding-music-card" @click="startOnboardingSync">
                 <div class="cover onboarding-action-cover onboarding-sync-cover">
-                  <AppIcon name="wifi" />
+                  <AppIcon name="network" />
                   <span class="hover-play">
-                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-right" :size="22" /></span>
+                    <span class="green-circle onboarding-card-go"><AppIcon name="go" :size="22" /></span>
                   </span>
                 </div>
                 <div class="card-title">Sync</div>
@@ -5082,9 +5082,9 @@ onUnmounted(() => {
 
               <button type="button" class="card onboarding-music-card" @click="openDataDir">
                 <div class="cover onboarding-action-cover onboarding-upload-cover">
-                  <AppIcon name="folder-open" />
+                  <AppIcon name="folder" />
                   <span class="hover-play">
-                    <span class="green-circle onboarding-card-go"><AppIcon name="arrow-right" :size="22" /></span>
+                    <span class="green-circle onboarding-card-go"><AppIcon name="go" :size="22" /></span>
                   </span>
                 </div>
                 <div class="card-title">Upload</div>
@@ -5104,11 +5104,11 @@ onUnmounted(() => {
                 @touchmove.passive="moveTrackRowLongPress"
                 @touchend="endTrackRowLongPress"
                 @touchcancel="endTrackRowLongPress">
-                <CoverImage class="cover" :src="coverUrl(track.cover_hash, 'medium')" :placeholder="hashToColors(track.file_hash)">
+                <CoverImage class="cover" :src="coverUrl(track.cover_hash, 'medium')" :placeholder="placeholderCoverColors(track.file_hash)">
                   <div class="hover-play">
                     <button class="green-circle" type="button" @click.stop="toggleRecentCardPlayback(idx, track.id)">
-                      <AppIcon name="play" v-if="!isTrackPlaying(track.id)" :size="18" color="black" />
-                      <AppIcon name="pause" v-else :size="18" color="black" />
+                      <AppIcon name="play" v-if="!isTrackPlaying(track.id)" :size="18" />
+                      <AppIcon name="pause" v-else :size="18" />
                     </button>
                   </div>
                 </CoverImage>
@@ -5143,11 +5143,11 @@ onUnmounted(() => {
                 <div class="cover" :style="homePinnedCoverStyle(item)">
                   <div class="hover-play">
                     <button v-if="item.trackCount" class="green-circle" type="button" @click.stop="playHomePinnedCard(item)">
-                      <AppIcon name="play" :size="18" color="black" />
+                      <AppIcon name="play" :size="18" />
                     </button>
                   </div>
-                  <AppIcon name="list-music" v-if="item.kind === 'regular'" :size="30" color="rgba(255,255,255,0.88)" />
-                  <AppIcon name="list-filter" v-else :size="30" color="rgba(255,255,255,0.88)" />
+                  <AppIcon name="playlist" v-if="item.kind === 'regular'" :size="30" class="pinned-cover-icon" />
+                  <AppIcon name="smart-playlist" v-else :size="30" class="pinned-cover-icon" />
                 </div>
                 <div class="card-title">{{ item.name }}</div>
                 <div class="card-artist">{{ item.subtitle }}</div>
@@ -5183,7 +5183,7 @@ onUnmounted(() => {
                 <div class="cover" :style="`background: linear-gradient(135deg, ${item.colors[0]}, ${item.colors[1]})`">
                   <div class="hover-play">
                     <button class="green-circle">
-                      <AppIcon name="play" :size="18" color="black" />
+                      <AppIcon name="play" :size="18" />
                     </button>
                   </div>
                 </div>
@@ -5298,8 +5298,8 @@ onUnmounted(() => {
                 <div v-if="searchResults.length" class="library-page-controls library-page-controls-bottom">
                   <span>{{ localSearchPageLabel }}</span>
                   <div>
-                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage"><AppIcon name="arrow-left" /> Previous</button>
-                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next <AppIcon name="arrow-right" /></button>
+                    <button class="icon-btn text-action-btn" :disabled="localSearchOffset === 0" @click="previousLocalSearchPage"><AppIcon name="page-previous" /> Previous</button>
+                    <button class="icon-btn text-action-btn" :disabled="!localSearchHasMore" @click="nextLocalSearchPage">Next <AppIcon name="page-next" /></button>
                   </div>
                 </div>
               </template>
@@ -5418,7 +5418,7 @@ onUnmounted(() => {
             <div class="library-header soulseek-replace-page-header">
               <div class="soulseek-replace-page-heading">
                 <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
-                  <AppIcon name="arrow-left" :size="20" />
+                  <AppIcon name="back" :size="20" />
                 </button>
                 <div>
                   <p class="soulseek-replace-track-copy">
@@ -5532,7 +5532,7 @@ onUnmounted(() => {
                     :aria-label="soulseekDownloadActionLabel(result)"
                     @click.stop="downloadSoulseekResult(result)"
                   >
-                    <AppIcon name="check" v-if="soulseekDownloadState(result)?.state === 'completed'" :size="16" />
+                    <AppIcon name="done" v-if="soulseekDownloadState(result)?.state === 'completed'" :size="16" />
                     <AppIcon name="download" v-else :size="16" />
                   </button>
                   <button class="btn-primary soulseek-replace-btn" :disabled="!!trackReplaceApplyingKey" @click.stop="replaceTrackWithSoulseekResult(trackReplaceDialog.track, result)">
@@ -5549,7 +5549,7 @@ onUnmounted(() => {
             <div class="library-header soulseek-replace-page-header">
               <div class="soulseek-replace-page-heading">
                 <button class="icon-btn soulseek-replace-back-btn" title="Back" @click="closeTrackReplaceDialog">
-                  <AppIcon name="arrow-left" :size="20" />
+                  <AppIcon name="back" :size="20" />
                 </button>
               </div>
             </div>
@@ -5563,7 +5563,7 @@ onUnmounted(() => {
             <div class="library-header">
               <div style="display:flex; align-items:center; gap:12px;">
                 <button class="icon-btn text-action-btn" style="padding:4px;" @click="activeNav = 'home'">
-                  <AppIcon name="arrow-left" :size="20" /> Home
+                  <AppIcon name="back" :size="20" /> Home
                 </button>
               </div>
             </div>
@@ -5594,7 +5594,7 @@ onUnmounted(() => {
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
                     <button class="icon-btn text-action-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
-                      <AppIcon name="arrow-left" :size="20" /> Playlists
+                      <AppIcon name="back" :size="20" /> Playlists
                     </button>
                   </div>
                   <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
@@ -5610,7 +5610,7 @@ onUnmounted(() => {
                   >
                     <template #extra>
                       <button class="icon-btn track-inline-action" title="Remove from playlist" @click.stop="removeTrackFromPlaylist(playlistView!.id, track.id)">
-                        <AppIcon name="minus" />
+                        <AppIcon name="remove" />
                       </button>
                     </template>
                   </TrackRow>
@@ -5636,9 +5636,7 @@ onUnmounted(() => {
                 <div v-if="playlists.length === 0" class="library-empty">No playlists yet.</div>
                 <div v-else class="track-list">
                   <div v-for="pl in playlists" :key="pl.id" class="track-row" style="cursor:pointer;" @click="openPlaylist(pl)">
-                    <div class="track-cover-sm" style="background: linear-gradient(135deg, #333, #1a1a1a); display:flex; align-items:center; justify-content:center;">
-                      <AppIcon name="list-music" :size="20" color="#a7a7a7" />
-                    </div>
+                    <PlaylistArtwork class="track-cover-sm" kind="regular" />
                     <div class="track-info">
                       <span class="track-title">{{ pl.name }}</span>
                       <span class="track-album">{{ pl.track_count }} track{{ pl.track_count !== 1 ? 's' : '' }}</span>
@@ -5647,7 +5645,7 @@ onUnmounted(() => {
                       <AppIcon name="pin" :size="15" />
                     </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete playlist" @click.stop="deletePlaylist(pl.id)">
-                      <AppIcon name="trash-2" :size="16" />
+                      <AppIcon name="delete" :size="16" />
                     </button>
                   </div>
                 </div>
@@ -5661,7 +5659,7 @@ onUnmounted(() => {
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
                     <button class="icon-btn text-action-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
-                      <AppIcon name="arrow-left" :size="20" /> Flexible Playlists
+                      <AppIcon name="back" :size="20" /> Flexible Playlists
                     </button>
                   </div>
                   <span class="smart-track-count">{{ editingSPTotal }} tracks</span>
@@ -5678,7 +5676,7 @@ onUnmounted(() => {
                 <!-- Rules -->
                 <div class="sp-rules">
                   <div v-for="rule in editingSP.rules" :key="rule.id" class="sp-rule-row">
-                    <select class="sp-select" :value="rule.field" @change="rule.field = ($event.target as HTMLSelectElement).value as SPField; onSPRuleFieldChange(rule)">
+                    <AppSelect :model-value="rule.field" @update:model-value="rule.field = $event; onSPRuleFieldChange(rule)">
                       <option value="any">Any field</option>
                       <option value="title">Title</option>
                       <option value="artist">Artist</option>
@@ -5697,18 +5695,18 @@ onUnmounted(() => {
                       <option value="is_liked">Is liked</option>
                       <option value="date_added">Date added</option>
                       <option value="sort">Sort by</option>
-                    </select>
+                    </AppSelect>
 
                     <template v-if="spFieldType(rule.field) === 'text'">
                       <span class="sp-op-label">contains</span>
                       <input class="library-search sp-text-input" v-model="rule.value" placeholder="search…" @input="saveSP()" />
                     </template>
                     <template v-else-if="spFieldType(rule.field) === 'number'">
-                      <select class="sp-select" :value="rule.op" @change="rule.op = ($event.target as HTMLSelectElement).value as SPOp; saveSP()">
+                      <AppSelect :model-value="rule.op" @update:model-value="rule.op = $event; saveSP()">
                         <option value="gte">≥</option>
                         <option value="lte">≤</option>
                         <option value="eq">=</option>
-                      </select>
+                      </AppSelect>
                       <input class="library-search sp-num-input" type="number" min="0" v-model="rule.value" @input="saveSP()" />
                     </template>
                     <template v-else-if="spFieldType(rule.field) === 'bool'">
@@ -5716,22 +5714,22 @@ onUnmounted(() => {
                       <button :class="['sp-match-btn', rule.op === 'is_false' && 'active']" @click="rule.op = 'is_false'; saveSP()">No</button>
                     </template>
                     <template v-else-if="spFieldType(rule.field) === 'date'">
-                      <select class="sp-select" :value="rule.op" @change="rule.op = ($event.target as HTMLSelectElement).value as SPOp; saveSP()">
+                      <AppSelect :model-value="rule.op" @update:model-value="rule.op = $event; saveSP()">
                         <option value="gte">after</option>
                         <option value="lte">before</option>
                         <option value="eq">on</option>
-                      </select>
+                      </AppSelect>
                       <input class="library-search sp-text-input" type="date" v-model="rule.value" @change="saveSP()" />
                     </template>
                     <template v-else-if="spFieldType(rule.field) === 'sort'">
                       <span class="sp-op-label">by</span>
-                      <select class="sp-select" :value="normalizeSPSortField(rule.value)" @change="rule.value = normalizeSPSortField(($event.target as HTMLSelectElement).value); saveSP()">
+                      <AppSelect :model-value="normalizeSPSortField(rule.value)" @update:model-value="rule.value = normalizeSPSortField($event); saveSP()">
                         <option v-for="option in SP_SORT_FIELD_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
-                      </select>
-                      <select class="sp-select" :value="normalizeSPSortOp(rule.op)" @change="rule.op = normalizeSPSortOp(($event.target as HTMLSelectElement).value); saveSP()">
+                      </AppSelect>
+                      <AppSelect :model-value="normalizeSPSortOp(rule.op)" @update:model-value="rule.op = normalizeSPSortOp($event); saveSP()">
                         <option value="sort_asc">ASC</option>
                         <option value="sort_desc">DESC</option>
-                      </select>
+                      </AppSelect>
                     </template>
                     <template v-else>
                       <div class="sp-multiselect">
@@ -5741,7 +5739,7 @@ onUnmounted(() => {
                     </template>
 
                     <button class="icon-btn" style="margin-left:auto; flex-shrink:0;" @click="removeSPRule(rule.id)" title="Remove rule">
-                      <AppIcon name="x" :size="14" />
+                      <AppIcon name="remove" :size="14" />
                     </button>
                   </div>
                   <button class="sp-add-rule-btn" @click="addSPRule()">+ Add rule</button>
@@ -5770,7 +5768,7 @@ onUnmounted(() => {
                 <div class="library-header">
                   <div style="display:flex; align-items:center; gap:12px;">
                     <button class="icon-btn text-action-btn" style="padding:4px;" @click="smartView = null">
-                      <AppIcon name="arrow-left" :size="20" /> Flexible Playlists
+                      <AppIcon name="back" :size="20" /> Flexible Playlists
                     </button>
                   </div>
                   <div style="display:flex;gap:8px;">
@@ -5805,9 +5803,7 @@ onUnmounted(() => {
                 <div v-if="smartPlaylists.length === 0" class="library-empty">No flexible playlists yet.</div>
                 <div v-else class="track-list">
                   <div v-for="sp in smartPlaylists" :key="sp.id" class="track-row" style="cursor:pointer;" @click="smartView = sp">
-                    <div class="track-cover-sm" style="background: linear-gradient(135deg, #1a2a3a, #0d1b2a); display:flex; align-items:center; justify-content:center;">
-                      <AppIcon name="list-filter" :size="20" color="#4fc3f7" />
-                    </div>
+                    <PlaylistArtwork class="track-cover-sm" kind="smart" />
                     <div class="track-info">
                       <span class="track-title">{{ sp.name }}</span>
                       <span class="track-album">{{ sp.rules.length }} rule{{ sp.rules.length !== 1 ? 's' : '' }} · {{ smartPlaylistPreviews[sp.id]?.total ?? 0 }} tracks</span>
@@ -5816,10 +5812,10 @@ onUnmounted(() => {
                       <AppIcon name="pin" :size="15" />
                     </button>
                     <button class="icon-btn" style="margin-right:4px;" title="Edit" @click.stop="editingSP = { ...sp }; smartView = null">
-                      <AppIcon name="pencil" :size="14" />
+                      <AppIcon name="edit" :size="14" />
                     </button>
                     <button class="icon-btn" style="margin-right:8px;" title="Delete" @click.stop="deleteSmartPlaylist(sp.id)">
-                      <AppIcon name="trash-2" :size="14" />
+                      <AppIcon name="delete" :size="14" />
                     </button>
                   </div>
                 </div>
@@ -5844,7 +5840,7 @@ onUnmounted(() => {
                   @click="dedupFilter = 'unresolved'"
                 >Unresolved</button>
                 <button class="btn-secondary dedup-rescan-btn" @click="openDedup()" :disabled="dedupLoading">
-                  <AppIcon name="refresh-cw" :size="14" />
+                  <AppIcon name="refresh" :size="14" />
                   Rescan
                 </button>
               </div>
@@ -5856,7 +5852,7 @@ onUnmounted(() => {
 
             <template v-else-if="dedupGroups.length === 0">
               <p class="search-empty-copy dedup-clean-copy">
-                <AppIcon name="circle-check" :size="20" color="#1db954" />
+                <AppIcon name="success" :size="20" class="success-icon" />
                 No duplicates found. Your library looks clean!
               </p>
             </template>
@@ -5890,7 +5886,7 @@ onUnmounted(() => {
                     :style="rarityVars(track.rarity)"
                     @click="dedupToggleTrack(i, track.id)"
                   >
-                    <CoverImage class="track-cover-sm" :src="coverUrl(track.cover_hash, 'small')" :placeholder="hashToColors(track.file_hash)" />
+                    <CoverImage class="track-cover-sm" :src="coverUrl(track.cover_hash, 'small')" :placeholder="placeholderCoverColors(track.file_hash)" />
                     <div class="track-info">
                       <div class="track-title-row">
                         <span class="track-title">{{ track.title || track.path }}</span>
@@ -5902,7 +5898,7 @@ onUnmounted(() => {
                       </span>
                       <span class="dedup-track-meta">
                         <span>{{ track.path }}</span>
-                        <span v-if="track.play_count > 0"><AppIcon name="play" :size="12" /> {{ track.play_count }}</span>
+                        <span v-if="track.play_count > 0"><AppIcon name="play-count" :size="12" /> {{ track.play_count }}</span>
                         <span v-if="track.manually_edited" class="dedup-edited-tag">edited</span>
                         <span v-if="track.is_duplicate" class="dedup-flagged-tag">flagged</span>
                       </span>
@@ -5940,7 +5936,7 @@ onUnmounted(() => {
           <section>
             <div class="library-header discovery-header page-toolbar">
               <div class="discovery-toolbar">
-                <button class="sync-toggle" @click="profilePairing?.allow()"><AppIcon name="link-2" :size="14" /> Allow linking</button>
+                <button class="sync-toggle" @click="profilePairing?.allow()"><AppIcon name="pair-device" :size="14" /> Allow linking</button>
                 <button class="sync-toggle" @click="openDeviceSettings"><span class="device-emoji">{{ deviceEmoji }}</span> Settings</button>
                 <button
                   class="sync-toggle"
@@ -5948,7 +5944,7 @@ onUnmounted(() => {
                   @click="toggleSync"
                   :title="syncEnabled ? 'Sync on — click to disable' : 'Sync off — click to enable'"
                 >
-                  <AppIcon name="refresh-cw" :size="14" />
+                  <AppIcon name="sync" :size="14" />
                   Sync
                 </button>
               </div>
@@ -5969,7 +5965,7 @@ onUnmounted(() => {
                       <span class="peer-playback-icon" aria-hidden="true">
                         <AppIcon name="play" v-if="peer.playback?.state === 'playing'" :size="14" />
                         <AppIcon name="pause" v-else-if="peer.playback?.state === 'paused'" :size="14" />
-                        <AppIcon name="square" v-else :size="14" />
+                        <AppIcon name="stop" v-else :size="14" />
                       </span>
                       {{ peerPlaybackLabel(peer) }}
                     </span>
@@ -5998,7 +5994,7 @@ onUnmounted(() => {
                   v-if="peer.device_id && peer.profile_public_key && localProfile && peer.profile_public_key !== localProfile.public_key"
                   class="sync-toggle discovery-link-btn" title="Use this device profile on this player"
                   @click="profilePairing?.useProfile(peer)"
-                ><AppIcon name="link-2" :size="14" /> Use profile</button>
+                ><AppIcon name="pair-device" :size="14" /> Use profile</button>
                 <button
                   v-if="syncEnabled"
                   class="sync-now-btn discovery-sync-btn"
@@ -6006,7 +6002,7 @@ onUnmounted(() => {
                   :disabled="['index','download','reindex','merging'].includes(syncProgress[peer.name]?.phase ?? '')"
                   title="Sync now"
                 >
-                  <AppIcon name="refresh-cw" :size="16" />
+                  <AppIcon name="sync" :size="16" />
                 </button>
               </div>
             </div>
@@ -6171,12 +6167,12 @@ onUnmounted(() => {
       <div class="modal-header">
         <h3>Confirm marking</h3>
         <button class="icon-btn" @click="dedupConfirmOpen = false">
-          <AppIcon name="x" :size="18" />
+          <AppIcon name="close" :size="18" />
         </button>
       </div>
       <div class="modal-body">
-        <p style="color:#b3b3b3; line-height:1.5;">
-          <strong style="color:#fff;">{{ dedupMarkedTotal }}</strong>
+        <p class="modal-copy">
+          <strong>{{ dedupMarkedTotal }}</strong>
           track(s) will be flagged as duplicates in the database. Files stay on disk. You can unmark them at any time.
         </p>
         <div v-if="dedupError" class="settings-error">{{ dedupError }}</div>
@@ -6190,7 +6186,7 @@ onUnmounted(() => {
           <div class="modal-header">
             <h3>Edit Track</h3>
             <button class="icon-btn" @click="editingTrack = null">
-              <AppIcon name="x" :size="18" />
+              <AppIcon name="close" :size="18" />
             </button>
           </div>
           <div class="modal-body edit-track-body">
@@ -6236,10 +6232,10 @@ onUnmounted(() => {
             </label>
             <label class="field">
               <span>Liked</span>
-              <select v-model="editForm.is_liked">
+              <AppSelect v-model="editForm.is_liked" variant="filled">
                 <option :value="false">No</option>
                 <option :value="true">Yes</option>
-              </select>
+              </AppSelect>
             </label>
             <label class="field">
               <span>Date added</span>
@@ -6247,10 +6243,10 @@ onUnmounted(() => {
             </label>
             <label class="field">
               <span>Rarity</span>
-              <select v-model="editForm.rarity">
+              <AppSelect v-model="editForm.rarity" variant="filled">
                 <option value="">Unset</option>
                 <option v-for="rarity in TRACK_RARITY_OPTIONS" :key="rarity" :value="rarity">{{ rarity }}</option>
-              </select>
+              </AppSelect>
             </label>
           </div>
           <div class="modal-footer">
@@ -6275,12 +6271,12 @@ onUnmounted(() => {
         </template>
         <template v-else-if="indexRunning">
           <div v-if="!indexDone" class="identify-mini-spinner" />
-          <AppIcon name="circle-check" v-else :size="16" color="#1db954" />
+          <AppIcon name="success" v-else :size="16" class="success-icon" />
           <span v-if="!indexDone">{{ indexCurrent }}/{{ indexTotal }}</span>
           <span v-else>+{{ indexAdded }}</span>
         </template>
         <template v-else>
-          <AppIcon name="list" :size="15" />
+          <AppIcon name="activity" :size="15" />
         </template>
         <span v-if="!indexRunning" class="activity-mini-label">Activity</span>
       </button>
@@ -6292,7 +6288,7 @@ onUnmounted(() => {
       <div v-if="identifyRunning && identifyMinimized" class="identify-mini" @click="identifyMinimized = false">
         <div v-if="!identifyDone" class="identify-mini-spinner" />
         <span>{{ identifyCurrent }}/{{ identifyTotal }}</span>
-        <span v-if="identifyDone" class="identify-mini-done"><AppIcon name="check" /></span>
+        <span v-if="identifyDone" class="identify-mini-done"><AppIcon name="done" /></span>
       </div>
     </div>
 
@@ -6304,10 +6300,10 @@ onUnmounted(() => {
             <h3>Identifying tracks <span class="powered-by">powered by <a href="https://acoustid.org" target="_blank">AcoustID</a></span></h3>
             <div style="display:flex;gap:8px">
               <button class="icon-btn" title="Minimize" @click="identifyMinimized = true">
-                <AppIcon name="minus" :size="18" />
+                <AppIcon name="minimize" :size="18" />
               </button>
               <button v-if="identifyDone" class="icon-btn" title="Close" @click="identifyRunning = false">
-                <AppIcon name="x" :size="18" />
+                <AppIcon name="close" :size="18" />
               </button>
             </div>
           </div>
@@ -6337,7 +6333,7 @@ onUnmounted(() => {
           <div class="modal-header">
             <h3>Activity <span class="powered-by">library &amp; sync history</span></h3>
             <button class="icon-btn" title="Close" @click="indexLogOpen = false; indexRunning = false">
-              <AppIcon name="x" :size="18" />
+              <AppIcon name="close" :size="18" />
             </button>
           </div>
           <div class="modal-body">
@@ -6366,12 +6362,12 @@ onUnmounted(() => {
                     <template v-else>scanning…</template>
                   </span>
                   <span class="ls-badge ls-badge-done" v-else-if="session.status === 'done'">
-                    <AppIcon name="check" :size="12" color="#1db954" />
+                    <AppIcon name="done" :size="12" />
                     <template v-if="session.filesAdded > 0">+{{ session.filesAdded }} files</template>
                     <template v-else>up to date</template>
                   </span>
                   <span class="ls-badge ls-badge-err" v-else>
-                    <AppIcon name="x" :size="12" color="#ff5252" />
+                    <AppIcon name="error" :size="12" />
                     error
                   </span>
                   <span class="ls-time">{{ new Date(session.finishedAt || session.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
@@ -6516,8 +6512,8 @@ onUnmounted(() => {
                 <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
               </div>
               <button class="icon-btn" :class="{ green: nowPlaying.is_liked }" @click.stop="toggleLike(nowPlaying!)" style="margin-left:auto;">
-                <AppIcon name="heart" v-if="nowPlaying.is_liked" :size="22" color="#1db954" filled />
-                <AppIcon name="heart" v-else :size="22" />
+                <AppIcon name="liked" v-if="nowPlaying.is_liked" :size="22" />
+                <AppIcon name="like" v-else :size="22" />
               </button>
             </div>
             <!-- seek -->
@@ -6550,18 +6546,18 @@ onUnmounted(() => {
                 <AppIcon name="shuffle" :size="20" />
               </button>
               <button class="icon-btn" @click="playPrev">
-                <AppIcon name="skip-back" :size="32" />
+                <AppIcon name="previous" :size="32" />
               </button>
               <button class="detail-play-btn" @click="togglePlay">
                 <AppIcon name="play" v-if="!isPlaying" :size="28" />
                 <AppIcon name="pause" v-else :size="28" />
               </button>
               <button class="icon-btn" @click="playNext">
-                <AppIcon name="skip-forward" :size="32" />
+                <AppIcon name="next" :size="32" />
               </button>
               <button class="icon-btn" :class="{ green: repeatMode > 0 }" @click="repeatMode = (repeatMode + 1) % 3">
                 <AppIcon name="repeat" v-if="repeatMode < 2" :size="20" />
-                <AppIcon name="repeat-1" v-else :size="20" />
+                <AppIcon name="repeat-one" v-else :size="20" />
               </button>
             </div>
           </div>
@@ -6570,21 +6566,10 @@ onUnmounted(() => {
   </Teleport>
 </template>
 
-<style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body, #app { height: 100%; overflow: hidden; }
-body { background: #000; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-button, input, select, textarea { font: inherit; }
-a, button, [role="button"] {
-  -webkit-tap-highlight-color: transparent;
-  outline: none;
-}
-</style>
-
 <style scoped>
-.detail-static-cover { position: absolute; inset: 15%; border-radius: 14px; box-shadow: 0 20px 50px #0006; }
+.detail-static-cover { position: absolute; inset: 15%; border-radius: 14px; box-shadow: 0 20px 50px color-mix(in srgb, var(--color-shadow) 40%, transparent); }
 .page-title-input { width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
-.page-title-input:focus-visible { outline: 2px solid #1db954; outline-offset: -2px; }
+.page-title-input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 
 /* ── Layout ── */
 .app {
@@ -6592,42 +6577,8 @@ a, button, [role="button"] {
   grid-template-columns: 220px 1fr;
   grid-template-rows: 1fr 90px;
   height: 100vh;
-  color: #fff;
-  background: #000;
-  --fs-nav: 14px;
-  --fs-h2: 22px;
-  --fs-section-link: 11px;
-  --fs-card-title: 13px;
-  --fs-card-meta: 12px;
-  --fs-player-title: 13px;
-  --fs-player-meta: 11px;
-  --fs-input: 13px;
-  --fs-empty: 14px;
-  --fs-eyebrow: 11px;
-  --fs-group: 13px;
-  --fs-track-side: 13px;
-  --fs-track-title: 14px;
-  --fs-track-meta: 12px;
-  --fs-badge: 11px;
-  --fs-modal-title: 18px;
-  --fs-field-label: 12px;
-  --fs-field-input: 14px;
-  --fs-button: 13px;
-  --fs-dropdown-label: 12px;
-  --fs-dropdown-item: 14px;
-  --fs-queue-title: 13px;
-  --fs-queue-meta: 11px;
-  --fs-queue-dur: 12px;
-  --fs-status-pill: 13px;
-  --fs-powered-by: 11px;
-  --fs-body-sm: 12px;
-  --fs-body-md: 13px;
-  --fs-peer-title: 14px;
-  --fs-peer-meta: 12px;
-  --fs-control: 12px;
-  --fs-detail-title: 18px;
-  --fs-detail-artist: 14px;
-  --fs-detail-time: 12px;
+  color: var(--color-text);
+  background: var(--color-bg);
 }
 
 .brand {
@@ -6669,7 +6620,7 @@ a, button, [role="button"] {
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, #24304a, #11161f);
-  color: #fff;
+  color: var(--color-text);
   font-size: 18px;
 }
 .discovery-info {
@@ -6691,15 +6642,15 @@ a, button, [role="button"] {
   border-radius: 999px;
   font-size: var(--fs-badge);
   font-weight: 700;
-  background: rgba(255, 255, 255, 0.08);
-  color: #d7d7d7;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: var(--color-text);
   flex-shrink: 0;
 }
-.discovery-status-pill.peer-status-playing { background: rgba(29, 185, 84, 0.16); color: #8de2a7; }
-.discovery-status-pill.peer-status-paused { background: rgba(243, 201, 105, 0.16); color: #f3c969; }
+.discovery-status-pill.peer-status-playing { background: color-mix(in srgb, var(--color-accent) 16%, transparent); color: var(--color-accent-text); }
+.discovery-status-pill.peer-status-paused { background: color-mix(in srgb, var(--color-warning) 16%, transparent); color: var(--color-warning); }
 .discovery-status-pill.peer-status-stopped,
 .discovery-status-pill.peer-status-ended,
-.discovery-status-pill.peer-status-idle { background: rgba(255, 255, 255, 0.06); color: #9a9a9a; }
+.discovery-status-pill.peer-status-idle { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text-muted); }
 .discovery-meta {
   white-space: normal;
 }
@@ -6722,90 +6673,90 @@ a, button, [role="button"] {
 
 .sync-toggle {
   display: flex; align-items: center; gap: 6px;
-  padding: 5px 12px; border-radius: 20px; border: 1px solid #535353;
-  background: transparent; color: #a7a7a7; font-size: var(--fs-control); font-weight: 600;
+  padding: 5px 12px; border-radius: 20px; border: 1px solid var(--color-border-strong);
+  background: transparent; color: var(--color-text-muted); font-size: var(--fs-control); font-weight: 600;
   cursor: pointer; transition: all 0.15s;
 }
-.sync-toggle:hover { border-color: #fff; color: #fff; }
-.sync-toggle.active { background: #1db954; border-color: #1db954; color: #000; }
+.sync-toggle:hover { border-color: var(--color-text); color: var(--color-text); }
+.sync-toggle.active { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); }
 
-.settings-error { color: #e9283e; font-size: var(--fs-body-sm); }
+.settings-error { color: var(--color-danger-text); font-size: var(--fs-body-sm); }
 
 /* ── Duplicates view ── */
 .dedup-toolbar {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
 }
 .dedup-filter-btn {
-  padding: 5px 12px; border-radius: 20px; border: 1px solid #333;
-  background: transparent; color: #a7a7a7; cursor: pointer;
+  padding: 5px 12px; border-radius: 20px; border: 1px solid var(--color-surface-hover);
+  background: transparent; color: var(--color-text-muted); cursor: pointer;
   font-size: var(--fs-body-sm); transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-.dedup-filter-btn:hover { border-color: #555; color: #fff; }
-.dedup-filter-btn.active { background: #1db954; color: #000; border-color: #1db954; }
+.dedup-filter-btn:hover { border-color: var(--color-border-strong); color: var(--color-text); }
+.dedup-filter-btn.active { background: var(--color-accent); color: var(--color-on-accent); border-color: var(--color-accent); }
 .dedup-rescan-btn {
   display: flex; align-items: center; gap: 6px;
   padding: 5px 14px; font-size: var(--fs-body-sm);
 }
 .dedup-summary {
-  margin: 10px 0 18px; color: #b3b3b3; font-size: var(--fs-body-sm);
+  margin: 10px 0 18px; color: var(--color-text-muted); font-size: var(--fs-body-sm);
 }
 .dedup-clean-copy {
-  display: flex; align-items: center; gap: 8px; color: #a7a7a7;
+  display: flex; align-items: center; gap: 8px; color: var(--color-text-muted);
 }
 .dedup-error { margin-top: 16px; }
 .dedup-group {
-  margin-bottom: 20px; border: 1px solid #282828; border-radius: 8px; overflow: hidden;
+  margin-bottom: 20px; border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden;
 }
 .dedup-group-header {
-  padding: 10px 16px 8px; background: #1a1a1a;
+  padding: 10px 16px 8px; background: var(--color-card);
   display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap;
 }
 .dedup-group-title {
-  font-size: var(--fs-body-sm); color: #fff; font-weight: 600;
+  font-size: var(--fs-body-sm); color: var(--color-text); font-weight: 600;
   display: flex; align-items: center; gap: 8px;
 }
 .dedup-track-count {
-  font-size: 11px; color: #a7a7a7; font-weight: 400;
+  font-size: 11px; color: var(--color-text-muted); font-weight: 400;
 }
 .dedup-reasons {
   display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto;
 }
 .dedup-reason-tag {
-  padding: 2px 8px; border-radius: 10px; background: #282828;
-  font-size: 10px; color: #888; font-family: monospace;
+  padding: 2px 8px; border-radius: 10px; background: var(--color-surface);
+  font-size: 10px; color: var(--color-text-faint); font-family: monospace;
 }
 .dedup-group-tracks { padding: 4px 0; }
 .dedup-track-row {
   cursor: pointer;
 }
 .dedup-track-row.dedup-keep {
-  background: rgba(29, 185, 84, 0.08);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
 }
 .dedup-track-row.dedup-remove {
   opacity: 0.55;
 }
 .dedup-track-meta {
-  display: flex; gap: 10px; font-size: 11px; color: #666; margin-top: 2px;
+  display: flex; gap: 10px; font-size: 11px; color: var(--color-text-faint); margin-top: 2px;
   flex-wrap: wrap;
 }
 .dedup-edited-tag {
-  background: #2c3a2e; color: #1db954; padding: 1px 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent); padding: 1px 6px; border-radius: 4px;
   font-size: 10px;
 }
 .dedup-already-marked {
-  outline: 1px solid #7b4a1a44;
-  background: rgba(245, 160, 30, 0.05);
+  outline: 1px solid color-mix(in srgb, var(--color-warning) 20%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 5%, transparent);
 }
 .dedup-flagged-tag {
-  background: #3a2e1a; color: #f5a01e; padding: 1px 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent); color: var(--color-warning); padding: 1px 6px; border-radius: 4px;
   font-size: 10px;
 }
 .dedup-keep-badge {
-  background: #1db954; color: #000; font-size: 10px; font-weight: 700;
+  background: var(--color-accent); color: var(--color-on-accent); font-size: 10px; font-weight: 700;
   padding: 1px 6px; border-radius: 4px; margin-left: 8px;
 }
 .dedup-remove-badge {
-  background: #c0392b22; color: #e05a4a; font-size: 10px;
+  background: color-mix(in srgb, var(--color-danger) 13%, transparent); color: var(--color-danger-text); font-size: 10px;
   padding: 1px 6px; border-radius: 4px; margin-left: 8px;
 }
 .dedup-keep-radio {
@@ -6813,11 +6764,11 @@ a, button, [role="button"] {
   width: 24px; margin-left: 4px;
 }
 .dedup-radio-dot {
-  width: 14px; height: 14px; border-radius: 50%; border: 2px solid #555;
+  width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--color-border-strong);
   transition: border-color 0.12s, background 0.12s;
 }
 .dedup-radio-dot.active {
-  border-color: #1db954; background: #1db954;
+  border-color: var(--color-accent); background: var(--color-accent);
 }
 .dedup-actions {
   margin-top: 24px; margin-bottom: 12px; display: flex; justify-content: flex-end;
@@ -6825,11 +6776,11 @@ a, button, [role="button"] {
 
 .sync-now-btn {
   flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
-  background: #282828; border: none; color: #a7a7a7;
+  background: var(--color-surface); border: none; color: var(--color-text-muted);
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; transition: background 0.15s, color 0.15s;
 }
-.sync-now-btn:hover:not(:disabled) { background: #1db954; color: #000; }
+.sync-now-btn:hover:not(:disabled) { background: var(--color-accent); color: var(--color-on-accent); }
 .sync-now-btn:disabled { opacity: 0.4; cursor: default; }
 .discovery-sync-btn { margin-left: 10px; }
 .discovery-link-btn { flex-shrink: 0; margin-left: 10px; }
@@ -6838,14 +6789,14 @@ a, button, [role="button"] {
 .sync-bar-wrap {
   position: relative;
   height: 8px;
-  background: #292929;
+  background: var(--color-surface);
   border-radius: 4px;
   overflow: hidden;
   margin-top: 1px;
 }
 .sync-bar {
   height: 5px;
-  background: rgba(29, 185, 84, 0.92);
+  background: color-mix(in srgb, var(--color-accent) 92%, transparent);
   border-radius: 4px 4px 2px 2px;
   transition: width 0.22s linear;
 }
@@ -6854,7 +6805,7 @@ a, button, [role="button"] {
   left: 0;
   bottom: 0;
   height: 2px;
-  background: rgba(255, 255, 255, 0.32);
+  background: color-mix(in srgb, var(--color-text) 32%, transparent);
   border-radius: 0 0 4px 4px;
   transition: width 0.3s ease;
 }
@@ -6864,16 +6815,16 @@ a, button, [role="button"] {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--fs-powered-by);
-  color: #c8c8c8;
+  color: var(--color-text-muted);
 }
 .sync-count {
   flex-shrink: 0;
   font-size: var(--fs-powered-by);
-  color: #777;
+  color: var(--color-text-faint);
   font-variant-numeric: tabular-nums;
 }
-.sync-done { color: #1db954; }
-.sync-error { color: #e9283e; }
+.sync-done { color: var(--color-accent); }
+.sync-error { color: var(--color-danger-text); }
 
 /* ── Main area ── */
 .main {
@@ -6881,23 +6832,23 @@ a, button, [role="button"] {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: linear-gradient(180deg, #4a2d8a 0%, #1f1b3a 30%, #121212 58%);
+  background: linear-gradient(180deg, var(--color-hero) 0%, color-mix(in oklab, var(--color-hero) 33%, var(--color-bg-elevated)) 30%, var(--color-bg-elevated) 58%);
 }
 
 
 .user-menu-wrapper { position: relative; }
 .user-btn {
   display: flex; align-items: center; gap: 8px;
-  background: rgba(0,0,0,.5);
-  border: none; color: #fff;
+  background: color-mix(in srgb, var(--color-shadow) 50%, transparent);
+  border: none; color: var(--color-text);
   padding: 4px 10px 4px 4px;
   border-radius: 20px;
   cursor: pointer; font-size: 13px; font-weight: 700;
 }
-.user-btn:hover { background: rgba(0,0,0,.8); }
+.user-btn:hover { background: color-mix(in srgb, var(--color-shadow) 80%, transparent); }
 .avatar {
   width: 28px; height: 28px; border-radius: 50%;
-  background: #5a5a5a;
+  background: var(--color-border-strong);
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; font-weight: 700; text-transform: uppercase;
 }
@@ -6905,10 +6856,10 @@ a, button, [role="button"] {
 .dropdown a {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 16px;
-  color: #fff; text-decoration: none; font-size: 14px; cursor: pointer;
+  color: var(--color-text); text-decoration: none; font-size: 14px; cursor: pointer;
 }
-.dropdown a:hover { background: #3e3e3e; }
-.dropdown-sep { height: 1px; background: #3e3e3e; margin: 4px 0; }
+.dropdown a:hover { background: var(--color-surface-hover); }
+.dropdown-sep { height: 1px; background: var(--color-surface-hover); margin: 4px 0; }
 
 /* ── Content ── */
 .content {
@@ -6918,7 +6869,7 @@ a, button, [role="button"] {
 }
 .content.friend-content { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding-bottom: 16px; }
 .content::-webkit-scrollbar { width: 8px; }
-.content::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+.content::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 4px; }
 .content::-webkit-scrollbar-track { background: transparent; }
 
 section { margin-bottom: 36px; }
@@ -6935,9 +6886,9 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .show-all {
   font-size: var(--fs-section-link); font-weight: 700;
   text-transform: uppercase; letter-spacing: .08em;
-  color: #b3b3b3; text-decoration: none;
+  color: var(--color-text-muted); text-decoration: none;
 }
-.show-all:hover { color: #fff; text-decoration: underline; }
+.show-all:hover { color: var(--color-text); text-decoration: underline; }
 
 .grid {
   display: grid;
@@ -6953,13 +6904,13 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 
 .card {
-  background: #181818; border-radius: 6px; padding: 14px;
+  background: var(--color-card); border-radius: 6px; padding: 14px;
   cursor: pointer; transition: background .18s; position: relative;
   width: 150px;
   flex-shrink: 0;
 }
-.card:hover { background: #282828 !important; }
-.card.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
+.card:hover { background: var(--color-card-hover) !important; }
+.card.rarity-tint { background: var(--rarity-tint); }
 .card:hover .hover-play { opacity: 1; transform: translateY(0); }
 
 .recent-onboarding-list {
@@ -6973,13 +6924,13 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   text-align: left;
 }
 .onboarding-music-card:focus-visible {
-  outline: 2px solid #8ff9df;
+  outline: 2px solid var(--color-accent);
   outline-offset: -2px;
 }
 .onboarding-action-cover {
   display: grid;
   place-items: center;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text) 14%, transparent);
 }
 .onboarding-sync-cover {
   background: linear-gradient(145deg, #36c9b4, #176c7c 58%, #222449);
@@ -6991,10 +6942,10 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   width: 56px;
   height: 56px;
   color: rgba(255, 255, 255, 0.94);
-  filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.24));
+  filter: drop-shadow(0 8px 12px color-mix(in srgb, var(--color-shadow) 24%, transparent));
 }
 .onboarding-card-go {
-  color: #000;
+  color: var(--color-on-accent);
   font-size: 22px;
   font-weight: 800;
 }
@@ -7011,7 +6962,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   bottom: -42px;
   width: 230px;
   max-width: none;
-  filter: drop-shadow(0 18px 24px rgba(0, 0, 0, 0.3));
+  filter: drop-shadow(0 18px 24px color-mix(in srgb, var(--color-shadow) 30%, transparent));
   transform-origin: center bottom;
   animation:
     recent-zippy-enter 650ms cubic-bezier(.18, .86, .28, 1.16) both,
@@ -7064,13 +7015,14 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 .green-circle {
   width: 42px; height: 42px; border-radius: 50%;
-  background: #1db954; border: none;
+  background: var(--color-accent); border: none;
+  color: var(--color-on-accent);
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
-  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-shadow) 50%, transparent);
   transition: transform .1s, background .1s;
 }
-.green-circle:hover { transform: scale(1.06); background: #1ed760; }
+.green-circle:hover { transform: scale(1.06); background: var(--color-accent-hover); }
 
 .card-title {
   font-size: var(--fs-card-title); font-weight: 700;
@@ -7078,26 +7030,28 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   margin-bottom: 4px;
 }
 .card-artist {
-  font-size: var(--fs-card-meta); color: #a7a7a7;
+  font-size: var(--fs-card-meta); color: var(--color-text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 .icon-btn {
   background: none; border: none;
-  color: #b3b3b3; cursor: pointer; padding: 4px;
+  color: var(--color-text-muted); cursor: pointer; padding: 4px;
   display: flex; align-items: center; justify-content: center;
   position: relative; border-radius: 4px;
   transition: color .1s;
 }
-.icon-btn:hover { color: #fff; }
-.icon-btn.green { color: #1db954; }
-.icon-btn.green:hover { color: #1ed760; }
+.icon-btn:hover { color: var(--color-text); }
+.icon-btn.green { color: var(--color-accent); }
+.success-icon { color: var(--color-accent); }
+.pinned-cover-icon { color: color-mix(in srgb, var(--color-text) 88%, transparent); }
+.icon-btn.green:hover { color: var(--color-accent-hover); }
 .icon-btn.dot::after {
   content: '';
   position: absolute; bottom: -3px; left: 50%;
   transform: translateX(-50%);
   width: 4px; height: 4px; border-radius: 50%;
-  background: #1db954;
+  background: var(--color-accent);
 }
 
 /* ── Library view ── */
@@ -7112,7 +7066,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   justify-content: space-between;
   gap: 12px;
   margin: -4px 0 12px;
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   font-size: 13px;
 }
 .library-page-controls > div { display: flex; gap: 6px; }
@@ -7120,17 +7074,17 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .library-page-controls-bottom { margin: 18px 0 0; justify-content: center; }
 .library-load-more { display: flex; justify-content: center; padding: 18px 0; }
 .library-search {
-  background: #282828; border: none; border-radius: 4px;
-  color: #fff; font-size: var(--fs-input); padding: 8px 12px;
+  background: var(--color-surface); border: none; border-radius: 4px;
+  color: var(--color-text); font-size: var(--fs-input); padding: 8px 12px;
   width: 220px; outline: none;
 }
-.library-search::placeholder { color: #777; }
-.library-search:focus { outline: 1px solid #555; }
+.library-search::placeholder { color: var(--color-text-faint); }
+.library-search:focus { outline: 1px solid var(--color-border-strong); }
 .library-empty {
-  color: #a7a7a7; font-size: var(--fs-empty); padding: 32px 0;
+  color: var(--color-text-muted); font-size: var(--fs-empty); padding: 32px 0;
 }
 .search-empty-copy {
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   font-size: var(--fs-body-md);
   margin: 0 0 16px;
 }
@@ -7145,11 +7099,11 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   flex-wrap: wrap;
   gap: 14px;
   margin: 0 0 14px;
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   font-size: var(--fs-body-md);
 }
 .search-summary strong {
-  color: #fff;
+  color: var(--color-text);
   font-weight: 700;
 }
 .soulseek-section-head {
@@ -7173,7 +7127,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .soulseek-settings-link {
   background: transparent;
   border: none;
-  color: #8de2a7;
+  color: var(--color-accent-text);
   cursor: pointer;
   padding: 0;
 }
@@ -7187,8 +7141,8 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #21453a, #0f1820);
-  color: #8de2a7;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 20%, var(--color-card)), color-mix(in srgb, var(--color-accent) 8%, var(--color-bg)));
+  color: var(--color-accent-text);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: .08em;
@@ -7201,22 +7155,22 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   border-radius: 999px;
   font-size: var(--fs-badge);
   font-weight: 700;
-  background: rgba(255, 255, 255, 0.08);
-  color: #d7d7d7;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: var(--color-text);
 }
 .soulseek-status-pill.state-completed {
-  background: rgba(29, 185, 84, 0.16);
-  color: #8de2a7;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-text);
 }
 .soulseek-status-pill.state-failed,
 .soulseek-status-pill.state-timed_out,
 .soulseek-status-pill.state-cancelled {
-  background: rgba(233, 40, 62, 0.16);
-  color: #ff98a3;
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: var(--color-danger-text);
 }
 .soulseek-progress-copy {
   font-size: var(--fs-body-sm);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7225,7 +7179,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   padding-top: 10px;
 }
 .soulseek-inline-error {
-  color: #ff98a3;
+  color: var(--color-danger-text);
 }
 .soulseek-side {
   display: flex;
@@ -7238,7 +7192,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 .soulseek-speed {
   font-size: var(--fs-body-sm);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   white-space: nowrap;
 }
 .soulseek-download-btn {
@@ -7263,7 +7217,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   margin-top: 2px;
 }
 .soulseek-replace-track-copy {
-  color: #b3b3b3;
+  color: var(--color-text-muted);
   line-height: 1.5;
   margin: 0;
 }
@@ -7287,12 +7241,12 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .soulseek-download-icon-btn {
   width: 32px;
   height: 32px;
-  border: 1px solid #555;
+  border: 1px solid var(--color-border-strong);
   border-radius: 999px;
   flex-shrink: 0;
 }
 .soulseek-download-icon-btn:hover:not(:disabled) {
-  border-color: #fff;
+  border-color: var(--color-text);
 }
 .soulseek-replace-compact-btn {
   padding: 5px 12px;
@@ -7314,15 +7268,15 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .text-action-btn { font-size: var(--fs-button); font-weight: 600; }
 .history-time {
   font-size: var(--fs-body-sm);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   white-space: nowrap;
 }
 .smart-track-count {
   font-size: var(--fs-body-sm);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
 }
 .smart-empty-values {
-  color: #777;
+  color: var(--color-text-faint);
   font-size: var(--fs-body-sm);
 }
 .device-emoji {
@@ -7330,19 +7284,19 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   line-height: 1;
 }
 .discovery-caption {
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   font-size: var(--fs-body-sm);
 }
 .discovery-help-text {
   font-size: var(--fs-body-sm);
-  color: #535353;
+  color: var(--color-text-faint);
 }
 /* Playlist menu */
 .playlist-menu {
   position: fixed; z-index: 1001;
-  background: #282828; border: 1px solid #3a3a3a; border-radius: 8px;
+  background: var(--color-surface); border: 1px solid var(--color-surface-hover); border-radius: 8px;
   min-width: 180px; max-width: 240px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-shadow) 50%, transparent);
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
@@ -7363,115 +7317,99 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   padding: 14px 16px 8px;
 }
 .dedup-confirm-popup .modal-header h3 {
-  color: #fff;
+  color: var(--color-text);
 }
 .dedup-confirm-popup .modal-body {
   padding: 8px 16px 4px;
 }
 .playlist-menu-header {
   font-size: var(--fs-eyebrow); font-weight: 700; text-transform: uppercase;
-  letter-spacing: .06em; color: #a7a7a7;
+  letter-spacing: .06em; color: var(--color-text-muted);
   padding: 10px 14px 6px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--color-surface-hover);
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
 }
 .playlist-menu-empty {
-  font-size: var(--fs-body-sm); color: #777; padding: 10px 14px;
+  font-size: var(--fs-body-sm); color: var(--color-text-faint); padding: 10px 14px;
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
 }
 .playlist-menu-item {
   display: block; width: 100%; text-align: left;
-  background: none; border: none; color: #e0e0e0;
+  background: none; border: none; color: var(--color-text);
   font-size: var(--fs-button); padding: 9px 14px; cursor: pointer;
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
 }
-.playlist-menu-item:hover { background: #333; }
-.playlist-menu-item.danger { color: #ffb7b7; }
-.playlist-menu-item.danger:hover { background: rgba(255, 82, 82, 0.12); }
+.playlist-menu-item:hover { background: var(--color-surface-hover); }
+.playlist-menu-item.danger { color: var(--color-danger-text); }
+.playlist-menu-item.danger:hover { background: color-mix(in srgb, var(--color-danger) 12%, transparent); }
 
 /* Smart Playlists */
 .sp-match-row {
   display: flex; align-items: center; gap: 8px;
-  font-size: var(--fs-body-md); color: #a7a7a7; padding: 0 0 14px;
+  font-size: var(--fs-body-md); color: var(--color-text-muted); padding: 0 0 14px;
 }
 .sp-match-btn {
-  background: transparent; border: 1px solid #535353; color: #a7a7a7;
+  background: transparent; border: 1px solid var(--color-border-strong); color: var(--color-text-muted);
   border-radius: 20px; padding: 4px 12px; font-size: var(--fs-body-sm);
   font-weight: 600; cursor: pointer; transition: all .15s;
 }
-.sp-match-btn.active, .sp-match-btn:hover { background: #1db954; border-color: #1db954; color: #000; }
+.sp-match-btn.active, .sp-match-btn:hover { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); }
 .sp-rules { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
 .sp-rule-row {
   display: flex; align-items: center; gap: 8px;
-  background: #1e1e1e; border-radius: 12px; padding: 8px 12px;
+  background: var(--color-card); border-radius: 12px; padding: 8px 12px;
   flex-wrap: wrap;
 }
-.sp-select {
-  background: #282828; border: 1px solid #535353; border-radius: 20px;
-  color: #a7a7a7; font-size: var(--fs-input); padding: 6px 34px 6px 12px; cursor: pointer;
-  min-height: 34px;
-  line-height: 1.2;
-  appearance: none; -webkit-appearance: none;
-  background-image: url("./assets/icons/chevron-down.svg");
-  background-repeat: no-repeat; background-position: right 12px center; background-size: 12px 12px;
-  outline: none; transition: border-color .15s, color .15s;
-}
-.sp-select:focus { border-color: #fff; color: #fff; }
-.sp-select:hover { border-color: #fff; color: #fff; }
-.sp-select option {
-  background: #282828;
-  color: #fff;
-}
-.sp-op-label { font-size: var(--fs-body-sm); color: #a7a7a7; white-space: nowrap; }
+.sp-op-label { font-size: var(--fs-body-sm); color: var(--color-text-muted); white-space: nowrap; }
 .sp-text-input { flex: 1; min-width: 100px; }
 .sp-num-input { width: 80px; }
 .sp-add-rule-btn {
-  background: transparent; border: 1px solid #535353; color: #a7a7a7;
+  background: transparent; border: 1px solid var(--color-border-strong); color: var(--color-text-muted);
   border-radius: 20px; padding: 5px 14px; font-size: var(--fs-body-sm); font-weight: 600;
   cursor: pointer; transition: all .15s;
   align-self: flex-start;
 }
-.sp-add-rule-btn:hover { border-color: #fff; color: #fff; }
+.sp-add-rule-btn:hover { border-color: var(--color-text); color: var(--color-text); }
 .sp-multiselect {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1;
 }
 .sp-chip {
-  background: #282828; border: 1px solid #444; color: #a7a7a7;
+  background: var(--color-surface); border: 1px solid var(--color-border-strong); color: var(--color-text-muted);
   border-radius: 20px; padding: 3px 10px; font-size: var(--fs-body-sm);
   cursor: pointer; transition: background .12s, color .12s, border-color .12s;
   user-select: none;
 }
-.sp-chip.selected { background: #1db954; border-color: #1db954; color: #000; font-weight: 600; }
-.sp-chip:hover:not(.selected) { border-color: #888; color: #e0e0e0; }
+.sp-chip.selected { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); font-weight: 600; }
+.sp-chip:hover:not(.selected) { border-color: var(--color-border-strong); color: var(--color-text); }
 .sp-preview-header {
   font-size: var(--fs-eyebrow); font-weight: 700; text-transform: uppercase;
-  letter-spacing: .06em; color: #a7a7a7;
-  padding: 0 0 10px; border-bottom: 1px solid #282828; margin-bottom: 8px;
+  letter-spacing: .06em; color: var(--color-text-muted);
+  padding: 0 0 10px; border-bottom: 1px solid var(--color-border); margin-bottom: 8px;
 }
 .sp-preview { opacity: 0.9; }
 .track-groups { display: flex; flex-direction: column; gap: 24px; }
 .group-artist {
-  font-size: var(--fs-group); font-weight: 700; color: #a7a7a7;
+  font-size: var(--fs-group); font-weight: 700; color: var(--color-text-muted);
   text-transform: uppercase; letter-spacing: .04em;
-  padding-bottom: 8px; border-bottom: 1px solid #282828;
+  padding-bottom: 8px; border-bottom: 1px solid var(--color-border);
   margin-bottom: 4px;
 }
 .group-artist-link { color: inherit; text-decoration: none; }
-.group-artist-link:hover { color: var(--color-text, #fff); text-decoration: underline; }
+.group-artist-link:hover { color: var(--color-text); text-decoration: underline; }
 .track-row {
   display: flex; align-items: center; gap: 12px;
   padding: 8px 8px; border-radius: 4px;
   cursor: pointer; user-select: none;
 }
-.track-row:hover { background: #282828 !important; }
+.track-row:hover { background: var(--color-card-hover) !important; }
 .appearance-track-preview { width: 100%; pointer-events: none; }
-.track-row.rarity-tint { background: color-mix(in srgb, var(--rc) 12%, #181818); }
+.track-row.rarity-tint { background: var(--rarity-tint); }
 .track-cover-sm {
   width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0;
 }
@@ -7483,20 +7421,20 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   min-width: 0;
 }
 .track-title {
-  font-size: var(--fs-track-title); font-weight: 500; color: #fff;
+  font-size: var(--fs-track-title); font-weight: 500; color: var(--color-text);
   display: block; flex: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .track-album {
-  font-size: var(--fs-track-meta); color: #a7a7a7;
+  font-size: var(--fs-track-meta); color: var(--color-text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .track-row.track-row-current {
-  background: rgba(29, 185, 84, 0.14) !important;
-  box-shadow: inset 0 0 0 1px rgba(29, 185, 84, 0.3);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 .track-row.track-row-next {
-  background: rgba(29, 185, 84, 0.08) !important;
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent) !important;
 }
 .track-playback-badge {
   display: inline-flex;
@@ -7510,32 +7448,32 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   flex-shrink: 0;
 }
 .track-playback-badge.current {
-  background: #1db954;
-  color: #08120b;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
 }
 .track-playback-badge.next {
-  background: rgba(29, 185, 84, 0.14);
-  color: #8de2a7;
-  box-shadow: inset 0 0 0 1px rgba(29, 185, 84, 0.28);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 .track-playback-step {
   font-variant-numeric: tabular-nums;
 }
 .track-dur {
-  font-size: var(--fs-track-side); color: #a7a7a7; flex-shrink: 0;
+  font-size: var(--fs-track-side); color: var(--color-text-muted); flex-shrink: 0;
 }
 
 /* ── Edit modal ── */
 .modal-overlay {
   position: fixed; inset: 0;
-  background: rgba(0, 0, 0, .65);
+  background: color-mix(in srgb, var(--color-shadow) 65%, transparent);
   display: flex; align-items: center; justify-content: center;
   z-index: 500;
 }
 .modal {
-  background: #282828; border-radius: 8px;
+  background: var(--color-surface); border-radius: 8px;
   width: 400px; max-width: 90vw;
-  box-shadow: 0 16px 48px rgba(0,0,0,.6);
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--color-shadow) 60%, transparent);
 }
 .modal-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -7543,35 +7481,21 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 .modal-header h3 { font-size: var(--fs-modal-title); font-weight: 700; }
 .modal-body { padding: 8px 24px 16px; display: flex; flex-direction: column; gap: 14px; }
+.modal-copy { color: var(--color-text-muted); line-height: 1.5; }
+.modal-copy strong { color: var(--color-text); }
 .field {
   display: flex; flex-direction: column; gap: 4px;
 }
-.field span {
-  font-size: var(--fs-field-label); font-weight: 600; color: #a7a7a7; text-transform: uppercase; letter-spacing: .03em;
+.field > span {
+  font-size: var(--fs-field-label); font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .03em;
 }
-.field input,
-.field select {
-  background: #3e3e3e; border: none; border-radius: 4px;
-  color: #fff; font-size: var(--fs-field-input); padding: 10px 12px; outline: none;
+.field input {
+  background: var(--color-surface-hover); border: none; border-radius: 4px;
+  color: var(--color-text); font-size: var(--fs-field-input); padding: 10px 12px; outline: none;
   min-height: 42px;
   line-height: 1.2;
 }
-.field select {
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("./assets/icons/chevron-down-light.svg");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  background-size: 12px 12px;
-  padding-right: 40px;
-}
-.field select option {
-  background: #282828;
-  color: #fff;
-}
-.field input:focus,
-.field select:focus { outline: 1px solid #1db954; }
+.field input:focus { outline: 1px solid var(--color-accent); }
 .edit-track-modal { width: 460px; }
 .edit-track-body {
   max-height: min(70vh, 560px);
@@ -7582,17 +7506,17 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   padding: 12px 24px 20px;
 }
 .btn-secondary {
-  background: transparent; border: 1px solid #727272; border-radius: 20px;
-  color: #fff; font-size: var(--fs-button); font-weight: 700;
+  background: transparent; border: 1px solid var(--color-border-strong); border-radius: 20px;
+  color: var(--color-text); font-size: var(--fs-button); font-weight: 700;
   padding: 8px 24px; cursor: pointer;
 }
-.btn-secondary:hover { border-color: #fff; }
+.btn-secondary:hover { border-color: var(--color-text); }
 .btn-primary {
-  background: #1db954; border: none; border-radius: 20px;
-  color: #000; font-size: var(--fs-button); font-weight: 700;
+  background: var(--color-accent); border: none; border-radius: 20px;
+  color: var(--color-on-accent); font-size: var(--fs-button); font-weight: 700;
   padding: 8px 28px; cursor: pointer;
 }
-.btn-primary:hover { background: #1ed760; transform: scale(1.02); }
+.btn-primary:hover { background: var(--color-accent-hover); transform: scale(1.02); }
 
 .modal-enter-active, .modal-leave-active { transition: opacity .15s; }
 .modal-enter-from, .modal-leave-to { opacity: 0; }
@@ -7603,7 +7527,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   padding: 10px 16px 6px;
   font-size: var(--fs-dropdown-label);
   font-weight: 700;
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: .04em;
 }
@@ -7628,7 +7552,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   min-height: 34px;
 }
 .activity-mini-label {
-  color: #d8d8d8;
+  color: var(--color-text);
 }
 
 /* ── Status pills container ── */
@@ -7645,48 +7569,48 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #282828;
-  border: 1px solid #3e3e3e;
+  background: var(--color-surface);
+  border: 1px solid var(--color-surface-hover);
   border-radius: 20px;
   padding: 6px 14px;
   cursor: pointer;
   font-size: var(--fs-status-pill);
   font-weight: 600;
-  color: #fff;
-  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  color: var(--color-text);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-shadow) 50%, transparent);
   transition: background .12s;
 }
-.identify-mini:hover { background: #333; cursor: pointer; }
-.identify-mini.index-done { border-color: #1db954; }
+.identify-mini:hover { background: var(--color-surface-hover); cursor: pointer; }
+.identify-mini.index-done { border-color: var(--color-accent); }
 .identify-mini-spinner {
   width: 14px; height: 14px;
-  border: 2px solid #555;
-  border-top-color: #1db954;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: ident-spin .8s linear infinite;
 }
-.identify-mini-done { color: #1db954; font-size: 14px; }
+.identify-mini-done { color: var(--color-accent); font-size: 14px; }
 @keyframes ident-spin { to { transform: rotate(360deg); } }
 .identify-modal { width: 440px; }
-.powered-by { font-size: var(--fs-powered-by); font-weight: 400; color: #888; margin-left: 6px; }
-.powered-by a { color: #1db954; text-decoration: none; }
+.powered-by { font-size: var(--fs-powered-by); font-weight: 400; color: var(--color-text-faint); margin-left: 6px; }
+.powered-by a { color: var(--color-accent); text-decoration: none; }
 .powered-by a:hover { text-decoration: underline; }
 .identify-bar-wrap {
   height: 4px;
-  background: #535353;
+  background: var(--color-border-strong);
   border-radius: 2px;
   overflow: hidden;
   margin-bottom: 8px;
 }
 .identify-bar-fill {
   height: 100%;
-  background: #1db954;
+  background: var(--color-accent);
   border-radius: 2px;
   transition: width .3s;
 }
 .identify-status {
   font-size: var(--fs-body-sm);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   margin-bottom: 12px;
 }
 .identify-results {
@@ -7697,7 +7621,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   gap: 4px;
 }
 .identify-results::-webkit-scrollbar { width: 6px; }
-.identify-results::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.identify-results::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 3px; }
 .identify-results::-webkit-scrollbar-track { background: transparent; }
 .identify-result-item {
   display: flex;
@@ -7710,7 +7634,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 .ir-icon { width: 16px; text-align: center; flex-shrink: 0; }
 .ir-name {
-  color: #ccc;
+  color: var(--color-text-muted);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -7724,14 +7648,14 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   min-width: 0;
   flex: 1;
 }
-.ir-found { color: #1db954; }
-.ir-not_found { color: #a7a7a7; }
-.ir-error { color: #ff5252; }
-.ir-fingerprinting { color: #4fc3f7; }
-.ir-looking_up { color: #ffa726; }
-.ir-done { color: #1db954; font-weight: 600; }
+.ir-found { color: var(--color-accent); }
+.ir-not_found { color: var(--color-text-muted); }
+.ir-error { color: var(--color-danger); }
+.ir-fingerprinting { color: var(--color-info); }
+.ir-looking_up { color: var(--color-warning); }
+.ir-done { color: var(--color-accent); font-weight: 600; }
 .identify-empty {
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   font-size: var(--fs-body-md);
   padding: 12px 0;
   text-align: center;
@@ -7747,22 +7671,22 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   padding: 2px 0;
 }
 .index-results::-webkit-scrollbar { width: 6px; }
-.index-results::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.index-results::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 3px; }
 .index-results::-webkit-scrollbar-track { background: transparent; }
-.index-empty { padding: 40px 20px; text-align: center; color: #a7a7a7; font-size: var(--fs-empty); }
+.index-empty { padding: 40px 20px; text-align: center; color: var(--color-text-muted); font-size: var(--fs-empty); }
 
 /* Progress bar shown above the list while scanning */
 .log-progress-wrap {
   position: relative;
   height: 4px;
-  background: #333;
+  background: var(--color-surface-hover);
   border-radius: 2px;
   margin-bottom: 12px;
   overflow: hidden;
 }
 .log-progress-bar {
   height: 100%;
-  background: #1db954;
+  background: var(--color-accent);
   border-radius: 2px;
   transition: width 0.3s;
 }
@@ -7771,19 +7695,19 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   right: 0;
   top: 7px;
   font-size: var(--fs-powered-by);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
 }
 
 /* Session card */
 .log-session {
-  background: #1a1a1a;
+  background: var(--color-card);
   border-radius: 8px;
   padding: 10px 12px;
-  border-left: 3px solid #333;
+  border-left: 3px solid var(--color-surface-hover);
 }
-.ls-local  { border-left-color: #4fc3f7; }
-.ls-sync   { border-left-color: #1db954; }
-.ls-error  { border-left-color: #ff5252; }
+.ls-local  { border-left-color: var(--color-info); }
+.ls-sync   { border-left-color: var(--color-accent); }
+.ls-error  { border-left-color: var(--color-danger); }
 
 .ls-header {
   display: flex;
@@ -7796,8 +7720,8 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   min-width: 42px;
   padding: 2px 6px;
   border-radius: 4px;
-  background: #252525;
-  color: #bdbdbd;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
   font-size: 10px;
   font-weight: 800;
   line-height: 1.2;
@@ -7805,39 +7729,39 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   text-transform: uppercase;
   letter-spacing: 0;
 }
-.ls-source { font-weight: 600; color: #fff; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ls-time { font-size: var(--fs-powered-by); color: #666; flex-shrink: 0; }
+.ls-source { font-weight: 600; color: var(--color-text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-time { font-size: var(--fs-powered-by); color: var(--color-text-faint); flex-shrink: 0; }
 
 .ls-badge {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: var(--fs-body-sm);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   white-space: nowrap;
   flex-shrink: 0;
 }
-.ls-badge-done { color: #1db954; }
-.ls-badge-err  { color: #ff5252; }
+.ls-badge-done { color: var(--color-accent); }
+.ls-badge-err  { color: var(--color-danger); }
 
 .ls-spinner {
   display: inline-block;
   width: 10px; height: 10px;
-  border: 2px solid #555;
-  border-top-color: #fff;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-text);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
 .ls-error-msg {
   margin-top: 6px;
   font-size: var(--fs-body-sm);
-  color: #ff7070;
+  color: var(--color-danger-text);
   word-break: break-all;
 }
 .ls-current-msg {
   margin-top: 6px;
   font-size: var(--fs-body-sm);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7853,7 +7777,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   align-items: center;
   gap: 6px;
   font-size: var(--fs-body-sm);
-  color: #ccc;
+  color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7862,7 +7786,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #777;
+  background: var(--color-text-faint);
   flex-shrink: 0;
 }
 
@@ -7875,40 +7799,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .app {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 1fr calc(130px + env(safe-area-inset-bottom));
-    --fs-nav: 15px;
-    --fs-h2: 20px;
-    --fs-section-link: 10px;
-    --fs-card-title: 12px;
-    --fs-card-meta: 11px;
-    --fs-player-title: 12px;
-    --fs-player-meta: 10px;
-    --fs-input: 12px;
-    --fs-empty: 13px;
-    --fs-eyebrow: 10px;
-    --fs-group: 12px;
-    --fs-track-side: 12px;
-    --fs-track-title: 13px;
-    --fs-track-meta: 11px;
-    --fs-badge: 10px;
-    --fs-modal-title: 16px;
-    --fs-field-label: 11px;
-    --fs-field-input: 13px;
-    --fs-button: 12px;
-    --fs-dropdown-label: 11px;
-    --fs-dropdown-item: 13px;
-    --fs-queue-title: 12px;
-    --fs-queue-meta: 10px;
-    --fs-queue-dur: 11px;
-    --fs-status-pill: 12px;
-    --fs-powered-by: 10px;
-    --fs-body-sm: 11px;
-    --fs-body-md: 12px;
-    --fs-peer-title: 13px;
-    --fs-peer-meta: 11px;
-    --fs-control: 11px;
-    --fs-detail-title: 17px;
-    --fs-detail-artist: 13px;
-    --fs-detail-time: 11px;
   }
 
   /* Dark overlay */
@@ -7916,7 +7806,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: color-mix(in srgb, var(--color-shadow) 60%, transparent);
     z-index: 399;
   }
 
@@ -7966,7 +7856,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .mobile-seek-track {
     height: 4px;
     border-radius: 999px;
-    background: #3a3a3a;
+    background: var(--color-surface-hover);
     overflow: hidden;
     transition: height .15s ease;
   }
@@ -7975,7 +7865,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   }
   .mobile-seek-fill {
     height: 100%;
-    background: #fff;
+    background: var(--color-text);
     position: relative;
   }
   .mobile-seek-thumb {
@@ -7986,7 +7876,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: #fff;
+    background: var(--color-text);
     opacity: 0;
     transition: opacity .15s ease;
   }
@@ -8004,7 +7894,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   .activity-dock.activity-active { display: block; transform: none; }
   .activity-mini {
     border-radius: 20px;
-    border-bottom: 1px solid #3e3e3e;
+    border-bottom: 1px solid var(--color-surface-hover);
   }
   .status-pills { top: auto; bottom: calc(150px + env(safe-area-inset-bottom)); right: 14px; flex-direction: column; align-items: end; }
 
@@ -8088,7 +7978,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  background: rgba(0,0,0,.45);
+  background: color-mix(in srgb, var(--color-shadow) 45%, transparent);
   backdrop-filter: blur(4px);
   overflow: hidden;
 }
@@ -8121,11 +8011,11 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   max-width: 480px;
   max-height: 95vh;
   overflow: visible;
-  background: linear-gradient(180deg, rgba(10,12,18,.8), rgba(10,12,18,.94));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-bg-elevated) 80%, transparent), color-mix(in srgb, var(--color-bg-elevated) 94%, transparent));
   backdrop-filter: blur(10px) saturate(1.05);
   border-radius: 20px 20px 0 0;
-  border: 1px solid rgba(255,255,255,.08);
-  box-shadow: 0 -10px 60px rgba(0,0,0,.38);
+  border: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
+  box-shadow: 0 -10px 60px color-mix(in srgb, var(--color-shadow) 38%, transparent);
   padding: 0 24px 24px;
   padding-bottom: calc(24px + env(safe-area-inset-bottom));
   display: flex;
@@ -8137,7 +8027,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .detail-handle {
   width: 36px; height: 4px;
   border-radius: 999px;
-  background: #444;
+  background: var(--color-surface-hover);
   margin: 12px auto 0;
   cursor: pointer;
   flex-shrink: 0;
@@ -8216,7 +8106,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     radial-gradient(circle at 35% 30%, rgba(255,255,255,0.12), transparent 38%),
     radial-gradient(circle at center, #181a20 0%, #07080b 72%);
   border: 1px solid rgba(255,255,255,0.08);
-  box-shadow: 24px 18px 42px rgba(0,0,0,0.4);
+  box-shadow: 24px 18px 42px color-mix(in srgb, var(--color-shadow) 40%, transparent);
   overflow: hidden;
   z-index: 0;
   will-change: transform;
@@ -8267,7 +8157,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .detail-cover-3d {
   transform-origin: center center;
   transform: translateZ(46px);
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 
 .card-gloss {
@@ -8297,7 +8187,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 }
 
 .detail-track-name {
-  font-size: var(--fs-detail-title); font-weight: 700; color: #fff;
+  font-size: var(--fs-detail-title); font-weight: 700; color: var(--color-text);
   overflow: hidden;
   flex: 1;
   min-width: 0;
@@ -8320,7 +8210,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 
 
 .detail-track-artist {
-  font-size: var(--fs-detail-artist); color: #a7a7a7;
+  font-size: var(--fs-detail-artist); color: var(--color-text-muted);
   flex: 1;
   overflow: hidden;
   min-width: 0;
@@ -8345,7 +8235,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   position: relative;
   width: 100%;
   height: 4px;
-  background: #3a3a3a;
+  background: var(--color-surface-hover);
   border-radius: 999px;
   pointer-events: none;
 }
@@ -8354,7 +8244,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   position: absolute;
   inset: 0 auto 0 0;
   height: 4px;
-  background: #fff;
+  background: var(--color-text);
   border-radius: 999px;
   pointer-events: none;
 }
@@ -8365,7 +8255,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   top: 50%;
   height: 2px;
   transform: translateY(-50%);
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in srgb, var(--color-text) 20%, transparent);
   border-radius: 999px;
   pointer-events: none;
 }
@@ -8376,7 +8266,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   transform: translateY(-50%);
   width: 12px; height: 12px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--color-text);
 }
 
 .detail-bar-track {
@@ -8387,7 +8277,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   display: flex;
   justify-content: space-between;
   font-size: var(--fs-detail-time);
-  color: #a7a7a7;
+  color: var(--color-text-muted);
 }
 
 .detail-controls {
@@ -8400,14 +8290,14 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .detail-play-btn {
   width: 60px; height: 60px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--color-text);
   border: none;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
-  color: #000;
+  color: var(--color-bg);
 }
 
-.detail-play-btn:hover { background: #e0e0e0; }
+.detail-play-btn:hover { background: color-mix(in srgb, var(--color-text) 88%, var(--color-bg)); }
 
 /* slide-up transition */
 .detail-enter-active, .detail-leave-active {
@@ -8428,7 +8318,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 /* ── Desktop override: centered dialog ──────────────────────────────────── */
 @media (max-width: 768px) {
   .player-detail {
-    background: rgba(0,0,0,.72);
+    background: color-mix(in srgb, var(--color-shadow) 72%, transparent);
     backdrop-filter: none;
   }
 

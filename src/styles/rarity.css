@@ -1,3 +1,6 @@
+/* Background for rows and cards of non-animated rarities; --rc is set per element by rarityVars(). */
+.rarity-tint { --rarity-tint: color-mix(in srgb, var(--rc) 12%, var(--color-card)); }
+
 /* ── Rarity animations ── */
 .rarity-animated { position: relative; overflow: hidden; }
 .rarity-animated::before {

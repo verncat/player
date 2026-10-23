@@ -191,7 +191,7 @@ defineExpose({ allow, useProfile });
   <ResponsivePopup :open="open" centered panel-class="profile-pairing-panel" @close="close">
     <section class="profile-pairing" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1" data-profile-pairing-dialog>
       <div class="pairing-heading">
-        <AppIcon :name="view?.phase === 'complete' ? 'circle-check' : 'key-round'" :size="24" />
+        <AppIcon :name="view?.phase === 'complete' ? 'success' : 'profile-key'" :size="24" />
         <h3>{{ title }}</h3>
       </div>
       <template v-if="view?.phase === 'complete'">

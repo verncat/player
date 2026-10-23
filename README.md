@@ -47,14 +47,15 @@ This project is not a cloud streaming service! The filesystem is the source of t
 
 ## Overview
 
-Player currently focuses on six core jobs:
+Player focuses on a few core jobs:
 
 - Index a local music library and keep it in sync with the filesystem.
-- Play audio files through a native Rust backend with low-latency controls.
-- Store and edit metadata, likes, covers, history, and playlists.
-- Build and evaluate smart playlists.
-- Discover peer devices over LAN and sync files and metadata.
-- Provide a richer now-playing experience with beat-reactive visuals and a WebGL album renderer.
+- Play audio through a native Rust backend with low-latency controls.
+- Browse by artist and album, and store and edit metadata, likes, history, and playlists.
+- Build smart playlists from filter rules.
+- Discover your other devices on the LAN, sync files and metadata with them, and hand playback over to them.
+- Find, preview, and download music from Soulseek.
+- Provide a richer now-playing experience with beat-reactive visuals and a WebGL album card.
 
 ## Screenshots
 
@@ -124,52 +125,58 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 
 ### Library
 
-- Recursive local library indexing.
-- Metadata extraction from audio tags.
-- Cover art support, including sidecar images.
-- Track editing.
+- Recursive local library indexing, kept up to date by a filesystem watcher.
+- Metadata from audio tags, with folder-structure and filename fallbacks.
+- CUE sheet support: each segment of a single-file album is its own track.
+- Artist and album pages, including compilations and guest appearances, with full-size album covers.
+- Cover art from embedded tags or sidecar images (`cover.jpg`, `folder.jpg`, ...), stored once per album as small resized copies.
+- Track editing and identification through AcoustID fingerprints.
 - Likes, play counts, history, and recent tracks.
-- Duplicate detection and duplicate resolution tools.
-- File hash tracking for safer indexing and stale-record cleanup.
+- Duplicate detection: flags duplicates without deleting anything.
+- Drag-and-drop import of files and folders.
 
 ### Playback
 
-- Native audio decoding and playback in Rust.
+- Native audio decoding and playback in Rust, for FLAC, MP3, Ogg Vorbis, Opus, WAV, and AAC/ALAC.
 - Opus playback through bundled libopus, including seeking, encoder delay, and end padding.
 - Seek, pause, resume, stop, and volume control.
-- Output device selection.
-- Playback spectrum data for visuals.
-- Improved recovery around output stream changes and device switching.
+- Output device and sample rate selection.
+- Queue with shuffle, repeat, and up-next, across lists of any length.
+- Beat detection and spectrum data for the visuals.
 
 ### Organization
 
-- Regular playlists.
-- Smart playlists driven by filter rules.
-- Track reveal/share actions from the UI.
+- Regular playlists and smart playlists driven by filter rules, with pinning to the home screen.
+- Fast paged library and search, so large libraries stay responsive.
+- Reveal a track's file in the file manager, or share it (Android).
 
-### Sync and discovery
+### Sync, discovery, and remote playback
 
 Devices can share a local profile without an account or a primary player. On an existing device choose **Allow linking** in Devices. On the new device choose **Use profile** next to it, compare the code, and confirm on both screens. The profile key is transferred over an encrypted session; each installation keeps its own device UUID. Music sync remains a separate action.
 
 - Peer discovery over mDNS.
-- Local network sync between devices.
-- Merkle-style metadata reconciliation for efficient sync.
-- History and playlist sync.
-- IPv4/IPv6-friendly internal HTTP binding.
+- Local network sync of files, metadata, playlists, and history between devices.
+- Merkle-style reconciliation, so a sync only transfers what changed.
+- Play on another device: hand the current track over to a peer and keep controlling it.
+- IPv4/IPv6-friendly internal HTTP server. There's no authentication, so use it on networks you trust.
 
 ### Soulseek integration
 
-- Search from Soulseek.
-- Cover fetching.
-- Download and preview flows.
-- Track replacement workflow from search results.
+- Search from inside the app, with cover previews.
+- Streaming previews that start playing while the file downloads.
+- Downloads straight into the library, organized as `Artist/Album/file`.
+- Track replacement: swap a track's file for a better copy and keep its metadata, likes, and history.
 
-### UI and platform work
+### UI and platform
 
 - Responsive desktop/mobile layout.
-- Android media integration.
-- Rich now-playing surface with Three.js/WebGL rendering.
-- About screen with version info, update checks, and embedded changelog.
+- Android media notification and lock-screen controls.
+- Now-playing view with a Three.js/WebGL album card.
+- Dark and light themes (or following the system) with a choice of accent color and header gradient.
+- Settings page for library tools, audio output, device identity and sync, Soulseek, and appearance (theme, accent color, gradient, tint, reduced motion).
+- Optional Discord Rich Presence on desktop, off by default.
+- About section with version info, update checks, an embedded changelog, contributors, and third-party licenses.
+- Demo mode with a seeded library (`--demo`), used for the screenshots above.
 
 ## Desktop updates
 
@@ -205,30 +212,37 @@ pnpm tauri build
 - Audio decode: Symphonia with bundled libopus for Opus.
 - Audio output: CPAL.
 - Metadata extraction: lofty.
+- Cover resizing: image.
 - Local database: SQLite via rusqlite.
 - File watching: notify.
 - LAN discovery: mdns-sd.
 - Sync transport: tiny_http + reqwest.
-- Audio identification: rusty-chromaprint.
+- Soulseek: soulseek-rs (vendored).
+- Audio identification: rusty-chromaprint + AcoustID.
 - 3D visuals: Three.js.
+- Icons: Lucide.
+- Discord Rich Presence: discord-rich-presence.
+- Logging and profiling: tracing, optional Tracy.
 
 ## Architecture at a glance
 
-The project is intentionally split across a few high-value runtime boundaries:
+The project is split across a few runtime boundaries:
 
 - Vue owns screen state, queue behavior, interaction flow, and visual presentation.
 - Rust owns playback, indexing, persistence, sync, discovery, and native integration.
 - Android-specific code owns OS-facing media session and notification behavior.
 
-High-value source files:
+Main source files:
 
-- `src/App.vue`: main application shell and most frontend behavior.
-- `src/components/WebGLAlbumRenderer.vue`: isolated Three.js renderer for the now-playing card.
+- `src/App.vue`: the application shell: navigation, queue, and playback coordination.
+- `src/components/`: extracted UI, such as the player bar, track rows, artist and album pages, the settings page, and the WebGL album card.
 - `src-tauri/src/lib.rs`: Tauri bootstrap and command registration.
-- `src-tauri/src/library.rs`: library index, metadata persistence, playlists, history, covers.
-- `src-tauri/src/playback.rs`: playback engine and spectrum generation.
+- `src-tauri/src/library.rs`: library index, metadata, playlists, history, duplicates.
+- `src-tauri/src/covers.rs`: cover store, served to the UI over a `cover://` URL scheme.
+- `src-tauri/src/playback.rs`: playback engine, beat detection, spectrum.
+- `src-tauri/src/audio_codecs.rs`: the codecs playback decodes with, including Opus through libopus.
 - `src-tauri/src/discovery.rs`: peer discovery.
-- `src-tauri/src/sync.rs`: sync protocol and peer HTTP server.
+- `src-tauri/src/sync.rs`: sync protocol, peer HTTP server, remote playback.
 - `src-tauri/src/soulseek.rs`: Soulseek integration.
 
 For a deeper architecture write-up, see [DESIGN.md](./DESIGN.md).
@@ -240,7 +254,8 @@ For a deeper architecture write-up, see [DESIGN.md](./DESIGN.md).
 - Node.js 20+.
 - pnpm.
 - Rust toolchain.
-- Tauri system dependencies for your platform.
+- CMake and a C/C++ toolchain, to compile the bundled libopus.
+- Tauri system dependencies for your platform. On Linux: webkit2gtk-4.1, ALSA (libasound), libappindicator3, and librsvg2.
 - Android SDK/NDK if you want Android builds.
 
 ### Install
@@ -257,8 +272,19 @@ pnpm tauri dev
 
 ### Run in demo mode
 
+Demo mode uses a separate, seeded library and doesn't touch your own:
+
 ```bash
 pnpm tauri dev -- -- --demo
+```
+
+### Check and test
+
+```bash
+pnpm build                 # refresh licenses and contributors, frontend typecheck and bundle
+pnpm test:licenses         # tests for the build scripts
+pnpm test:contributors
+cd src-tauri && cargo test # Rust tests
 ```
 
 ### Profile library indexing with Tracy
@@ -277,8 +303,8 @@ file hashing, SQLite writes, CUE indexing, stale cleanup, and watcher batches.
 
 ### Build desktop app
 
-Native builds require CMake and a C/C++ toolchain to compile bundled libopus.
-No separate Opus library is required on the user's device.
+Native builds compile libopus from source (see Prerequisites), so no separate
+Opus library is required on the user's device.
 
 ```bash
 pnpm tauri build
@@ -306,6 +332,7 @@ pnpm android:build-deploy
 
 - `soulseek-rs-repo/` contains an upstream/workbench copy of the Soulseek project.
 - `src-tauri/vendor/soulseek-rs-lib/` contains the vendored library currently used by the app.
+- `src-tauri/vendor/symphonia-format-ogg/` is a patched copy of Symphonia's Ogg demuxer that fixes Opus gapless trimming; `PATCHES.md` there lists the changes.
 - `src-tauri/gen/android/` contains generated Android project files produced for the Tauri mobile target.
 
 ## Status
