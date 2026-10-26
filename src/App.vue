@@ -5575,13 +5575,8 @@ onUnmounted(() => {
             <template v-if="playlistTab === 'regular'">
               <!-- Playlist detail -->
               <template v-if="playlistView">
-                <div class="library-header">
-                  <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
-                      <AppIcon name="back" :size="20" /> Playlists
-                    </button>
-                  </div>
-                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
+                <div v-if="playlistView.tracks.length" class="library-header" style="justify-content:flex-end;">
+                  <button v-if="playlistView.tracks.length" class="btn-primary playlist-action" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
@@ -5604,7 +5599,7 @@ onUnmounted(() => {
               <!-- Playlist list -->
               <template v-else>
                 <div class="library-header page-toolbar">
-                  <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
+                  <button class="btn-secondary playlist-action" :aria-expanded="showNewPlaylistInput" @click="showNewPlaylistInput = !showNewPlaylistInput"><AppIcon name="add-to-playlist" /> New</button>
                 </div>
                 <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input
@@ -5615,7 +5610,7 @@ onUnmounted(() => {
                     @keydown.enter="createPlaylist"
                     @keydown.esc="showNewPlaylistInput = false"
                   />
-                  <button class="icon-btn" style="padding:6px 14px;" @click="createPlaylist">Create</button>
+                  <button class="btn-primary playlist-action" @click="createPlaylist">Create</button>
                 </div>
                 <div v-if="playlists.length === 0" class="library-empty">No playlists yet.</div>
                 <div v-else class="track-list">
@@ -5640,12 +5635,7 @@ onUnmounted(() => {
             <template v-else>
               <!-- Editing a smart playlist -->
               <template v-if="editingSP">
-                <div class="library-header">
-                  <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
-                      <AppIcon name="back" :size="20" /> Flexible Playlists
-                    </button>
-                  </div>
+                <div class="library-header" style="justify-content:flex-end;">
                   <span class="smart-track-count">{{ editingSPTotal }} tracks</span>
                 </div>
 
@@ -5749,15 +5739,10 @@ onUnmounted(() => {
 
               <!-- Viewing a smart playlist (read-only) -->
               <template v-else-if="smartView">
-                <div class="library-header">
-                  <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="smartView = null">
-                      <AppIcon name="back" :size="20" /> Flexible Playlists
-                    </button>
-                  </div>
+                <div class="library-header" style="justify-content:flex-end;">
                   <div style="display:flex;gap:8px;">
-                    <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
-                    <button v-if="smartViewTracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playSmartPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
+                    <button class="btn-secondary playlist-action" @click="editingSP = { ...smartView! }; smartView = null"><AppIcon name="edit" /> Edit</button>
+                    <button v-if="smartViewTracks.length" class="btn-primary playlist-action" @click="playSmartPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                   </div>
                 </div>
                 <div v-if="smartViewLoading" class="library-empty">Loading playlist…</div>
@@ -5778,11 +5763,11 @@ onUnmounted(() => {
               <!-- Smart playlist list -->
               <template v-else>
                 <div class="library-header page-toolbar">
-                  <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewSPInput = !showNewSPInput">+ New</button>
+                  <button class="btn-secondary playlist-action" :aria-expanded="showNewSPInput" @click="showNewSPInput = !showNewSPInput"><AppIcon name="add-to-playlist" /> New</button>
                 </div>
                 <div v-if="showNewSPInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input v-model="newSPName" class="library-search" placeholder="Smart playlist name…" style="flex:1;" @keydown.enter="createSmartPlaylist" @keydown.esc="showNewSPInput = false" />
-                  <button class="icon-btn" style="padding:6px 14px;" @click="createSmartPlaylist">Create</button>
+                  <button class="btn-primary playlist-action" @click="createSmartPlaylist">Create</button>
                 </div>
                 <div v-if="smartPlaylists.length === 0" class="library-empty">No flexible playlists yet.</div>
                 <div v-else class="track-list">
@@ -7243,6 +7228,13 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   transform: none;
 }
 .text-action-btn { font-size: var(--fs-button); font-weight: 600; }
+.btn-primary.playlist-action,
+.btn-secondary.playlist-action {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 36px; padding: 8px 16px; white-space: nowrap;
+}
+.playlist-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+
 .history-time {
   font-size: var(--fs-body-sm);
   color: var(--color-text-muted);
