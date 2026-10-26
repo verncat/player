@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
+import { PLAYBACK_SESSION_KEY, readPlaybackContext, matchesPlaybackContext, type SavedPlaybackContext } from './utils/playbackSession';
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -3434,6 +3435,7 @@ async function playTrackFrom(src: QueueSource, index: number) {
 
 /** Advance to next track in queue */
 async function playNext() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   bumpPlaybackTransitionSequence();
   if (!queue.value.length) {
     if (await loadNextQueuedSourcePage()) {
@@ -3463,6 +3465,7 @@ async function playNext() {
 
 /** Go to previous track (restart current if >3s in, else go back in source) */
 async function playPrev() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   bumpPlaybackTransitionSequence();
   if (currentTime.value > 3) {
     currentTime.value = 0;
@@ -3496,7 +3499,138 @@ function jumpToQueueItem(index: number) {
   showQueueMenu.value = false;
 }
 
-interface PlaybackStatus { playing: boolean; finished: boolean; position: number; duration: number; source_sample_rate?: number | null; }
+interface PlaybackStatus { source_id?: string | null; playing: boolean; finished: boolean; position: number; duration: number; source_sample_rate?: number | null; }
+
+interface NativePlaybackSession {
+  playback: PlaybackStatus;
+  volume: number;
+  library_dir: string;
+  source: { path: string; follow_growing: boolean; preview: { username: string; filename: string; size: number } | null } | null;
+  track: Track | null;
+  tracks: Track[];
+}
+const nativePlaybackSourceId = ref<string | null>(null);
+const playbackRestoring = ref(true);
+let playbackRestorePromise: Promise<void> | null = null;
+let playbackRestoreDisposed = false;
+let playbackContextSaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+function savePlaybackContext() {
+  if (playbackRestoring.value || !nativePlaybackSourceId.value || !nowPlaying.value || !libraryDataDir.value) return;
+  const source = sourceList(queueSource.value);
+  // Preview playback is recovered from the native source; its temporary queue is not persisted.
+  if (source.some(track => track.id <= 0) || source.length > 5000) return;
+  const peer = remoteOutputPeer.value;
+  const snapshot: SavedPlaybackContext = {
+    version: 1, libraryDir: libraryDataDir.value, sourceId: nativePlaybackSourceId.value,
+    trackId: nowPlaying.value.id, source: queueSource.value,
+    sourceIds: source.map(track => track.id), queueIds: queue.value.filter(track => track.id > 0).map(track => track.id),
+    sourceIndex: queueSourceIndex.value, pagedSource: queuedPagedSource.value,
+    shuffled: isShuffled.value, repeat: repeatMode.value,
+    remotePeer: peer ? { name: peer.name, host: peer.host, port: peer.port, addresses: peer.addresses } : null,
+  };
+  try { sessionStorage.setItem(PLAYBACK_SESSION_KEY, JSON.stringify(snapshot)); } catch { /* Playback still works if session storage is unavailable. */ }
+}
+
+watch([nowPlaying, nativePlaybackSourceId, queue, queueSource, queueSourceIndex, queuedPagedSource,
+  queueLibraryTracks, queuePlaylistTracks, queueSoulseekTracks, recentTracks, isShuffled, repeatMode, remoteOutputPeer], () => {
+  clearTimeout(playbackContextSaveTimer);
+  if (!playbackRestoring.value) playbackContextSaveTimer = setTimeout(savePlaybackContext, 80);
+}, { deep: true });
+
+async function restorePlaybackSession() {
+  const sequence = playbackTransitionSequence;
+  let context: SavedPlaybackContext | null = null;
+  try { context = readPlaybackContext(sessionStorage.getItem(PLAYBACK_SESSION_KEY)); } catch { /* Native state remains authoritative. */ }
+  try {
+    const ids = context ? [...new Set([context.trackId, ...context.sourceIds, ...context.queueIds])].filter(id => id > 0).slice(0, 5000) : [];
+    const session = await invoke<NativePlaybackSession>('playback_session', { trackIds: ids });
+    if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
+    libraryDataDir.value = session.library_dir;
+    nativePlaybackSourceId.value = session.playback.source_id ?? null;
+    volume.value = Math.round(session.volume * 100);
+    if (context?.remotePeer && context.libraryDir === session.library_dir) {
+      try {
+        const remote = await invoke<RemoteDeviceStatus>('remote_playback_status', remotePeerArgs(context.remotePeer));
+        if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
+        remoteOutputPeer.value = context.remotePeer;
+        const playback = remote.playback;
+        const cachedTrack = session.tracks.find(track => track.file_hash === playback?.hash);
+        if (playback && playback.state !== 'stopped') {
+          session.track = cachedTrack ?? { ...makeSoulseekTrack({
+            username: playback.artist ?? '', filename: '', basename: playback.title ?? 'Current track',
+            size: 0, duration: playback.duration ?? 0, bitrate: null, sampleRate: null, bitDepth: null,
+            vbr: null, peerSpeed: 0, freeUploadSlots: 0, extension: null, coverFilename: null, coverSize: null,
+          }, ''), id: 0, album: playback.album ?? null, file_hash: playback.hash ?? null };
+          session.source = { path: session.track.path, follow_growing: false, preview: null };
+          session.playback = { playing: playback.state === 'playing', finished: playback.state === 'ended',
+            position: playback.position ?? 0, duration: playback.duration ?? 0,
+            source_id: `remote:${context.remotePeer.name}:${playback.hash ?? ''}` };
+          nativePlaybackSourceId.value = session.playback.source_id!;
+          if (playback.volume != null) volume.value = Math.round(playback.volume * 100);
+        } else { session.source = null; }
+      } catch { deviceMenuError.value = 'Could not reconnect to the remote player. Using local output.'; }
+    }
+    if (!session.source || !session.playback.source_id) {
+      isPlaying.value = false;
+      currentTime.value = 0;
+      duration.value = 0;
+      return;
+    }
+    let track = session.track;
+    if (!track) {
+      const preview = session.source.preview;
+      const basename = session.source.path.replace(/\\/g, '/').split('/').pop() || 'Current track';
+      const result: SoulseekSearchResult = {
+        username: preview?.username ?? '', filename: preview?.filename ?? basename, basename,
+        size: preview?.size ?? 0, duration: session.playback.duration, bitrate: null, sampleRate: null,
+        bitDepth: null, vbr: null, peerSpeed: 0, freeUploadSlots: 0, extension: null, coverFilename: null, coverSize: null,
+      };
+      track = preview ? makeSoulseekPreviewTrack(result, session.source.path, session.source.follow_growing)
+        : { ...makeSoulseekTrack(result, session.source.path), id: 0, soulseek_preview: false };
+    }
+    nowPlaying.value = track;
+    duration.value = Math.floor(session.playback.duration || track.duration_secs || 0);
+    const restoresQueue = matchesPlaybackContext(context, session.library_dir, session.playback.source_id, track.id);
+    if (context && restoresQueue) {
+      const tracks = new Map(session.tracks.map(track => [track.id, track]));
+      tracks.set(track.id, track);
+      const restore = (ids: number[]) => ids.map(id => tracks.get(id)).filter((track): track is Track => !!track);
+      const source = restore(context.sourceIds);
+      queueSource.value = context.source;
+      queueLibraryTracks.value = context.source === 'library' ? source : [];
+      queuePlaylistTracks.value = context.source === 'playlist' ? source : [];
+      if (context.source === 'recent') recentTracks.value = source;
+      queue.value = restore(context.queueIds);
+      queueSourceIndex.value = Math.max(-1, source.findIndex(track => track.id === context!.sourceIds[context!.sourceIndex]));
+      const paged = context.pagedSource as QueuedPagedSource | null;
+      // Paged source rules are reloaded from saved playlists, rather than trusting cached definitions.
+      if (paged?.kind === 'smart-playlist') {
+        if (!smartPlaylists.value.length) await loadSmartPlaylists();
+        if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
+        const playlist = smartPlaylists.value.find(playlist => playlist.id === paged.playlist?.id);
+        queuedPagedSource.value = playlist ? { ...paged, playlist } : null;
+      } else if (paged?.kind === 'library' && typeof paged.query === 'string' && typeof paged.includeDuplicates === 'boolean' && typeof paged.hasMore === 'boolean') {
+        queuedPagedSource.value = paged;
+      } else if (paged?.kind === 'regular-playlist' && Number.isSafeInteger(paged.playlistId) && typeof paged.name === 'string' && typeof paged.includeDuplicates === 'boolean' && typeof paged.hasMore === 'boolean') {
+        queuedPagedSource.value = paged;
+      } else { queuedPagedSource.value = null; }
+      if (context.source === 'library' && !queuedPagedSource.value) queuedPagedSource.value = { kind: 'library', query: '', includeDuplicates: showDuplicateTracks.value, hasMore: false };
+      isShuffled.value = context.shuffled;
+      repeatMode.value = context.repeat;
+    }
+    // Read transport state again after loading metadata; do not restart or seek the decoder.
+    const status = await refreshPlaybackState();
+    if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
+    if (status.playing) startTicker();
+    syncAndroid();
+    if (status.finished && restoresQueue) {
+      playbackRestoring.value = false;
+      await handleFinishedPlayback(sequence);
+    }
+  } catch (error) { console.error('Failed to restore playback session', error); }
+  finally { playbackRestoring.value = false; }
+}
 
 function trackForHash(hash?: string | null) {
   if (!hash) return null;
@@ -3588,6 +3722,7 @@ async function stopCurrentOutput() {
 }
 
 async function seekCurrentOutput(position: number) {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   if (remoteOutputPeer.value) {
     await invoke('remote_playback_seek', { ...remotePeerArgs(remoteOutputPeer.value), position });
   } else {
@@ -3597,6 +3732,8 @@ async function seekCurrentOutput(position: number) {
 
 function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
   const playback = status.playback;
+  nativePlaybackSourceId.value = remoteOutputPeer.value && playback?.hash
+    ? `remote:${remoteOutputPeer.value.name}:${playback.hash}` : null;
   if (status.device_name && remoteOutputPeer.value) {
     peerDeviceNames.value = { ...peerDeviceNames.value, [remoteOutputPeer.value.name]: status.device_name };
   }
@@ -3627,6 +3764,7 @@ function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
 }
 
 async function capturePlaybackSnapshot() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   if (remoteOutputPeer.value || isPlaying.value) {
     try {
       await refreshPlaybackState();
@@ -3647,6 +3785,7 @@ async function refreshPlaybackState() {
     return applyRemotePlaybackStatus(st);
   }
   const st = await invoke<PlaybackStatus>('playback_status');
+  nativePlaybackSourceId.value = st.source_id ?? null;
   const currentTrack = nowPlaying.value;
   const metadataDuration = Math.floor(currentTrack?.duration_secs ?? 0);
   const reportedDuration = st.duration > 0 ? Math.floor(st.duration) : 0;
@@ -3676,7 +3815,7 @@ function stopTicker() {
 }
 
 async function handleFinishedPlayback(expectedSequence = playbackTransitionSequence) {
-  if (remoteControlled.value) return; // queue advancement is owned by the controlling device
+  if (playbackRestoring.value || remoteControlled.value) return; // queue advancement is owned by the controlling device
   if (expectedSequence !== playbackTransitionSequence || handlingFinishedPlayback) return;
   handlingFinishedPlayback = true;
   try {
@@ -3714,6 +3853,7 @@ function startTicker() {
 }
 
 async function togglePlay() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   if (remoteOutputPeer.value && !nowPlaying.value) {
     await refreshPlaybackState();
   }
@@ -4184,7 +4324,6 @@ async function loadAppData(reason: 'mount' | 'resume' | 'sync' = 'mount') {
     loadPlaylists(),
     loadSmartPlaylists(),
   ]);
-
 }
 
 async function loadRecent() {
@@ -4603,6 +4742,8 @@ onMounted(() => {
   document.addEventListener('click', onDocClick);
   document.addEventListener('keydown', onKeyDown);
   window.addEventListener('focus', onWindowFocus);
+  window.addEventListener('pagehide', savePlaybackContext);
+  playbackRestorePromise = restorePlaybackSession();
   document.addEventListener('visibilitychange', onDocumentVisibilityChange);
   void loadSoulseekStatus();
   invoke<DeviceSettings>('get_device_settings')
@@ -4971,9 +5112,13 @@ onMounted(() => {
   });
 });
 onUnmounted(() => {
+  playbackRestoreDisposed = true;
   document.documentElement.classList.remove('player-reduced-motion', 'player-no-rarity-motion');
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
+  savePlaybackContext();
+  clearTimeout(playbackContextSaveTimer);
+  window.removeEventListener('pagehide', savePlaybackContext);
   window.removeEventListener('focus', onWindowFocus);
   document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   delete (window as any)._playbackFinished;

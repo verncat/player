@@ -203,6 +203,10 @@ Queue behavior is frontend-owned:
 
 This means the backend does not maintain playlist playback state. The backend only knows about the currently loaded file and its playback position.
 
+On a webview reload, `playback_session` restores the active track, native transport status and volume without restarting or seeking audio. The decoder retains the library track ID, including the exact CUE segment, and a source identifier that changes when another source starts. Metadata is loaded directly by ID, independently of the visible library page. Soulseek previews retain their native source identity as well.
+
+Queue context is stored in sessionStorage as track IDs, source/pagination settings, repeat mode and selected remote output. It is restored only for the same library, native source and current track. Queue tracks are refreshed from SQLite, missing tracks are skipped, and smart playlist definitions are read from the database. A new user playback action takes precedence over pending recovery. A full application restart does not automatically resume playback. Run `pnpm test:playback-session` for reload regression checks.
+
 ### 5.6 Event integration
 
 The frontend listens to native/backend events emitted by Rust:

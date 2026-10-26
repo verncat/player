@@ -8,6 +8,7 @@
     "build": "pnpm licenses:generate && pnpm contributors:sync && vue-tsc --noEmit && vite build",
     "licenses:generate": "node ./scripts/generate-licenses.mjs",
     "test:licenses": "node --test ./scripts/generate-licenses.test.mjs",
+    "test:playback-session": "node --test ./tests/playback-session.test.mjs",
     "contributors:sync": "node ./scripts/sync-contributors.mjs",
     "test:contributors": "node --test ./scripts/sync-contributors.test.mjs",
     "preview": "vite preview",

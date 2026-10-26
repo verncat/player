@@ -280,8 +280,11 @@ pub struct PlaybackState {
     inner: Arc<Shared>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 struct DecodeSource {
+    track_id: Option<i64>,
+    is_segment: bool,
+    preview: Option<PreviewIdentity>,
     path: PathBuf,
     follow_growing: bool,
     segment_start_secs: f64,
@@ -289,9 +292,19 @@ struct DecodeSource {
     duration_secs: Option<f64>,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+struct PreviewIdentity {
+    username: String,
+    filename: String,
+    size: u64,
+}
+
 impl DecodeSource {
     fn file(path: PathBuf) -> Self {
         Self {
+            track_id: None,
+            is_segment: false,
+            preview: None,
             path,
             follow_growing: false,
             segment_start_secs: 0.0,
@@ -314,6 +327,9 @@ impl DecodeSource {
         duration_secs: Option<f64>,
     ) -> Self {
         Self {
+            track_id: None,
+            is_segment: true,
+            preview: None,
             path,
             follow_growing: false,
             segment_start_secs: start_secs.max(0.0),
@@ -333,10 +349,17 @@ impl DecodeSource {
             } => Self::segment(audio_path, start_secs, end_secs, duration_secs),
             crate::library::TrackSource::SoulseekPreview {
                 cache_path,
-                size: _,
-                username: _,
-                filename: _,
-            } => Self::growing_file(cache_path),
+                size,
+                username,
+                filename,
+            } => Self {
+                preview: Some(PreviewIdentity {
+                    username,
+                    filename,
+                    size,
+                }),
+                ..Self::growing_file(cache_path)
+            },
         }
     }
 }
@@ -348,6 +371,7 @@ struct OutputStreamFormat {
 }
 
 struct Shared {
+    source_id: AtomicU64,
     ring: Mutex<RingBuf>,
     ring_cvar: Condvar,
     playing: AtomicBool,
@@ -391,6 +415,12 @@ impl PlaybackState {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
         Self {
             inner: Arc::new(Shared {
+                source_id: AtomicU64::new(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64,
+                ),
                 ring: Mutex::new(RingBuf::new(192_000)), // ~2s at 48kHz stereo
                 ring_cvar: Condvar::new(),
                 playing: AtomicBool::new(false),
@@ -444,6 +474,16 @@ impl PlaybackState {
         self.play_source(DecodeSource::from_track_source(source))
     }
 
+    pub fn play_library_track(
+        &self,
+        id: i64,
+        source: crate::library::TrackSource,
+    ) -> Result<(), String> {
+        let mut source = DecodeSource::from_track_source(source);
+        source.track_id = Some(id);
+        self.play_source(source)
+    }
+
     fn play_source(&self, source: DecodeSource) -> Result<(), String> {
         // Signal previous threads to stop
         self.inner.stop.store(true, Ordering::SeqCst);
@@ -473,6 +513,7 @@ impl PlaybackState {
         clear_spectrum(&self.inner);
         *self.inner.current_file.lock().unwrap() = Some(source.path.clone());
         *self.inner.current_source.lock().unwrap() = Some(source.clone());
+        self.inner.source_id.fetch_add(1, Ordering::SeqCst);
 
         let shared = Arc::clone(&self.inner);
         thread::spawn(move || {
@@ -1143,7 +1184,8 @@ pub fn playback_play_track(
     let conn = conn.lock().unwrap();
     let source = crate::library::track_source_for_track(&conn, lib.data_dir(), id)?
         .ok_or_else(|| "Track not found".to_string())?;
-    state.play_track_source(source)
+    drop(conn);
+    state.play_library_track(id, source)
 }
 
 #[tauri::command]
@@ -1192,6 +1234,7 @@ pub fn playback_spectrum(state: tauri::State<'_, PlaybackState>) -> Vec<f32> {
 
 #[derive(serde::Serialize)]
 pub struct PlaybackStatus {
+    pub source_id: Option<String>,
     pub playing: bool,
     pub finished: bool,
     pub position: f64,
@@ -1202,6 +1245,11 @@ pub struct PlaybackStatus {
 #[tauri::command]
 pub fn playback_status(state: tauri::State<'_, PlaybackState>) -> PlaybackStatus {
     PlaybackStatus {
+        source_id: if state.is_stopped() || state.current_file_path().is_none() {
+            None
+        } else {
+            Some(state.inner.source_id.load(Ordering::SeqCst).to_string())
+        },
         playing: state.is_playing(),
         finished: state.is_finished(),
         position: state.position_secs(),
@@ -1211,4 +1259,75 @@ pub fn playback_status(state: tauri::State<'_, PlaybackState>) -> PlaybackStatus
             sample_rate => Some(sample_rate as u32),
         },
     }
+}
+
+#[derive(serde::Serialize)]
+pub struct PlaybackSession {
+    playback: PlaybackStatus,
+    volume: f32,
+    library_dir: String,
+    source: Option<DecodeSource>,
+    track: Option<crate::library::Track>,
+    tracks: Vec<crate::library::Track>,
+}
+
+#[tauri::command]
+pub fn playback_session(
+    track_ids: Option<Vec<i64>>,
+    state: tauri::State<'_, PlaybackState>,
+    library: tauri::State<'_, crate::library::LibraryState>,
+) -> Result<PlaybackSession, String> {
+    let ids = track_ids.unwrap_or_default();
+    if ids.len() > 5000 {
+        return Err("Playback queue is too large to restore.".into());
+    }
+    let source = if state.is_stopped() {
+        None
+    } else {
+        state
+            .inner
+            .current_source
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clone()
+    };
+    let connection = library.conn();
+    let conn = connection.lock().map_err(|e| e.to_string())?;
+    let track = source
+        .as_ref()
+        .filter(|source| !source.follow_growing)
+        .and_then(|source| {
+            source
+                .track_id
+                .and_then(|id| crate::library::get_track_by_id(&conn, id).ok())
+                .or_else(|| {
+                    crate::library::track_for_playback_source(
+                        &conn,
+                        library.data_dir(),
+                        &source.path,
+                        if source.is_segment {
+                            Some(source.segment_start_secs)
+                        } else {
+                            None
+                        },
+                    )
+                    .ok()
+                    .flatten()
+                })
+        });
+    let mut seen = std::collections::HashSet::new();
+    let tracks = ids
+        .into_iter()
+        .filter(|id| *id > 0 && seen.insert(*id))
+        .filter_map(|id| crate::library::get_track_by_id(&conn, id).ok())
+        .collect();
+    drop(conn);
+    Ok(PlaybackSession {
+        playback: playback_status(state.clone()),
+        volume: state.volume(),
+        library_dir: library.data_dir().to_string_lossy().into_owned(),
+        source,
+        track,
+        tracks,
+    })
 }
