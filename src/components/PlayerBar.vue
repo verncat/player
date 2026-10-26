@@ -74,7 +74,8 @@ const emit = defineEmits<{
   pickLocalDevice: [name: string, sampleRate?: number | null, keepOpen?: boolean];
   pickLocalSampleRate: [device: AudioDevice, sampleRate: number | null];
   pickRemoteDevice: [peer: Peer];
-  setVolume: [event: MouseEvent];
+  setVolume: [value: number];
+  toggleMute: [];
 }>();
 
 const QUEUE_SOURCE_LABELS: Record<string, string> = {
@@ -590,10 +591,11 @@ onUnmounted(() => {
       </ResponsivePopup>
 
       <div class="vol-wrap">
-        <button class="icon-btn">
+        <button class="icon-btn" :title="volume > 0 ? 'Mute' : 'Unmute'" :aria-label="volume > 0 ? 'Mute' : 'Unmute'" :aria-pressed="volume === 0" @click.stop="emit('toggleMute')">
           <AppIcon :name="volume > 0 ? 'volume' : 'muted'" :size="16" />
         </button>
-        <div class="bar vol" @click="emit('setVolume', $event)">
+        <div class="bar vol">
+          <input class="volume-input" type="range" min="0" max="100" step="1" :value="volume" aria-label="Volume" :aria-valuetext="`${volume}%`" @input="emit('setVolume', Number(($event.target as HTMLInputElement).value))" />
           <div class="bar-fill" :style="`width:${volume}%`">
             <div class="bar-thumb" />
           </div>
@@ -993,6 +995,14 @@ onUnmounted(() => {
   width: 130px;
 }
 .bar.vol { flex: 1; }
+.volume-input {
+  position: absolute; left: 0; top: -10px; z-index: 1;
+  width: 100%; height: 24px; margin: 0; opacity: 0;
+  cursor: pointer; touch-action: none;
+}
+.bar.vol:focus-within { outline: 2px solid var(--color-accent); outline-offset: 5px; }
+.bar.vol:focus-within .bar-fill { background: var(--color-accent); }
+.bar.vol:focus-within .bar-thumb { opacity: 1; }
 
 .dropdown-header {
   padding: 10px 16px 6px;

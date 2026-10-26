@@ -76,6 +76,18 @@ const isPlaying = ref(false);
 const currentTime = ref(0);
 const duration = ref(213);
 const volume = ref(70);
+const volumeBeforeMute = ref(70);
+const VOLUME_BEFORE_MUTE_KEY = 'player.volume-before-mute';
+try {
+  const saved = Number(sessionStorage.getItem(VOLUME_BEFORE_MUTE_KEY));
+  if (Number.isFinite(saved) && saved > 0 && saved <= 100) volumeBeforeMute.value = saved;
+} catch { /* Keep the fallback if storage is unavailable. */ }
+function rememberAudibleVolume(value: number) {
+  if (value <= 0 || value > 100 || !Number.isFinite(value)) return;
+  volumeBeforeMute.value = value;
+  try { sessionStorage.setItem(VOLUME_BEFORE_MUTE_KEY, String(value)); } catch { /* Muting does not require storage. */ }
+}
+watch(volume, value => { if (value > 0) rememberAudibleVolume(value); });
 const isShuffled = ref(false);
 const repeatMode = ref(0);
 const showUserMenu = ref(false);
@@ -3961,14 +3973,41 @@ async function seek(e: MouseEvent) {
   syncAndroid();
 }
 
-function setVolume(e: MouseEvent) {
-  const el = e.currentTarget as HTMLElement;
-  volume.value = Math.round(Math.max(0, Math.min(1, (e.clientX - el.getBoundingClientRect().left) / el.offsetWidth)) * 100);
-  if (remoteOutputPeer.value) {
-    invoke('remote_playback_volume', { ...remotePeerArgs(remoteOutputPeer.value), value: volume.value / 100 });
-  } else {
-    invoke('playback_set_volume', { value: volume.value / 100 });
-  }
+let volumeChangeSequence = 0;
+let pendingVolumeChange: { value: number; previous: number; sequence: number; peer: ReturnType<typeof remotePeerArgs> | null } | null = null;
+let volumeChangeRunning = false;
+async function flushVolumeChanges() {
+  volumeChangeRunning = true;
+  try {
+    while (pendingVolumeChange) {
+      const change = pendingVolumeChange;
+      pendingVolumeChange = null;
+      try {
+        if (change.peer) await invoke('remote_playback_volume', { ...change.peer, value: change.value / 100 });
+        else await invoke('playback_set_volume', { value: change.value / 100 });
+      } catch (error) {
+        if (change.sequence === volumeChangeSequence) volume.value = change.previous;
+        deviceMenuError.value = 'Could not change playback volume. Please try again.';
+        console.error('Failed to change playback volume', error);
+      }
+    }
+  } finally { volumeChangeRunning = false; }
+}
+async function applyVolume(value: number) {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
+  const previous = volume.value;
+  const next = Math.round(Math.max(0, Math.min(100, value)));
+  if (previous > 0) rememberAudibleVolume(previous);
+  if (next > 0) rememberAudibleVolume(next);
+  volume.value = next;
+  pendingVolumeChange = { value: next, previous, sequence: ++volumeChangeSequence,
+    peer: remoteOutputPeer.value ? remotePeerArgs(remoteOutputPeer.value) : null };
+  if (!volumeChangeRunning) await flushVolumeChanges();
+}
+
+async function toggleMute() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
+  await applyVolume(volume.value > 0 ? 0 : volumeBeforeMute.value);
 }
 
 async function refreshOutputDevices() {
@@ -6551,7 +6590,8 @@ onUnmounted(() => {
       @pick-local-device="pickLocalDevice"
       @pick-local-sample-rate="pickLocalSampleRate"
       @pick-remote-device="pickRemoteDevice"
-      @set-volume="setVolume"
+      @set-volume="applyVolume"
+      @toggle-mute="toggleMute"
     />
   </div>
 
