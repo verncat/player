@@ -6816,7 +6816,6 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #24304a, #11161f);
   color: var(--color-text);
   font-size: 18px;
 }
