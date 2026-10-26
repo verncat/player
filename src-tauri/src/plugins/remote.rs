@@ -17,12 +17,21 @@ pub struct DownloadPreview {
     pub source: InstallSource,
 }
 
+impl DownloadPreview {
+    pub fn verify_id(&self, expected: Option<&str>) -> Result<(), String> {
+        if expected.is_some_and(|id| id != self.manifest.id) {
+            return Err("Downloaded plugin ID does not match the selected catalog entry".into());
+        }
+        Ok(())
+    }
+}
+
 struct Fetched {
     status: u16,
     body: String,
 }
 
-fn download_url(input: &str) -> Result<Url, String> {
+pub(super) fn download_url(input: &str) -> Result<Url, String> {
     let url = web_url(input.trim())?;
     if url.scheme() != "https" {
         return Err("Plugin downloads require an HTTPS URL".into());
@@ -30,9 +39,8 @@ fn download_url(input: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-pub async fn download(input: &str) -> Result<DownloadPreview, String> {
-    let started = Instant::now();
-    let client = reqwest::Client::builder()
+pub(super) fn client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .user_agent(concat!(
             "Player-Plugin-Installer/",
             env!("CARGO_PKG_VERSION")
@@ -48,7 +56,12 @@ pub async fn download(input: &str) -> Result<DownloadPreview, String> {
             }
         }))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+pub async fn download(input: &str) -> Result<DownloadPreview, String> {
+    let started = Instant::now();
+    let client = client()?;
     resolve_with(input, &|url: Url| {
         let client = client.clone();
         async move {
@@ -344,6 +357,9 @@ mod tests {
         })
         .unwrap();
         assert_eq!(preview.manifest.id, "example.hello");
+        assert!(preview.verify_id(Some("example.hello")).is_ok());
+        assert!(preview.verify_id(Some("example.other")).is_err());
+        assert!(preview.verify_id(None).is_ok());
         assert!(preview.source.revision.is_none());
         let preview = run("https://example.org/plugin/plugin.json", &|url: Url| {
             std::future::ready(response(

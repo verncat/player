@@ -14,6 +14,15 @@ export interface PluginManifest {
 export interface InstallSource { url: string; repository?: string | null; revision?: string | null }
 export interface PluginPreview { manifest: PluginManifest; fingerprint: string; source?: InstallSource }
 export interface PluginDownload extends PluginPreview { content: string; source: InstallSource }
+export interface CatalogEntry {
+  id: string; name: string; description: string; repository: string; installUrl?: string;
+  addedAt: string; updatedAt?: string; version?: string; platforms: string[]; tags: string[];
+  author?: PluginManifest['author']; image?: string;
+}
+export interface PluginCatalogListing {
+  catalog: { schemaVersion: number; updatedAt: string; plugins: CatalogEntry[] };
+  sourceUrl: string; source: 'remote' | 'cache' | 'bundled'; platform: string; warning?: string | null;
+}
 export interface AndroidPluginDiscovery { supported: boolean; plugins: Array<PluginPreview & { content: string }>; warnings: string[] }
 export interface PluginInfo {
   manifest: PluginManifest; builtin: boolean; supported: boolean; enabled: boolean;

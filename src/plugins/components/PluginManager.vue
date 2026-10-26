@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { nextTick, onMounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { usePluginHost } from '../host';
-import type { AndroidPluginDiscovery, PluginDownload, PluginPreview } from '../types';
+import type { AndroidPluginDiscovery, CatalogEntry, PluginDownload, PluginPreview } from '../types';
 import SettingsToggle from '../../components/SettingsToggle.vue';
 import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
+import PluginCatalog from './PluginCatalog.vue';
 import '../controls.css';
 
 const host = usePluginHost();
@@ -13,12 +14,17 @@ const error = ref('');
 const busy = ref('');
 const url = ref('');
 const preview = ref<PluginPreview>();
+const previewCard = ref<HTMLElement>();
 const android = ref(false);
 const apkPlugins = ref<AndroidPluginDiscovery['plugins']>([]);
 const apkWarnings = ref<string[]>([]);
 onMounted(() => { android.value = /Android/i.test(navigator.userAgent); });
 let content = '';
 function resetPreview() { preview.value = undefined; content = ''; }
+function showPreview(candidate: string, checked: PluginPreview) {
+  content = candidate; preview.value = checked;
+  void nextTick(() => previewCard.value?.scrollIntoView({ block: 'nearest' }));
+}
 async function scanApks() {
   if (busy.value) return;
   busy.value = 'scan'; error.value = '';
@@ -29,7 +35,7 @@ async function scanApks() {
   finally { busy.value = ''; }
 }
 function previewApk(plugin: AndroidPluginDiscovery['plugins'][number]) {
-  content = plugin.content; preview.value = plugin;
+  showPreview(plugin.content, plugin);
 }
 async function load(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -40,7 +46,7 @@ async function load(event: Event) {
     if (file.size > 4 * 1024 * 1024) throw new Error('Maximum package size is 4 MiB');
     const candidate = await file.text();
     const checked = await invoke<PluginPreview>('plugins_preview', { content: candidate });
-    content = candidate; preview.value = checked;
+    showPreview(candidate, checked);
   } catch (e) { error.value = String(e); }
   finally { input.value = ''; busy.value = ''; }
 }
@@ -49,7 +55,18 @@ async function loadUrl() {
   busy.value = 'download'; error.value = ''; resetPreview();
   try {
     const downloaded = await invoke<PluginDownload>('plugins_download', { url: url.value.trim() });
-    content = downloaded.content; preview.value = downloaded;
+    showPreview(downloaded.content, downloaded);
+  } catch (e) { error.value = String(e); }
+  finally { busy.value = ''; }
+}
+async function loadCatalogPlugin(entry: CatalogEntry) {
+  if (busy.value) return;
+  busy.value = 'download'; error.value = ''; resetPreview();
+  try {
+    const downloaded = await invoke<PluginDownload>('plugins_download', {
+      url: entry.installUrl || entry.repository, expectedId: entry.id,
+    });
+    showPreview(downloaded.content, downloaded);
   } catch (e) { error.value = String(e); }
   finally { busy.value = ''; }
 }
@@ -101,6 +118,7 @@ async function uninstall(id: string) {
       <button v-if="!plugin.enabled" class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="clearCache(plugin.manifest.id)">Clear cache</button>
       <small v-if="!plugin.builtin">{{ plugin.manifest.id }}</small>
     </article>
+    <PluginCatalog :busy="Boolean(busy)" @review="loadCatalogPlugin" />
     <div class="plugin-install">
       <h4>Install a plugin</h4>
       <template v-if="android">
@@ -120,7 +138,7 @@ async function uninstall(id: string) {
         <div class="plugin-url-row"><input id="plugin-url" v-model="url" type="url" placeholder="https://github.com/author/plugin" autocomplete="off" :disabled="Boolean(busy)" /><button class="plugin-button btn-secondary" :disabled="Boolean(busy) || !url.trim()">{{ busy === 'download' ? 'Loading…' : 'Load from URL' }}</button></div>
       </form>
       <label>Or choose a .player-plugin package<input class="plugin-file" type="file" accept=".player-plugin,.json" :disabled="Boolean(busy)" @change="load" /></label>
-      <div v-if="preview" class="plugin-card">
+      <div v-if="preview" ref="previewCard" class="plugin-card">
         <div class="plugin-heading">
           <PluginImage :manifest="preview.manifest" />
           <div><h4>{{ preview.manifest.name }} <small>{{ preview.manifest.version }}</small></h4><p>{{ preview.manifest.description }}</p></div>

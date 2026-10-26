@@ -31,6 +31,57 @@ function runtime(script, handler = async () => null) {
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+const catalogHelpers = {};
+new Function('exports', ts.transpileModule(readFileSync(new URL('../src/plugins/catalog.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText)(catalogHelpers);
+
+test('catalog searches author and tags, sorts newest first and leaves source order intact', () => {
+  const template = JSON.parse(readFileSync(new URL('../plugins/catalog.json', import.meta.url), 'utf8')).plugins[0];
+  const entries = [
+    { ...template, id: 'example.old', name: 'Old plugin', addedAt: '2026-01-01', author: { name: 'Alice' }, tags: ['radio'] },
+    { ...template, id: 'example.new', name: 'New plugin', addedAt: '2026-10-27', author: 'Alice', tags: ['radio'] },
+    { ...template, id: 'example.other', name: 'Another plugin', addedAt: '2026-10-27', author: 'Bob', tags: ['lyrics'] },
+  ];
+  assert.deepEqual(catalogHelpers.filterCatalog(entries, '  ALICE radio ').map(p => p.id), ['example.new', 'example.old']);
+  assert.deepEqual(catalogHelpers.filterCatalog(entries, '').map(p => p.id), ['example.other', 'example.new', 'example.old']);
+  assert.deepEqual(catalogHelpers.filterCatalog(entries, 'missing'), []);
+  assert.equal(entries[0].id, 'example.old');
+});
+
+test('catalog display metadata does not grant permissions or define executable UI contributions', () => {
+  const entry = JSON.parse(readFileSync(new URL('../plugins/catalog.json', import.meta.url), 'utf8')).plugins[0];
+  const displayed = catalogHelpers.catalogManifest({ ...entry, permissions: ['native.android'], contributions: [{ id: 'injected' }], script: 'malicious' });
+  assert.deepEqual(displayed.permissions, []); assert.deepEqual(displayed.contributions, []);
+  assert.equal(displayed.script, undefined);
+  assert.equal(displayed.image, entry.image);
+  assert.equal(displayed.repository, entry.repository);
+});
+
+test('catalog selection checks the requested ID and previews the actual package before installation', async () => {
+  const script = readFileSync(new URL('../src/plugins/components/PluginManager.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
+  const parsed = ts.createSourceFile('PluginManager.ts', script, ts.ScriptTarget.Latest, true);
+  const fn = parsed.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === 'loadCatalogPlugin');
+  const code = ts.transpileModule(`export ${fn.getText(parsed)}`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const helpers = {}, busy = { value: '' }, error = { value: '' }, calls = [];
+  const downloaded = { content: 'actual package', manifest: { id: 'example.hello', name: 'Actual name', permissions: ['network.http'] }, fingerprint: 'actual fingerprint' };
+  let preview, fail = false;
+  new Function('exports', 'invoke', 'busy', 'error', 'resetPreview', 'showPreview', code)(helpers,
+    async (command, args) => { calls.push([command, args]); if (fail) throw new Error('ID mismatch'); return downloaded; },
+    busy, error, () => { preview = undefined; }, (content, checked) => { preview = { content, checked }; });
+  await helpers.loadCatalogPlugin({ id: 'example.hello', repository: 'https://github.com/author/plugin', installUrl: 'https://example.org/plugin.player-plugin', name: 'Catalog name' });
+  assert.deepEqual(calls, [['plugins_download', { url: 'https://example.org/plugin.player-plugin', expectedId: 'example.hello' }]]);
+  assert.equal(preview.checked.manifest.name, 'Actual name');
+  assert.deepEqual(preview.checked.manifest.permissions, ['network.http']);
+  assert.equal(busy.value, '');
+  fail = true;
+  await helpers.loadCatalogPlugin({ id: 'example.hello', repository: 'https://github.com/author/plugin' });
+  assert.equal(calls[1][1].url, 'https://github.com/author/plugin');
+  assert.equal(preview, undefined); assert.match(error.value, /ID mismatch/); assert.equal(busy.value, '');
+});
+
 test('Worker transport serializes nested Vue proxies in view contexts, actions and snapshots', () => {
   const helpers = {};
   const code = ts.transpileModule(readFileSync(new URL('../src/plugins/messages.ts', import.meta.url), 'utf8'), {

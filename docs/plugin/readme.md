@@ -21,6 +21,7 @@ Discord RPC и Soulseek поставляются как встроенные п�
 | --- | --- |
 | Границы и архитектура | [system-scope](../plugins/scope/system-scope.md) |
 | Пакет, установка и обновление | [package-scope](../plugins/scope/package-scope.md) |
+| Каталог плагинов из репозитория | [catalog-scope](../plugins/scope/catalog-scope.md) |
 | Runtime, жизненный цикл и сообщения | [runtime-scope](../plugins/scope/runtime-scope.md) |
 | SDK и UI | [sdk-ui-scope](../plugins/scope/sdk-ui-scope.md) |
 | Источники, передачи и библиотека | [media-scope](../plugins/scope/media-scope.md) |
@@ -98,11 +99,19 @@ GitHub-ссылку в Load from URL. Проверьте автора,
 
 ## Карта реализации
 
+Settings → Plugins содержит каталог расширений из
+[plugins/catalog.json](../../plugins/catalog.json) в репозитории Player. Здесь
+можно искать по названию, автору и тегам и открыть Review plugin. Установка
+использует обычный просмотр пакета и его разрешений. Копия списка доступна
+без сети. Как добавить запись и опубликовать индекс — в
+[catalog scope](../plugins/scope/catalog-scope.md).
+
 | Компонент | Исходники |
 | --- | --- |
 | Проверка manifest/package | [model.rs](../../src-tauri/src/plugins/model.rs) |
 | Реестр, настройки, поколения и handles | [store.rs](../../src-tauri/src/plugins/store.rs) |
 | Загрузка из репозитория/по URL | [remote.rs](../../src-tauri/src/plugins/remote.rs) |
+| Каталог и его кеш | [catalog.rs](../../src-tauri/src/plugins/catalog.rs), [PluginCatalog.vue](../../src/plugins/components/PluginCatalog.vue) |
 | Native gateway | [mod.rs](../../src-tauri/src/plugins/mod.rs) |
 | Android APK loader | [android.rs](../../src-tauri/src/plugins/android.rs), [ApkPlugins.kt](../../src-tauri/gen/android/app/src/main/java/dev/verncat/player/ApkPlugins.kt) |
 | Credential providers | [secrets.rs](../../src-tauri/src/plugins/secrets.rs) |
@@ -118,7 +127,7 @@ GitHub-ссылку в Load from URL. Проверьте автора,
 Устанавливайте пакеты доверенных авторов. Worker отделяет код плагина от DOM
 и основного потока интерфейса; он не является полной сетевой sandbox.
 Fingerprint фиксирует содержимое выбранного пакета, но не удостоверяет автора.
-Подписей, магазина и фонового обновления пакетов в этой версии нет.
+Подписей издателей и фонового обновления пакетов в этой версии нет.
 У APK-плагинов дополнительно фиксируются SHA-256 установленного файла и его
 сертификата подписи. Это контроль просмотренной версии, а не проверка личности
 автора. Native-код имеет все Android-разрешения Player и не изолирован Worker.

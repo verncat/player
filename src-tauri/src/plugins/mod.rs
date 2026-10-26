@@ -1,5 +1,6 @@
 //! Player's runtime package registry and capability gateway.
 pub mod android;
+mod catalog;
 #[cfg(feature = "discord-rpc")]
 pub mod discord;
 pub mod model;
@@ -117,8 +118,20 @@ pub fn plugins_preview(content: String) -> Result<Value, String> {
     Ok(json!({"manifest":p.manifest,"fingerprint":p.fingerprint()}))
 }
 #[tauri::command]
-pub async fn plugins_download(url: String) -> Result<remote::DownloadPreview, String> {
-    remote::download(&url).await
+pub async fn plugins_download(
+    url: String,
+    expected_id: Option<String>,
+) -> Result<remote::DownloadPreview, String> {
+    let preview = remote::download(&url).await?;
+    preview.verify_id(expected_id.as_deref())?;
+    Ok(preview)
+}
+#[tauri::command]
+pub async fn plugins_catalog(
+    refresh: Option<bool>,
+    state: tauri::State<'_, PluginState>,
+) -> Result<catalog::Listing, String> {
+    catalog::load(&state.root, refresh.unwrap_or(false)).await
 }
 #[tauri::command]
 pub fn plugins_install(

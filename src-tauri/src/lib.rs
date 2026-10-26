@@ -204,6 +204,7 @@ pub fn run() {
             plugins::plugins_diagnostics,
             plugins::plugins_preview,
             plugins::plugins_download,
+            plugins::plugins_catalog,
             plugins::plugins_install,
             plugins::plugins_uninstall,
             plugins::plugins_clear_cache,

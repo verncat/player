@@ -32,7 +32,7 @@ pub struct PluginState {
     sequence: std::sync::atomic::AtomicU64,
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let tmp = path.with_extension("tmp");
     let mut options = fs::OpenOptions::new();

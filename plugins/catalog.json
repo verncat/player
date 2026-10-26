@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-27",
+  "plugins": [
+    {
+      "id": "example.hello",
+      "name": "Hello Player",
+      "description": "An example extension with a page, settings and playback events.",
+      "repository": "https://github.com/verncat/player",
+      "installUrl": "https://github.com/verncat/player/tree/feat/plugins/plugins/examples/hello",
+      "addedAt": "2026-10-27",
+      "updatedAt": "2026-10-27",
+      "version": "1.0.0",
+      "author": "Player contributors",
+      "platforms": [
+        "macos",
+        "windows",
+        "linux",
+        "android"
+      ],
+      "tags": [
+        "example",
+        "playback",
+        "settings"
+      ],
+      "image": "data:image/png;base64,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"
+    }
+  ]
+}
