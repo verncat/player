@@ -31,6 +31,7 @@ const props = defineProps<{
   beatScale: number;
   reduceMotion: boolean;
   isLiked: boolean;
+  likePending: boolean;
   isShuffled: boolean;
   isPlaying: boolean;
   repeatMode: number;
@@ -57,7 +58,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openDetail: [];
-  "update:isLiked": [value: boolean];
+  toggleLike: [];
   "update:isShuffled": [value: boolean];
   "update:repeatMode": [value: number];
   "update:showQueueMenu": [value: boolean];
@@ -452,7 +453,7 @@ onUnmounted(() => {
         <div class="track-name"><span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span></div>
         <div class="track-artist">{{ currentTrack.artist }}</div>
       </div>
-      <button class="icon-btn" :class="{ green: isLiked }" @click.stop="emit('update:isLiked', !isLiked)">
+      <button class="icon-btn" :class="{ green: isLiked }" :disabled="!nowPlaying || nowPlaying.id <= 0 || likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
         <AppIcon :name="isLiked ? 'liked' : 'like'" :size="16" />
       </button>
     </div>

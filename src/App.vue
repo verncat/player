@@ -77,7 +77,6 @@ const duration = ref(213);
 const volume = ref(70);
 const isShuffled = ref(false);
 const repeatMode = ref(0);
-const isLiked = ref(true);
 const showUserMenu = ref(false);
 const showDeviceMenu = ref(false);
 const showMobileNav = ref(false);
@@ -402,6 +401,7 @@ const queuedPagedSource = ref<QueuedPagedSource | null>(null);
 const queuedPageLoading = ref(false);
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
+const pendingLikes = ref(new Set<number>());
 const discord = useDiscordPresence(() => nowPlaying.value ? {
   title: nowPlaying.value.title || 'Unknown track',
   artist: nowPlaying.value.artist || 'Unknown artist',
@@ -1688,7 +1688,7 @@ async function stopActiveSoulseekPreview(result: SoulseekSearchResult) {
   duration.value = 0;
   currentTime.value = 0;
   isPlaying.value = false;
-  isLiked.value = false;
+
   stopTicker();
   syncAndroid();
   return true;
@@ -1920,7 +1920,7 @@ async function maybeReplaceActiveSoulseekPreviewWithLibraryTrack(
   // The preview file is renamed into the library, so the active decoder can
   // continue reading the same file handle without an audible restart.
   replaceSoulseekTrackInPlaybackState(previewTrackId, indexedTrack);
-  isLiked.value = indexedTrack.is_liked;
+
   duration.value = indexedTrack.duration_secs || duration.value;
   syncAndroid();
 }
@@ -2585,12 +2585,12 @@ async function performTrackReplacement(
     const previewTrackId = soulseekTrackId(result);
     if (nowPlaying.value?.id === previewTrackId && !!nowPlaying.value.soulseek_preview) {
       replaceSoulseekTrackInPlaybackState(previewTrackId, replacedTrack);
-      isLiked.value = replacedTrack.is_liked;
+
       duration.value = replacedTrack.duration_secs || duration.value;
       syncAndroid();
     } else if (nowPlaying.value?.id === replacedTrack.id) {
       nowPlaying.value = { ...replacedTrack };
-      isLiked.value = replacedTrack.is_liked;
+
       duration.value = replacedTrack.duration_secs || duration.value;
       syncAndroid();
     }
@@ -3783,16 +3783,27 @@ async function pauseFromMediaControl() {
 }
 
 async function toggleLike(track: Track, e?: Event) {
-  if (e) e.stopPropagation();
+  e?.stopPropagation();
+  if (track.id <= 0 || pendingLikes.value.has(track.id)) return;
+  pendingLikes.value.add(track.id);
   try {
-    const isLiked = await invoke<boolean>('toggle_like', { id: track.id });
-    track.is_liked = isLiked;
-    // Update the nowPlaying reference as well if it's the same track
-    if (nowPlaying.value && nowPlaying.value.id === track.id) {
-      nowPlaying.value.is_liked = isLiked;
+    const liked = await invoke<boolean>('toggle_like', { id: track.id });
+    track.is_liked = liked;
+    // The same track can have separate objects after a library refresh or in another view.
+    const lists = [
+      libraryTracks.value, recentTracks.value, localSearchTracks.value,
+      queueLibraryTracks.value, queuePlaylistTracks.value, queueSoulseekTracks.value, queue.value,
+      playlistView.value?.tracks ?? [], smartViewTracks.value, editingSPTracks.value,
+      ...Object.values(homePinnedRegularTracks.value), historyEntries.value.map(entry => entry.track),
+    ];
+    for (const list of lists) for (const item of list) {
+      if (item.id === track.id) item.is_liked = liked;
     }
+    if (nowPlaying.value?.id === track.id) nowPlaying.value.is_liked = liked;
   } catch (error) {
     console.error('Failed to toggle like', error);
+  } finally {
+    pendingLikes.value.delete(track.id);
   }
 }
 
@@ -4416,7 +4427,7 @@ async function saveTrack() {
   }
   if (nowPlaying.value?.id === activeTrack.id) {
     nowPlaying.value = savedTrack;
-    isLiked.value = savedTrack.is_liked;
+
   }
 }
 
@@ -6370,7 +6381,9 @@ onUnmounted(() => {
     </div>
     <PlayerBar
       :reduce-motion="reducedMotion"
-      v-model:is-liked="isLiked"
+      :is-liked="nowPlaying?.is_liked ?? false"
+      :like-pending="!!nowPlaying && pendingLikes.has(nowPlaying.id)"
+      @toggle-like="nowPlaying && toggleLike(nowPlaying)"
       v-model:is-shuffled="isShuffled"
       v-model:repeat-mode="repeatMode"
       v-model:show-queue-menu="showQueueMenu"
