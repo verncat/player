@@ -40,6 +40,7 @@ const props = defineProps<{
   showSoulseekPreviewBuffer: boolean;
   soulseekPreviewBufferPercent: number;
   displayProgressPercent: number;
+  seeking: boolean;
   showQueueMenu: boolean;
   queueSource: string;
   queue: Track[];
@@ -67,7 +68,10 @@ const emit = defineEmits<{
   playPrev: [];
   playNext: [];
   togglePlay: [];
-  seek: [event: MouseEvent];
+  seek: [position: number];
+  seekStart: [event: PointerEvent];
+  seekMove: [event: PointerEvent];
+  seekEnd: [event: PointerEvent];
   toggleQueueMenu: [];
   toggleDeviceMenu: [];
   openPlaybackSettings: [];
@@ -78,6 +82,20 @@ const emit = defineEmits<{
   setVolume: [value: number];
   toggleMute: [];
 }>();
+
+function seekKeydown(event: KeyboardEvent) {
+  if (!props.nowPlaying || props.duration <= 0) return;
+  const positions: Record<string, number> = {
+    ArrowLeft: props.currentTime - 5, ArrowDown: props.currentTime - 5,
+    ArrowRight: props.currentTime + 5, ArrowUp: props.currentTime + 5,
+    Home: 0, End: props.duration,
+  };
+  const position = positions[event.key];
+  if (position === undefined) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.repeat) emit('seek', Math.max(0, Math.min(props.duration, position)));
+}
 
 const QUEUE_SOURCE_LABELS: Record<string, string> = {
   recent: "Recently played",
@@ -484,10 +502,13 @@ onUnmounted(() => {
       </div>
       <div class="progress-row">
         <span class="time">{{ formatTime(currentTime) }}</span>
-        <div class="bar" @click="emit('seek', $event)">
-          <div v-if="showSoulseekPreviewBuffer" class="bar-buffer" :style="`width:${soulseekPreviewBufferPercent}%`" />
-          <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
-            <div class="bar-thumb" />
+        <div class="seek-hit" :class="{ dragging: seeking }" role="slider" :tabindex="nowPlaying && duration > 0 ? 0 : -1" aria-label="Playback position" :aria-disabled="!nowPlaying || duration <= 0" :aria-valuemin="0" :aria-valuemax="duration" :aria-valuenow="currentTime" :aria-valuetext="`${formatTime(currentTime)} of ${formatTime(duration)}`"
+          @pointerdown="emit('seekStart', $event)" @pointermove="emit('seekMove', $event)" @pointerup="emit('seekEnd', $event)" @pointercancel="emit('seekEnd', $event)" @lostpointercapture="emit('seekEnd', $event)" @keydown="seekKeydown">
+          <div class="bar">
+            <div v-if="showSoulseekPreviewBuffer" class="bar-buffer" :style="`width:${soulseekPreviewBufferPercent}%`" />
+            <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
+              <div class="bar-thumb" />
+            </div>
           </div>
         </div>
         <span class="time">{{ formatTime(duration) }}</span>
@@ -931,6 +952,12 @@ onUnmounted(() => {
   transform: scale(1.06);
   background: color-mix(in srgb, var(--color-text) 94%, var(--color-bg));
 }
+
+.seek-hit { position: relative; display: flex; flex: 1; cursor: pointer; touch-action: none; user-select: none; }
+.seek-hit::before { content: ''; position: absolute; inset: -10px 0; z-index: 1; }
+.seek-hit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 5px; border-radius: 2px; }
+.seek-hit:is(:hover, :focus-visible, .dragging) .bar-fill { background: var(--color-accent); }
+.seek-hit:is(:hover, :focus-visible, .dragging) .bar-thumb { opacity: 1; }
 
 .progress-row {
   display: flex;

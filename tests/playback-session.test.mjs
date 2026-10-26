@@ -19,7 +19,7 @@ const saved = overrides => ({ version: 1, libraryDir: '/music', sourceId: 'sessi
   pagedSource: null, shuffled: true, repeat: 1, remotePeer: null, ...overrides });
 function harness({ cache = saved(), playing = true, sourceId = 'session-1', active = track(900, true), sessionRequest, remoteStatus } = {}) {
   const calls = [];
-  const values = ['libraryDataDir', 'nativePlaybackSourceId', 'volume', 'isPlaying', 'currentTime', 'duration', 'nowPlaying', 'queueSource', 'queueLibraryTracks', 'queuePlaylistTracks', 'queue', 'queueSourceIndex', 'queuedPagedSource', 'isShuffled', 'repeatMode', 'recentTracks', 'smartPlaylists', 'nativeSampleRate', 'remoteOutputPeer', 'deviceMenuError'];
+  const values = ['libraryDataDir', 'nativePlaybackSourceId', 'volume', 'isPlaying', 'currentTime', 'duration', 'nowPlaying', 'queueSource', 'queueLibraryTracks', 'queuePlaylistTracks', 'queue', 'queueSourceIndex', 'queuedPagedSource', 'isShuffled', 'repeatMode', 'recentTracks', 'smartPlaylists', 'nativeSampleRate', 'remoteOutputPeer', 'deviceMenuError', 'seekPreviewPos'];
   const state = Object.fromEntries(values.map(name => [name, { value: null }]));
   Object.assign(state, { playbackRestoring: { value: true }, playbackTransitionSequence: 0, playbackRestoreDisposed: false, ticks: 0, notifications: 0, errors: [], ...helpers });
   state.queue.value = []; state.smartPlaylists.value = []; state.remoteOutputPeer.value = null;

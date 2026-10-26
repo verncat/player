@@ -3135,6 +3135,7 @@ watch(reducedMotion, (reduce) => {
 });
 
 watch(() => nowPlaying.value?.id, () => {
+  cancelSeekGesture();
   resetSpectrum();
   if (showDetail.value) {
     void refreshSpectrum(spectrumPollVersion);
@@ -3338,15 +3339,37 @@ function syncAndroid() {
   }
 }
 
+let activeSeekGesture: { pointerId: number; element: HTMLElement; trackId: number; playbackSequence: number } | null = null;
+let seekRequestSequence = 0;
+
+function releaseSeekPointer() {
+  const gesture = activeSeekGesture;
+  activeSeekGesture = null;
+  mobileSeekActive.value = false;
+  if (gesture?.element.hasPointerCapture?.(gesture.pointerId)) gesture.element.releasePointerCapture(gesture.pointerId);
+}
+
+function cancelSeekGesture() {
+  seekRequestSequence++;
+  releaseSeekPointer();
+  seekPreviewPos.value = null;
+}
+
 function seekPosFromEvent(e: MouseEvent | PointerEvent, el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
+  if (rect.width <= 0) return seekPreviewPos.value ?? currentTime.value;
   const ratio = (e.clientX - rect.left) / rect.width;
   return Math.max(0, Math.min(1, ratio)) * duration.value;
 }
 
 function mobileSeekHoldStart(e: PointerEvent) {
+  if (e.button !== 0 || activeSeekGesture || !nowPlaying.value || duration.value <= 0) return;
   const el = e.currentTarget as HTMLElement;
+  e.preventDefault();
+  seekRequestSequence++;
+  activeSeekGesture = { pointerId: e.pointerId, element: el, trackId: nowPlaying.value.id, playbackSequence: playbackTransitionSequence };
   mobileSeekActive.value = true;
+  el.focus({ preventScroll: true });
   el.setPointerCapture?.(e.pointerId);
   const pos = seekPosFromEvent(e, el);
   seekPreviewPos.value = pos;
@@ -3354,34 +3377,23 @@ function mobileSeekHoldStart(e: PointerEvent) {
 }
 
 function mobileSeekHoldMove(e: PointerEvent) {
-  if (!mobileSeekActive.value) return;
-  const el = e.currentTarget as HTMLElement;
-  const pos = seekPosFromEvent(e, el);
+  if (!activeSeekGesture || e.pointerId !== activeSeekGesture.pointerId) return;
+  const pos = seekPosFromEvent(e, activeSeekGesture.element);
   seekPreviewPos.value = pos;
   currentTime.value = Math.round(pos);
 }
 
 async function mobileSeekHoldEnd(e: PointerEvent) {
-  if (!mobileSeekActive.value) return;
-  const el = e.currentTarget as HTMLElement;
-  // On pointercancel the browser reports clientX/clientY = 0, so use the last
-  // known preview position instead of recalculating from the (bogus) event.
-  const pos = e.type === 'pointercancel'
-    ? (seekPreviewPos.value ?? currentTime.value)
-    : seekPosFromEvent(e, el);
-  seekPreviewPos.value = pos;
-  currentTime.value = Math.round(pos);
-  await seekCurrentOutput(pos);
-  const st = await refreshPlaybackState();
-  if (st.playing) {
-    startTicker();
-  } else {
-    stopTicker();
+  const gesture = activeSeekGesture;
+  if (!gesture || e.pointerId !== gesture.pointerId) return;
+  const pos = e.type === 'pointercancel' || e.type === 'lostpointercapture' ? (seekPreviewPos.value ?? currentTime.value) : seekPosFromEvent(e, gesture.element);
+  // Clear capture before awaiting IPC, so a second pointerup cannot seek twice.
+  releaseSeekPointer();
+  if (nowPlaying.value?.id !== gesture.trackId || playbackTransitionSequence !== gesture.playbackSequence) {
+    cancelSeekGesture();
+    return;
   }
-  syncAndroid();
-  seekPreviewPos.value = null;
-  mobileSeekActive.value = false;
-  el.releasePointerCapture?.(e.pointerId);
+  await seek(pos, gesture.playbackSequence);
 }
 
 /** Start playing a specific track from a given source list at a given index */
@@ -3761,7 +3773,7 @@ function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
     nowPlaying.value = remoteTrack;
   }
   isPlaying.value = playback?.state === 'playing';
-  currentTime.value = Math.floor(playback?.position ?? 0);
+  if (seekPreviewPos.value === null) currentTime.value = Math.floor(playback?.position ?? 0);
   if ((playback?.duration ?? 0) > 0) {
     duration.value = Math.floor(playback?.duration ?? 0);
   }
@@ -3809,7 +3821,7 @@ async function refreshPlaybackState() {
   const metadataDuration = Math.floor(currentTrack?.duration_secs ?? 0);
   const reportedDuration = st.duration > 0 ? Math.floor(st.duration) : 0;
   isPlaying.value = st.playing;
-  currentTime.value = Math.floor(st.position);
+  if (seekPreviewPos.value === null) currentTime.value = Math.floor(st.position);
   nativeSampleRate.value = st.source_sample_rate ?? nativeSampleRate.value;
   if (currentTrack?.preview_growing) {
     duration.value = Math.max(duration.value, metadataDuration, reportedDuration, currentTime.value);
@@ -3834,7 +3846,7 @@ function stopTicker() {
 }
 
 async function handleFinishedPlayback(expectedSequence = playbackTransitionSequence) {
-  if (playbackRestoring.value || remoteControlled.value) return; // queue advancement is owned by the controlling device
+  if (playbackRestoring.value || remoteControlled.value || seekPreviewPos.value !== null) return; // queue advancement is owned by the controlling device
   if (expectedSequence !== playbackTransitionSequence || handlingFinishedPlayback) return;
   handlingFinishedPlayback = true;
   try {
@@ -3966,18 +3978,35 @@ async function toggleLike(track: Track, e?: Event) {
   }
 }
 
-async function seek(e: MouseEvent) {
-  const el = e.currentTarget as HTMLElement;
-  const pos = seekPosFromEvent(e, el);
+async function seek(position: number, expectedSequence = playbackTransitionSequence) {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
+  if (!nowPlaying.value || duration.value <= 0 || !Number.isFinite(position) || expectedSequence !== playbackTransitionSequence) return;
+  const request = ++seekRequestSequence;
+  const pos = Math.max(0, Math.min(duration.value, position));
+  const wasPlaying = isPlaying.value;
+  let finished = false;
+  seekPreviewPos.value = pos;
   currentTime.value = Math.round(pos);
-  await seekCurrentOutput(pos);
-  const st = await refreshPlaybackState();
-  if (st.playing) {
-    startTicker();
-  } else {
-    stopTicker();
+  try {
+    await seekCurrentOutput(pos);
+    if (request !== seekRequestSequence || expectedSequence !== playbackTransitionSequence) return;
+    const status = await refreshPlaybackState();
+    if (request !== seekRequestSequence || expectedSequence !== playbackTransitionSequence) return;
+    currentTime.value = Math.floor(status.position);
+    if (status.playing) startTicker(); else stopTicker();
+    finished = status.finished && wasPlaying;
+    syncAndroid();
+  } catch (error) {
+    if (request === seekRequestSequence) {
+      seekPreviewPos.value = null;
+      deviceMenuError.value = 'Could not seek. Please try again.';
+      await refreshPlaybackState().catch(() => {});
+    }
+    console.error('Failed to seek', error);
+  } finally {
+    if (request === seekRequestSequence) seekPreviewPos.value = null;
   }
-  syncAndroid();
+  if (finished && expectedSequence === playbackTransitionSequence) await handleFinishedPlayback(expectedSequence);
 }
 
 let volumeChangeSequence = 0;
@@ -4143,8 +4172,9 @@ function onDocClick(e: MouseEvent) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
+  if (e.defaultPrevented) return;
   const target = e.target as HTMLElement | null;
-  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.closest('select, button, a, [role=switch]') || target.isContentEditable)) {
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.closest('select, button, a, [role=switch], [role=slider]') || target.isContentEditable)) {
     return; // Don't trigger if typing
   }
 
@@ -5159,6 +5189,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   playbackRestoreDisposed = true;
+  cancelSeekGesture();
   document.documentElement.classList.remove('player-reduced-motion', 'player-no-rarity-motion');
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
@@ -6547,6 +6578,7 @@ onUnmounted(() => {
         @pointermove="mobileSeekHoldMove"
         @pointerup="mobileSeekHoldEnd"
         @pointercancel="mobileSeekHoldEnd"
+        @lostpointercapture="mobileSeekHoldEnd"
       >
         <div class="mobile-seek-track">
           <div class="mobile-seek-fill" :style="`width:${displayProgressPercent}%`">
@@ -6573,6 +6605,7 @@ onUnmounted(() => {
       :show-soulseek-preview-buffer="showSoulseekPreviewBuffer"
       :soulseek-preview-buffer-percent="soulseekPreviewBufferPercent"
       :display-progress-percent="displayProgressPercent"
+      :seeking="mobileSeekActive"
       :queue-source="queueSource"
       :queue="queue"
       :output-devices="outputDevices"
@@ -6591,6 +6624,9 @@ onUnmounted(() => {
       @play-next="playNext"
       @toggle-play="togglePlay"
       @seek="seek"
+      @seek-start="mobileSeekHoldStart"
+      @seek-move="mobileSeekHoldMove"
+      @seek-end="mobileSeekHoldEnd"
       @toggle-queue-menu="toggleQueueMenu"
       @toggle-device-menu="toggleDeviceMenu"
       @open-playback-settings="openSettings('playback')"
@@ -6680,6 +6716,7 @@ onUnmounted(() => {
                 @pointermove="mobileSeekHoldMove"
                 @pointerup="mobileSeekHoldEnd"
                 @pointercancel="mobileSeekHoldEnd"
+                @lostpointercapture="mobileSeekHoldEnd"
               >
                 <div class="detail-bar-track">
                   <div
