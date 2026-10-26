@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
+import ArtistLink from "./components/ArtistLink.vue";
 import { PLAYBACK_SESSION_KEY, readPlaybackContext, matchesPlaybackContext, type SavedPlaybackContext } from './utils/playbackSession';
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -2903,6 +2904,12 @@ function spectrumBarStyle(segment: (typeof spectrumSegments)[number]) {
 const mobileSeekActive = ref(false);
 const seekPreviewPos = ref<number | null>(null);
 const showDetail = ref(false);
+function openPlayerArtist(name: string) {
+  showDetail.value = false;
+  showQueueMenu.value = false;
+  showDeviceMenu.value = false;
+  openArtist(name);
+}
 
 let spectrumPollTimer: ReturnType<typeof setInterval> | null = null;
 let spectrumPollPending = false;
@@ -5281,7 +5288,7 @@ onUnmounted(() => {
                   </div>
                 </CoverImage>
                 <div class="card-title">{{ track.title || track.path }}</div>
-                <div class="card-artist">{{ artistLabel(track.artist) }}</div>
+                <div class="card-artist"><ArtistLink :artist="track.artist" @open="openArtist" /></div>
               </div>
             </div>
           </section>
@@ -5356,7 +5363,7 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div class="card-title">{{ item.title }}</div>
-                <div class="card-artist">{{ item.artist }}</div>
+                <div class="card-artist"><ArtistLink :artist="item.artist" @open="openArtist" /></div>
               </div>
             </div>
           </section>
@@ -6047,7 +6054,7 @@ onUnmounted(() => {
                         <span v-else class="dedup-remove-badge">Duplicate</span>
                       </div>
                       <span class="track-album">
-                        {{ artistLabel(track.artist) }}{{ track.album ? ' · ' + track.album : '' }}
+                        <ArtistLink :artist="track.artist" @open="openArtist" /><template v-if="track.album">, {{ track.album }}</template>
                       </span>
                       <span class="dedup-track-meta">
                         <span>{{ track.path }}</span>
@@ -6579,6 +6586,7 @@ onUnmounted(() => {
       :peer-label="peerLabel"
       :is-remote-output-peer="isRemoteOutputPeer"
       @open-detail="showDetail = true"
+      @open-artist="openPlayerArtist"
       @play-prev="playPrev"
       @play-next="playNext"
       @toggle-play="togglePlay"
@@ -6656,7 +6664,9 @@ onUnmounted(() => {
                 <span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span>
               </div>
               <div class="detail-track-artist">
-                <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
+                <ArtistLink :artist="nowPlaying.artist" @open="openPlayerArtist">
+                  <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
+                </ArtistLink>
               </div>
               <button class="icon-btn" :class="{ green: nowPlaying.is_liked }" @click.stop="toggleLike(nowPlaying!)" style="margin-left:auto;">
                 <AppIcon name="liked" v-if="nowPlaying.is_liked" :size="22" />

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import AppIcon from './AppIcon.vue';
+import ArtistLink from './ArtistLink.vue';
 import AppSelect from './AppSelect.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import ResponsivePopup from "./ResponsivePopup.vue";
 import type { AudioDevice, Track } from "../types";
 import { formatDuration, formatSampleRate, formatTime } from "../utils/format";
-import { artistLabel } from "../utils/artists";
 import { coverUrl, placeholderCoverColors } from "../utils/covers";
 import CoverImage from "./CoverImage.vue";
 
@@ -58,6 +58,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openDetail: [];
+  openArtist: [name: string];
   toggleLike: [];
   "update:isShuffled": [value: boolean];
   "update:repeatMode": [value: number];
@@ -452,7 +453,9 @@ onUnmounted(() => {
       }" />
       <div class="track-meta">
         <div class="track-name"><span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span></div>
-        <div class="track-artist">{{ currentTrack.artist }}</div>
+        <div class="track-artist">
+          <ArtistLink :artist="nowPlaying?.artist" @open="emit('openArtist', $event)">{{ currentTrack.artist }}</ArtistLink>
+        </div>
       </div>
       <button class="icon-btn" :class="{ green: isLiked }" :disabled="!nowPlaying || nowPlaying.id <= 0 || likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
         <AppIcon :name="isLiked ? 'liked' : 'like'" :size="16" />
@@ -510,7 +513,7 @@ onUnmounted(() => {
             <CoverImage class="queue-item-cover" :src="coverUrl(nowPlaying.cover_hash, 'small')" :placeholder="placeholderCoverColors(nowPlaying.file_hash)" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ nowPlaying.title || nowPlaying.path }}</span>
-              <span class="queue-item-artist">{{ artistLabel(nowPlaying.artist) }}</span>
+              <span class="queue-item-artist"><ArtistLink :artist="nowPlaying.artist" @open="emit('openArtist', $event)" /></span>
             </div>
             <span class="queue-item-dur">{{ formatDuration(nowPlaying.duration_secs) }}</span>
           </div>
@@ -526,7 +529,7 @@ onUnmounted(() => {
             <CoverImage class="queue-item-cover" :src="coverUrl(track.cover_hash, 'small')" :placeholder="placeholderCoverColors(track.file_hash)" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ track.title || track.path }}</span>
-              <span class="queue-item-artist">{{ artistLabel(track.artist) }}</span>
+              <span class="queue-item-artist"><ArtistLink :artist="track.artist" @open="emit('openArtist', $event)" /></span>
             </div>
             <span class="queue-item-dur">{{ formatDuration(track.duration_secs) }}</span>
           </div>

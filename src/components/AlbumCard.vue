@@ -2,6 +2,7 @@
 import type { AlbumSummary } from "../types";
 import { coverUrl } from "../utils/covers";
 import CoverImage from "./CoverImage.vue";
+import ArtistLink from "./ArtistLink.vue";
 
 withDefaults(defineProps<{
   album: AlbumSummary;
@@ -12,6 +13,7 @@ withDefaults(defineProps<{
 
 const emit = defineEmits<{
   open: [];
+  openArtist: [name: string];
 }>();
 
 </script>
@@ -22,7 +24,7 @@ const emit = defineEmits<{
     <div class="album-card-title" :title="album.album">{{ album.album }}</div>
     <div class="album-card-meta">
       <template v-if="album.year">{{ album.year }} · </template>
-      <template v-if="showArtist">{{ album.album_artist_or_artist }}</template>
+      <ArtistLink v-if="showArtist" :artist="album.album_artist_or_artist" @open="emit('openArtist', $event)" />
       <template v-else>{{ album.track_count }} track{{ album.track_count === 1 ? '' : 's' }}</template>
     </div>
   </div>

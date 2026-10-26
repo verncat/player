@@ -139,6 +139,7 @@ const visibleTracks = computed(() =>
             :album="album"
             :show-artist="section.showArtist"
             @open="actions.openAlbum(album.album, album.album_artist_or_artist)"
+            @open-artist="actions.openArtist"
           />
         </div>
       </section>
