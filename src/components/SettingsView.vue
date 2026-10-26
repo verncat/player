@@ -16,6 +16,9 @@ import CustomColorSwatch from './CustomColorSwatch.vue';
 import SegmentedControl from './SegmentedControl.vue';
 import SwatchPicker from './SwatchPicker.vue';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
+import { usePluginHost } from '../plugins/host';
+import PluginManager from '../plugins/components/PluginManager.vue';
+import PluginPanel from '../plugins/components/PluginPanel.vue';
 
 const props = defineProps<{
   section: SettingsSection | null;
@@ -44,11 +47,6 @@ const props = defineProps<{
   syncActive: boolean;
   peersCount: number;
   updateAvailable: boolean;
-  discordEnabled: boolean;
-  discordAvailable: boolean;
-  discordConfigured: boolean;
-  discordReady: boolean;
-  discordError: string;
   coverUrl: string | null;
   coverColors: [string, string];
 }>();
@@ -64,14 +62,15 @@ const emit = defineEmits<{
   selectOutput: [name: string];
   selectSampleRate: [sampleRate: number | null];
   toggleSync: [];
-  toggleDiscord: [enabled: boolean];
   deviceSaved: [settings: DeviceSettings];
-  soulseekSaved: [];
 }>();
 
 const selected = computed(() => props.section ?? 'library');
-const sections = computed(() => SETTINGS_SECTIONS.filter((item) => item.id !== 'discord' || (props.discordReady && props.discordAvailable)));
-const sectionInfo = computed(() => SETTINGS_SECTIONS.find((section) => section.id === selected.value)!);
+const pluginHost = usePluginHost();
+const pluginSettings = pluginHost.contributions('settings');
+const sections = computed(() => [...SETTINGS_SECTIONS, ...pluginSettings.value.map(c => ({ id: `plugin:${c.key}` as SettingsSection, label: c.label, description: c.description, icon: 'settings' as const }))]);
+const sectionInfo = computed(() => sections.value.find(section => section.id === selected.value) ?? { label: 'Settings' });
+const activePluginSettings = computed(() => pluginSettings.value.find(c => selected.value === `plugin:${c.key}`));
 const panel = ref<HTMLElement | null>(null);
 watch(() => props.section, async () => { await nextTick(); panel.value?.focus({ preventScroll: true }); });
 const currentOutput = computed(() => props.outputDevices.find((device) => device.name === props.currentDevice));
@@ -86,19 +85,11 @@ const configLoading = ref(false);
 const configError = ref('');
 const deviceName = ref('');
 const emoji = ref('🎵');
-const username = ref('');
-const password = ref('');
-const showPassword = ref(false);
 const identitySaving = ref(false);
 const identityError = ref('');
 const identitySaved = ref(false);
-const soulseekSaving = ref(false);
-const soulseekError = ref('');
-const soulseekSaved = ref(false);
 const emojiOptions = ['🎵', '🎶', '🎤', '🎧', '🎼', '🎹', '🎸', '🥁', '📱', '💻', '🖥️', '⌚', '📻', '📡', '🔊', '🎺', '🎻', '🪕', '🎷', '🍕'];
 const identityDirty = computed(() => !!config.value && (deviceName.value !== config.value.device_name || emoji.value !== config.value.emoji));
-const soulseekDirty = computed(() => !!config.value && (username.value !== config.value.soulseek_username || password.value !== config.value.soulseek_password));
-const soulseekEnabled = computed(() => config.value?.soulseek_enabled ?? false);
 const { preferences, reducedMotion, systemReducedMotion, storageError, setPreference } = useAppearance();
 const { preferences: themePreferences, theme, storageError: themeStorageError, setThemePreference } = useTheme();
 const NO_GRADIENT_SWATCH = 'linear-gradient(135deg, transparent 46%, var(--color-text-faint) 46% 54%, transparent 54%), var(--color-bg-elevated)';
@@ -119,7 +110,6 @@ async function loadConfig() {
   try {
     config.value = await invoke<DeviceSettings>('get_device_settings');
     resetIdentity();
-    resetSoulseek();
   } catch {
     configError.value = 'Could not load device settings. Please try again.';
   } finally {
@@ -132,23 +122,12 @@ function resetIdentity() {
   identityError.value = '';
   identitySaved.value = false;
 }
-function resetSoulseek() {
-  username.value = config.value?.soulseek_username ?? '';
-  password.value = config.value?.soulseek_password ?? '';
-  showPassword.value = false;
-  soulseekError.value = '';
-  soulseekSaved.value = false;
-}
 async function persistConfig(next: DeviceSettings) {
-  await invoke('set_device_settings', {
-    emoji: next.emoji, deviceName: next.device_name,
-    soulseekEnabled: next.soulseek_enabled,
-    soulseekUsername: next.soulseek_username, soulseekPassword: next.soulseek_password,
-  });
+  await invoke('set_device_settings', { emoji: next.emoji, deviceName: next.device_name });
   config.value = next;
 }
 async function saveIdentity() {
-  if (identitySaving.value || soulseekSaving.value) return;
+  if (identitySaving.value) return;
   identitySaving.value = true;
   identityError.value = '';
   identitySaved.value = false;
@@ -162,34 +141,6 @@ async function saveIdentity() {
   } catch {
     identityError.value = 'Could not save device identity. Your changes are still here.';
   } finally { identitySaving.value = false; }
-}
-async function saveSoulseek() {
-  if (soulseekSaving.value || identitySaving.value) return;
-  soulseekSaving.value = true;
-  soulseekError.value = '';
-  soulseekSaved.value = false;
-  try {
-    const latest = await invoke<DeviceSettings>('get_device_settings');
-    await persistConfig({ ...latest, soulseek_username: username.value.trim(), soulseek_password: password.value });
-    username.value = config.value!.soulseek_username;
-    showPassword.value = false;
-    soulseekSaved.value = true;
-    emit('soulseekSaved');
-  } catch {
-    soulseekError.value = 'Could not save Soulseek credentials. Please try again.';
-  } finally { soulseekSaving.value = false; }
-}
-async function toggleSoulseek(enabled: boolean) {
-  if (soulseekSaving.value || identitySaving.value) return;
-  soulseekSaving.value = true;
-  soulseekError.value = '';
-  soulseekSaved.value = false;
-  try {
-    const latest = await invoke<DeviceSettings>('get_device_settings');
-    await persistConfig({ ...latest, soulseek_enabled: enabled });
-    emit('soulseekSaved');
-  } catch { soulseekError.value = 'Could not change Soulseek search. Please try again.'; }
-  finally { soulseekSaving.value = false; }
 }
 onMounted(() => { void loadConfig(); });
 </script>
@@ -252,45 +203,25 @@ onMounted(() => { void loadConfig(); });
           </div>
         </template>
 
-        <template v-else-if="selected === 'discord'">
-          <p v-if="!discordReady" role="status">Loading Discord settings...</p>
-          <p v-else-if="!discordAvailable">Discord Rich Presence is not available in this build.</p>
-          <div v-else class="settings-group">
-            <div class="setting-row"><div><h4>Discord Rich Presence</h4><p>Show the track and artist you are listening to on your Discord profile.</p></div><SettingsToggle :model-value="discordEnabled" label="Discord Rich Presence" :disabled="!discordConfigured" @update:model-value="emit('toggleDiscord', $event)" /></div>
-            <p class="help">{{ discordConfigured ? 'Requires the Discord desktop app. Your activity is hidden while paused.' : 'Discord integration is not configured in this build.' }}</p>
-            <p v-if="discordError" class="error" role="alert">{{ discordError }}</p>
-          </div>
-        </template>
-
-        <template v-else-if="selected === 'devices' || selected === 'soulseek'">
+        <template v-else-if="selected === 'devices'">
           <p v-if="configLoading" role="status">Loading device settings...</p>
           <div v-else-if="configError" class="notice"><p class="error" role="alert">{{ configError }}</p><button @click="loadConfig">Try again</button></div>
           <template v-else-if="config">
-            <template v-if="selected === 'devices'">
+
               <form class="settings-group" @submit.prevent="saveIdentity">
                 <h3>Device identity</h3><p>This is how this Player appears to other devices.</p>
                 <div class="device-preview"><span class="device-emoji">{{ emoji }}</span><div><strong>{{ deviceName.trim() || 'My Player' }}</strong><p>This device</p></div></div>
                 <label class="field"><span>Device name</span><input v-model="deviceName" placeholder="My Player" autocomplete="off" maxlength="100" :disabled="identitySaving" /></label>
                 <fieldset :disabled="identitySaving"><legend>Device emoji</legend><div class="emoji-picker"><button v-for="item in emojiOptions" :key="item" type="button" :class="{ chosen: emoji === item }" :aria-pressed="emoji === item" :aria-label="`Use ${item} as device emoji`" @click="emoji = item">{{ item }}</button></div></fieldset>
                 <p v-if="identityError" class="error" role="alert">{{ identityError }}</p><p v-if="identitySaved && !identityDirty" class="success" role="status">Device identity saved.</p>
-                <div class="form-actions"><button type="button" :disabled="!identityDirty || identitySaving" @click="resetIdentity">Cancel</button><button class="primary" :disabled="!identityDirty || identitySaving || soulseekSaving" type="submit">{{ identitySaving ? 'Saving...' : 'Save' }}</button></div>
+                <div class="form-actions"><button type="button" :disabled="!identityDirty || identitySaving" @click="resetIdentity">Cancel</button><button class="primary" :disabled="!identityDirty || identitySaving" type="submit">{{ identitySaving ? 'Saving...' : 'Save' }}</button></div>
               </form>
               <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="icon-label" @click="emit('devices')">Open devices <AppIcon name="go" /></button></div></div>
-            </template>
-            <template v-else>
-              <div class="settings-group"><div class="setting-row"><div><h3>Soulseek search</h3><p>Search the Soulseek network and download music into your library.</p></div><SettingsToggle :model-value="soulseekEnabled" label="Soulseek search" :disabled="soulseekSaving || identitySaving" @update:model-value="toggleSoulseek" /></div></div>
-              <form v-if="soulseekEnabled" class="settings-group" @submit.prevent="saveSoulseek">
-                <h3>Connection</h3><p>Use your Soulseek account to search the network.</p>
-                <label class="field"><span>Username</span><input v-model="username" autocomplete="username" spellcheck="false" :disabled="soulseekSaving" /></label>
-                <label class="field"><span>Password</span><span class="password-field"><input v-model="password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" :disabled="soulseekSaving" /><button type="button" :aria-pressed="showPassword" @click="showPassword = !showPassword">{{ showPassword ? 'Hide' : 'Show' }}</button></span></label>
-                <p v-if="soulseekSaved && !soulseekDirty" class="success" role="status">Soulseek credentials saved.</p>
-                <div class="form-actions"><button type="button" :disabled="!soulseekDirty || soulseekSaving" @click="resetSoulseek">Cancel</button><button class="primary" type="submit" :disabled="!soulseekDirty || soulseekSaving || identitySaving || !username.trim() || !password">{{ soulseekSaving ? 'Saving...' : 'Save' }}</button></div>
-              </form>
-              <p v-if="soulseekError" class="error" role="alert">{{ soulseekError }}</p><p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
-              <div class="settings-group"><h3>Downloads</h3><p>Downloaded files are saved in the Soulseek folder inside your music library.</p><div class="folder-card"><span>{{ dataDir ? `${dataDir.replace(/[\\/]$/, '')}/Soulseek` : 'Loading folder...' }}</span><button class="icon-label" :disabled="!dataDir" @click="emit('openFolder')">Open music folder <AppIcon name="external-link" /></button></div></div>
-            </template>
           </template>
         </template>
+
+        <PluginManager v-else-if="selected === 'plugins'" />
+        <PluginPanel v-else-if="activePluginSettings" :key="activePluginSettings.key" :plugin-id="activePluginSettings.pluginId" :view-id="activePluginSettings.id" />
 
         <template v-else-if="selected === 'appearance'">
           <div class="appearance-preview" :class="{ 'preview-flat': !preferences.album3d || reducedMotion }" aria-label="Appearance preview">

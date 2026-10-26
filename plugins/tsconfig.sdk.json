@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "lib": ["ES2020", "WebWorker"],
+    "types": []
+  },
+  "files": ["sdk.d.ts"]
+}

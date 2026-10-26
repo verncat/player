@@ -113,9 +113,8 @@ strong { color: var(--color-text); }
   justify-content: space-between;
   align-items: center;
   gap: 20px;
-  padding: 20px;
 }
-.update-card, .contributor-link {
+.contributor-link {
   border-radius: 8px;
 }
 button { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); padding: 9px 16px; border-radius: 99px; cursor: pointer; font-size: 13px; font-weight: 600; }

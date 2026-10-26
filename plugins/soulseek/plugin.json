@@ -1,0 +1,61 @@
+{
+  "id": "player.soulseek",
+  "name": "Soulseek",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Search, preview, download and replace music from Soulseek.",
+  "platforms": [
+    "macos",
+    "windows",
+    "linux",
+    "android"
+  ],
+  "permissions": [
+    "ui",
+    "playback.read",
+    "playback.control",
+    "settings",
+    "secrets",
+    "native.soulseek",
+    "library.import",
+    "library.replace"
+  ],
+  "contributions": [
+    {
+      "id": "connection",
+      "kind": "settings",
+      "label": "Soulseek",
+      "description": "Connection and credentials",
+      "icon": "search"
+    },
+    {
+      "id": "search",
+      "kind": "search",
+      "label": "Soulseek"
+    },
+    {
+      "id": "replacement",
+      "kind": "page",
+      "label": "Search and replace",
+      "icon": "search"
+    },
+    {
+      "id": "find-replacement",
+      "kind": "track-action",
+      "label": "Find another version",
+      "icon": "search"
+    },
+    {
+      "id": "buffer",
+      "kind": "player-widget",
+      "label": "Soulseek",
+      "slot": "player.status"
+    }
+  ],
+  "author": {
+    "name": "Player contributors",
+    "url": "https://github.com/verncat/player/graphs/contributors"
+  },
+  "repository": "https://github.com/verncat/player",
+  "homepage": "https://github.com/verncat/player"
+}

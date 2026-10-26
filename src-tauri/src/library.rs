@@ -48,6 +48,7 @@ const SOURCE_KIND_CUE: &str = "cue";
 
 const INTERNAL_LIBRARY_DIRECTORIES: &[&str] = &[
     ".covers",
+    ".player-transactions",
     ".soulseek-temp",
     ".soulseek-cover-cache",
     ".soulseek-preview-cache",
@@ -146,8 +147,11 @@ pub struct DeviceSettings {
     pub emoji: String,
     pub device_name: String,
     pub sync_enabled: bool,
+    #[serde(skip_serializing)]
     pub soulseek_enabled: bool,
+    #[serde(skip_serializing)]
     pub soulseek_username: String,
+    #[serde(skip_serializing)]
     pub soulseek_password: String,
 }
 
@@ -195,10 +199,8 @@ pub enum TrackSource {
         end_secs: Option<f64>,
         duration_secs: Option<f64>,
     },
-    SoulseekPreview {
-        username: String,
-        filename: String,
-        size: u64,
+    GrowingFile {
+        resource: crate::plugin_sources::ResourceIdentity,
         cache_path: PathBuf,
     },
 }
@@ -421,7 +423,10 @@ impl LibraryState {
             columns = track_columns_of("t"),
         ))?;
         let tracks = stmt
-            .query_map(params![playlist_id, include_duplicates, limit, offset], row_to_track)?
+            .query_map(
+                params![playlist_id, include_duplicates, limit, offset],
+                row_to_track,
+            )?
             .filter_map(|row| row.ok())
             .collect::<Vec<_>>();
         let has_more = offset.saturating_add(tracks.len() as i64) < total;
@@ -442,11 +447,8 @@ impl LibraryState {
         include_duplicates: bool,
     ) -> Result<TrackPage, BoxError> {
         let rules: Vec<SmartPlaylistEntry> = serde_json::from_str(rules_json)?;
-        let (where_clause, mut values, order_by) = compile_smart_playlist_sql(
-            &rules,
-            match_mode,
-            include_duplicates,
-        );
+        let (where_clause, mut values, order_by) =
+            compile_smart_playlist_sql(&rules, match_mode, include_duplicates);
         let limit = limit.clamp(1, 100) as i64;
         let offset = offset as i64;
         let conn = self.conn.lock().unwrap();
@@ -685,9 +687,18 @@ fn compile_rule(rule: &SmartPlaylistRule, values: &mut Vec<Value>) -> Option<Str
         "any" => {
             let pattern = format!("%{}%", escape_like(&rule.value));
             let columns = [
-                "title", "artist", "album", "album_artist_or_artist", "genre", "tags", "rarity", "path",
-                "CAST(track_number AS TEXT)", "CAST(duration_secs AS TEXT)",
-                "CAST(year AS TEXT)", "CAST(play_count AS TEXT)",
+                "title",
+                "artist",
+                "album",
+                "album_artist_or_artist",
+                "genre",
+                "tags",
+                "rarity",
+                "path",
+                "CAST(track_number AS TEXT)",
+                "CAST(duration_secs AS TEXT)",
+                "CAST(year AS TEXT)",
+                "CAST(play_count AS TEXT)",
             ];
             let parts = columns
                 .iter()
@@ -706,7 +717,10 @@ fn compile_rule(rule: &SmartPlaylistRule, values: &mut Vec<Value>) -> Option<Str
             let parts = selections
                 .iter()
                 .map(|extension| {
-                    rule_values.push(Value::Text(format!("%.{}", escape_like(extension.trim_start_matches('.')))));
+                    rule_values.push(Value::Text(format!(
+                        "%.{}",
+                        escape_like(extension.trim_start_matches('.'))
+                    )));
                     "lower(path) LIKE lower(?) ESCAPE '\\'".to_string()
                 })
                 .collect::<Vec<_>>();
@@ -801,13 +815,18 @@ fn compile_filters(
         .filter_map(|entry| match entry {
             SmartPlaylistEntry::Rule(rule) if rule.field == "sort" => None,
             SmartPlaylistEntry::Rule(rule) => compile_rule(rule, values),
-            SmartPlaylistEntry::Group { match_mode, rules } => compile_filters(rules, match_mode, values),
+            SmartPlaylistEntry::Group { match_mode, rules } => {
+                compile_filters(rules, match_mode, values)
+            }
         })
         .collect();
     if filters.is_empty() {
         return None;
     }
-    Some(format!("({})", filters.join(if match_mode == "any" { " OR " } else { " AND " })))
+    Some(format!(
+        "({})",
+        filters.join(if match_mode == "any" { " OR " } else { " AND " })
+    ))
 }
 
 /// Compiles persisted flexible-playlist rules into a parameterised SQLite
@@ -851,8 +870,14 @@ fn compile_smart_playlist_sql(
         }) else {
             continue;
         };
-        let direction = if rule.op == "sort_desc" { "DESC" } else { "ASC" };
-        ordering.push(format!("({expression}) IS NULL ASC, {expression} {direction}"));
+        let direction = if rule.op == "sort_desc" {
+            "DESC"
+        } else {
+            "ASC"
+        };
+        ordering.push(format!(
+            "({expression}) IS NULL ASC, {expression} {direction}"
+        ));
     }
     if ordering.is_empty() {
         ordering.push(LIBRARY_ORDER_SQL.to_string());
@@ -2211,7 +2236,7 @@ fn sibling_audio_files(directory: &Path) -> Vec<PathBuf> {
         fields(file = %path.display())
     )
 )]
-fn hash_file(path: &Path) -> Option<String> {
+pub(crate) fn hash_file(path: &Path) -> Option<String> {
     const HASH_BUFFER_SIZE: usize = 256 * 1024;
 
     let mut file = std::fs::File::open(path).ok()?;
@@ -3287,10 +3312,25 @@ pub fn replace_track_with_file(
     let conn = state.conn.lock().unwrap();
     let existing = match get_track_by_id(&conn, id) {
         Ok(track) => track,
-        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(format!("Track not found: {}", id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return Err(format!("Track not found: {}", id))
+        }
         Err(error) => return Err(error.to_string()),
     };
 
+    let is_cue: bool = conn
+        .query_row(
+            "SELECT COALESCE(source_kind,'file')='cue' FROM tracks WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if is_cue {
+        return Err(
+            "A CUE segment cannot be replaced in place; import the new file as a separate track"
+                .into(),
+        );
+    }
     let current_abs = state.data_dir.join(&existing.path);
     let target_abs = replacement_target_path(&current_abs, &source_abs)?;
     let target_parent = target_abs.parent().ok_or_else(|| {
@@ -3307,6 +3347,11 @@ pub fn replace_track_with_file(
         )
     })?;
 
+    let rollback = crate::file_rollback::FileRollback::new(
+        &state.data_dir.join(".player-transactions"),
+        &[&current_abs, &target_abs, &source_abs],
+    )?;
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let target_rel = rel_path(&state.data_dir, &target_abs);
     let source_rel = if source_abs.starts_with(&state.data_dir) {
         Some(rel_path(&state.data_dir, &source_abs))
@@ -3315,11 +3360,13 @@ pub fn replace_track_with_file(
     };
 
     if target_rel != existing.path {
-        if let Some(conflict) = get_track_by_path(&conn, &target_rel).map_err(|e| e.to_string())? {
+        if let Some(conflict) =
+            get_track_by_path(&transaction, &target_rel).map_err(|e| e.to_string())?
+        {
             let replacing_from_conflicting_path =
                 source_rel.as_deref() == Some(target_rel.as_str());
             if conflict.id != id && replacing_from_conflicting_path {
-                delete_tracks_by_path_except_id(&conn, &target_rel, id)
+                delete_tracks_by_path_except_id(&transaction, &target_rel, id)
                     .map_err(|e| e.to_string())?;
             } else if conflict.id != id {
                 return Err(format!(
@@ -3368,8 +3415,7 @@ pub fn replace_track_with_file(
             .unwrap_or_default();
     let merged_track_number =
         merge_optional_i64(existing.track_number, replacement_meta.track_number);
-    let merged_disc_number =
-        merge_optional_i64(existing.disc_number, replacement_meta.disc_number);
+    let merged_disc_number = merge_optional_i64(existing.disc_number, replacement_meta.disc_number);
     let merged_year = merge_optional_i64(existing.year, replacement_meta.year);
     let merged_genre = merge_optional_text(existing.genre, replacement_meta.genre);
     let merged_tags = existing.tags;
@@ -3379,8 +3425,9 @@ pub fn replace_track_with_file(
             .and_then(|data| covers::store(&state.data_dir, &data))
     });
 
-    conn.execute(
-        "UPDATE tracks
+    transaction
+        .execute(
+            "UPDATE tracks
             SET path = ?1,
                 title = ?2,
                 artist = ?3,
@@ -3406,43 +3453,45 @@ pub fn replace_track_with_file(
                 album_artist = ?20,
                 disc_number = ?21
           WHERE id = ?19",
-        params![
-            target_rel,
-            merged_title,
-            merged_artist,
-            merged_album,
-            merged_track_number,
-            replacement_meta.duration_secs,
-            modified_secs,
-            merged_cover_hash,
-            file_hash,
-            rarity,
-            merged_year,
-            merged_genre,
-            existing.date_added,
-            merged_tags,
-            if existing.manually_edited { 1 } else { 0 },
-            if existing.is_liked { 1 } else { 0 },
-            existing.play_count,
-            if existing.is_duplicate { 1 } else { 0 },
-            id,
-            merged_album_artist,
-            merged_disc_number,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+            params![
+                target_rel,
+                merged_title,
+                merged_artist,
+                merged_album,
+                merged_track_number,
+                replacement_meta.duration_secs,
+                modified_secs,
+                merged_cover_hash,
+                file_hash,
+                rarity,
+                merged_year,
+                merged_genre,
+                existing.date_added,
+                merged_tags,
+                if existing.manually_edited { 1 } else { 0 },
+                if existing.is_liked { 1 } else { 0 },
+                existing.play_count,
+                if existing.is_duplicate { 1 } else { 0 },
+                id,
+                merged_album_artist,
+                merged_disc_number,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
 
     if let Some(source_rel) = source_rel {
         if source_rel != target_rel {
-            delete_tracks_by_path_except_id(&conn, &source_rel, id)
+            delete_tracks_by_path_except_id(&transaction, &source_rel, id)
                 .map_err(|e| e.to_string())?;
         }
     }
 
-    let updated_track = get_track_by_path(&conn, &target_rel)
+    let updated_track = get_track_by_path(&transaction, &target_rel)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Failed to load replaced track: {}", target_rel))?;
 
+    transaction.commit().map_err(|e| e.to_string())?;
+    rollback.commit();
     let _ = app.emit("library-changed", ());
     Ok(updated_track)
 }
@@ -3607,14 +3656,16 @@ pub fn get_recent_tracks(
 ) -> Result<Vec<Track>, String> {
     let conn = state.conn.lock().unwrap();
     let lim = limit.unwrap_or(12) as i64;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT DISTINCT {columns}
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT DISTINCT {columns}
            FROM play_history h
            JOIN library_tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
           LIMIT ?1",
-        columns = track_columns_of("t"),
-    )).map_err(|e| e.to_string())?;
+            columns = track_columns_of("t"),
+        ))
+        .map_err(|e| e.to_string())?;
     let tracks = stmt
         .query_map(params![lim], row_to_track)
         .map_err(|e| e.to_string())?
@@ -3630,14 +3681,16 @@ pub fn get_play_history(
 ) -> Result<Vec<PlayHistoryEntry>, String> {
     let conn = state.conn.lock().unwrap();
     let lim = limit.unwrap_or(500) as i64;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT h.played_at, {columns}
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT h.played_at, {columns}
            FROM play_history h
            JOIN library_tracks t ON t.id = h.track_id
           ORDER BY h.played_at DESC
           LIMIT ?1",
-        columns = track_columns_of("t"),
-    )).map_err(|e| e.to_string())?;
+            columns = track_columns_of("t"),
+        ))
+        .map_err(|e| e.to_string())?;
     let entries = stmt
         .query_map(params![lim], |row| {
             let played_at: i64 = row.get(0)?;
@@ -4636,21 +4689,33 @@ mod tests {
         let albums = artist_albums(&conn, "A", false).unwrap();
         let found: Vec<(&str, &str, i64)> = albums
             .iter()
-            .map(|a| (a.album.as_str(), a.album_artist_or_artist.as_str(), a.track_count))
+            .map(|a| {
+                (
+                    a.album.as_str(),
+                    a.album_artist_or_artist.as_str(),
+                    a.track_count,
+                )
+            })
             .collect();
         assert_eq!(found, [("Hits", "Various Artists", 3), ("Own", "B", 2)]);
 
         let albums = artist_albums(&conn, "D", false).unwrap();
         assert_eq!(albums.len(), 1);
         assert_eq!(
-            (albums[0].album_artist_or_artist.as_str(), albums[0].track_count),
+            (
+                albums[0].album_artist_or_artist.as_str(),
+                albums[0].track_count
+            ),
             ("D", 1)
         );
 
         let albums = artist_albums(&conn, "E", false).unwrap();
         assert_eq!(albums.len(), 1);
         assert_eq!(
-            (albums[0].album_artist_or_artist.as_str(), albums[0].track_count),
+            (
+                albums[0].album_artist_or_artist.as_str(),
+                albums[0].track_count
+            ),
             ("E", 1)
         );
     }
@@ -4771,7 +4836,10 @@ mod tests {
             .collect();
         paths.sort();
         assert_eq!(paths, ["comp"]);
-        assert_eq!(state.tracks_page("various", 100, 0, false).unwrap().total, 1);
+        assert_eq!(
+            state.tracks_page("various", 100, 0, false).unwrap().total,
+            1
+        );
         assert_eq!(state.search("various").unwrap().len(), 1);
         let any = r#"[{"field": "any", "op": "contains", "value": "various"}]"#;
         assert_eq!(rule_paths(&state, any).len(), 1);
@@ -4873,7 +4941,11 @@ mod tests {
             ["own.flac"]
         );
         assert_eq!(
-            matching(vec![rule("album_artist_or_artist", "in", r#"["Various Artists"]"#)]),
+            matching(vec![rule(
+                "album_artist_or_artist",
+                "in",
+                r#"["Various Artists"]"#
+            )]),
             ["va-d1.flac", "va-d2.flac"]
         );
     }
@@ -4911,10 +4983,8 @@ mod tests {
 
     #[test]
     fn legacy_per_track_covers_move_into_the_store() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "player-legacy-covers-test-{}",
-            std::process::id()
-        ));
+        let data_dir =
+            std::env::temp_dir().join(format!("player-legacy-covers-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_dir);
         std::fs::create_dir_all(covers::store_dir(&data_dir)).unwrap();
         let mut png = Vec::new();
@@ -4954,7 +5024,10 @@ mod tests {
             ]
         );
         assert!(covers::is_stored(&data_dir, &hash));
-        assert_eq!(referenced_cover_hashes(&conn).unwrap(), HashSet::from([hash]));
+        assert_eq!(
+            referenced_cover_hashes(&conn).unwrap(),
+            HashSet::from([hash])
+        );
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 

@@ -284,7 +284,7 @@ pub struct PlaybackState {
 struct DecodeSource {
     track_id: Option<i64>,
     is_segment: bool,
-    preview: Option<PreviewIdentity>,
+    resource: Option<crate::plugin_sources::ResourceIdentity>,
     path: PathBuf,
     follow_growing: bool,
     segment_start_secs: f64,
@@ -292,19 +292,12 @@ struct DecodeSource {
     duration_secs: Option<f64>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-struct PreviewIdentity {
-    username: String,
-    filename: String,
-    size: u64,
-}
-
 impl DecodeSource {
     fn file(path: PathBuf) -> Self {
         Self {
             track_id: None,
             is_segment: false,
-            preview: None,
+            resource: None,
             path,
             follow_growing: false,
             segment_start_secs: 0.0,
@@ -329,7 +322,7 @@ impl DecodeSource {
         Self {
             track_id: None,
             is_segment: true,
-            preview: None,
+            resource: None,
             path,
             follow_growing: false,
             segment_start_secs: start_secs.max(0.0),
@@ -347,17 +340,11 @@ impl DecodeSource {
                 end_secs,
                 duration_secs,
             } => Self::segment(audio_path, start_secs, end_secs, duration_secs),
-            crate::library::TrackSource::SoulseekPreview {
+            crate::library::TrackSource::GrowingFile {
                 cache_path,
-                size,
-                username,
-                filename,
+                resource,
             } => Self {
-                preview: Some(PreviewIdentity {
-                    username,
-                    filename,
-                    size,
-                }),
+                resource: Some(resource),
                 ..Self::growing_file(cache_path)
             },
         }
@@ -630,6 +617,35 @@ impl PlaybackState {
         self.inner.stop.load(Ordering::Relaxed)
     }
 
+    pub fn plugin_resource(&self) -> Option<(PathBuf, crate::plugin_sources::ResourceIdentity)> {
+        self.inner
+            .current_source
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.resource.clone().map(|r| (s.path.clone(), r)))
+    }
+    pub fn resource_owner(&self) -> Option<String> {
+        self.inner
+            .current_source
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.resource.as_ref().map(|r| r.plugin_id.clone()))
+    }
+    pub fn adopt_track(&self, plugin_id: &str, resource_id: &str, track_id: i64) {
+        if let Some(source) = self.inner.current_source.lock().unwrap().as_mut() {
+            if source
+                .resource
+                .as_ref()
+                .is_some_and(|r| r.plugin_id == plugin_id && r.resource_id == resource_id)
+            {
+                source.track_id = Some(track_id);
+                source.resource = None;
+                source.follow_growing = false;
+            }
+        }
+    }
     pub fn current_file_path(&self) -> Option<PathBuf> {
         self.inner.current_file.lock().unwrap().clone()
     }
@@ -711,17 +727,17 @@ fn wait_for_growing_file(
             return GrowingFileWaitResult::Grew;
         }
 
-        match crate::soulseek::preview_transfer_state(path) {
-            Some(crate::soulseek::PreviewTransferState::Active) => {
+        match crate::plugin_sources::transfer_state(path) {
+            Some(crate::plugin_sources::TransferState::Active) => {
                 thread::sleep(std::time::Duration::from_millis(150));
             }
-            Some(crate::soulseek::PreviewTransferState::Completed) | None => {
+            Some(crate::plugin_sources::TransferState::Completed) | None => {
                 return GrowingFileWaitResult::Completed;
             }
             Some(
-                crate::soulseek::PreviewTransferState::Failed
-                | crate::soulseek::PreviewTransferState::TimedOut
-                | crate::soulseek::PreviewTransferState::Cancelled,
+                crate::plugin_sources::TransferState::Failed
+                | crate::plugin_sources::TransferState::TimedOut
+                | crate::plugin_sources::TransferState::Cancelled,
             ) => {
                 return GrowingFileWaitResult::Terminal;
             }
@@ -1218,8 +1234,20 @@ pub fn playback_stop(state: tauri::State<'_, PlaybackState>) {
 }
 
 #[tauri::command]
-pub fn playback_seek(position: f64, state: tauri::State<'_, PlaybackState>) {
+pub fn playback_seek(position: f64, state: tauri::State<'_, PlaybackState>) -> Result<(), String> {
+    if !position.is_finite() || position < 0.0 {
+        return Err("Invalid seek position".into());
+    }
+    if let Some((path, _)) = state.plugin_resource() {
+        if crate::plugin_sources::transfer_state(&path)
+            == Some(crate::plugin_sources::TransferState::Active)
+            && position > state.position_secs()
+        {
+            return Err("Seeking ahead is unavailable until the preview has downloaded".into());
+        }
+    }
     state.seek(position);
+    Ok(())
 }
 
 #[tauri::command]

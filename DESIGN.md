@@ -1,5 +1,7 @@
 # Project Design
 
+Plugin integration is now defined in [docs/plugin/readme.md](docs/plugin/readme.md) and its scope documents; these supersede the older embedded Soulseek/Discord descriptions below.
+
 This document describes the current design of the project as it exists in the repository today. It is intentionally descriptive rather than aspirational: it captures the actual architecture, runtime boundaries, state ownership, and known tradeoffs.
 
 ## 1. Purpose
@@ -49,7 +51,7 @@ Frontend:
 - [src/composables/useTrackActions.ts](src/composables/useTrackActions.ts): the track actions (like, edit, menus, opening artist and album pages) that App.vue provides to track lists.
 - [src/composables/useHistoryNavigation.ts](src/composables/useHistoryNavigation.ts): back/forward navigation kept in the browser history, and transient history entries for UI state that back should undo.
 - [src/composables/useTheme.ts](src/composables/useTheme.ts): theme mode and accent preferences, and animated theme switches.
-- [src/composables/useAppearance.ts](src/composables/useAppearance.ts) and [src/composables/useDiscordPresence.ts](src/composables/useDiscordPresence.ts): appearance preferences and the Discord Rich Presence adapter.
+- [src/composables/useAppearance.ts](src/composables/useAppearance.ts) and [src/plugins/host.ts](src/plugins/host.ts): appearance preferences and the Discord Rich Presence adapter.
 - [src/api.ts](src/api.ts): the start of a frontend API layer (artist and album queries).
 - [src/utils/](src/utils/): formatting, rarity helpers, special artist names, cover URLs and placeholder cover gradients, color math.
 - [src/icons.ts](src/icons.ts) and [src/types/settings.ts](src/types/settings.ts): the icon registry, and the settings sections and types.
@@ -65,11 +67,11 @@ Backend, one module per subsystem:
 - [src-tauri/src/audio.rs](src-tauri/src/audio.rs): output device enumeration and auxiliary audio settings state.
 - [src-tauri/src/discovery.rs](src-tauri/src/discovery.rs): mDNS peer discovery.
 - [src-tauri/src/sync.rs](src-tauri/src/sync.rs): peer HTTP server, file transfer, metadata merge, and remote playback.
-- [src-tauri/src/soulseek.rs](src-tauri/src/soulseek.rs): Soulseek search, preview, and download.
+- [src-tauri/src/plugins/soulseek.rs](src-tauri/src/plugins/soulseek.rs): Soulseek search, preview, and download.
 - [src-tauri/src/identify.rs](src-tauri/src/identify.rs): audio fingerprinting and AcoustID lookup.
 - [src-tauri/src/import.rs](src-tauri/src/import.rs): drag-and-drop import into the library.
 - [src-tauri/src/about.rs](src-tauri/src/about.rs): version info and updates.
-- [src-tauri/src/discord_presence.rs](src-tauri/src/discord_presence.rs): optional Discord Rich Presence.
+- [src-tauri/src/plugins/discord.rs](src-tauri/src/plugins/discord.rs): optional Discord Rich Presence.
 - [src-tauri/src/demo.rs](src-tauri/src/demo.rs): the `--demo` mode library.
 
 Android:
@@ -274,7 +276,7 @@ This keeps the rendering code separate while the rest of the visual chrome remai
 - Library shows the data folder, indexing progress, a Show duplicates switch, and access to duplicate review and identification. The switch controls the existing shared duplicate filter.
 - About includes a Licenses link opening `public/licenses/third-party.txt` in the GitHub repository default branch. The file must be published with the app source for the link to resolve. `pnpm build` runs `scripts/generate-licenses.mjs` to collect installed npm runtime dependencies and Cargo dependencies for the build target into `public/licenses/third-party.txt`. Bundled license and notice files are preserved; packages declaring only an SPDX identifier use standard texts from `spdx-license-list`. Packages with no license metadata are explicitly identified. `LICENSES_TARGET` can override the target, otherwise the Tauri target, Cargo target, or Rust host is used. Run `pnpm licenses:generate` to refresh the file for development.
 - Playback shares audio output and sample rate state with the footer device picker.
-- Discord RPC has its own settings section for the optional Discord Rich Presence integration. It is disabled by default and stored per device. The frontend adapter sends playback snapshots to an isolated native worker with throttled updates and reconnects. The `discord-rpc` Cargo feature (on by default, desktop only) can omit the implementation and dependency; `DISCORD_CLIENT_ID` overrides the built-in public application ID at compile time ([src-tauri/src/discord_presence.rs](src-tauri/src/discord_presence.rs)).
+- Discord RPC has its own settings section for the optional Discord Rich Presence integration. It is disabled by default and stored per device. The frontend adapter sends playback snapshots to an isolated native worker with throttled updates and reconnects. The `discord-rpc` Cargo feature (on by default, desktop only) can omit the implementation and dependency; `DISCORD_CLIENT_ID` overrides the built-in public application ID at compile time ([src-tauri/src/plugins/discord.rs](src-tauri/src/plugins/discord.rs)).
 - Devices & Sync edits this device identity and controls the existing LAN sync setting. Peer management stays in the Devices view.
 - Soulseek owns credential drafts with explicit Save and Cancel actions. Device and Soulseek forms read the latest saved configuration before writing, so saving one form preserves the other settings.
 - Appearance holds the theme mode, accent color, header gradient and tint (through `useTheme`, built from the generic `SegmentedControl`, `SwatchPicker`, `CustomColorSwatch` and `RangeSlider` components) and the motion preferences, all device-local in localStorage. Motion preferences go through [src/composables/useAppearance.ts](src/composables/useAppearance.ts). Reduced motion also respects the system preference, stops beat and cover motion, and uses a still cover. The 3D cover and rarity animations can be controlled independently.
@@ -564,7 +566,7 @@ This subsystem is intentionally asynchronous and event-driven because identifica
 
 ### 11.1 Soulseek
 
-[src-tauri/src/soulseek.rs](src-tauri/src/soulseek.rs) wraps the vendored soulseek-rs client, logging in with the credentials from device settings:
+[src-tauri/src/plugins/soulseek.rs](src-tauri/src/plugins/soulseek.rs) wraps the vendored soulseek-rs client, logging in with the credentials from device settings:
 
 - Search returns audio files, each with a cover file from the same remote folder when there is one.
 - Preview downloads into `.soulseek-preview-cache` and starts playback while the file is still growing. A finished preview can be promoted into the library.

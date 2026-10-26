@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import AppIcon from './AppIcon.vue';
+import type { UiContribution } from '../plugins/types';
 defineProps<{
+  pluginPages: UiContribution[];
   activeNav: string;
   playlistTab: "regular" | "smart";
   open: boolean;
@@ -10,6 +12,7 @@ defineProps<{
 }>();
 
 const emit = defineEmits<{
+  navigatePlugin: [route: string];
   close: [];
   navigateHome: [];
   navigateSearch: [];
@@ -62,6 +65,7 @@ const emit = defineEmits<{
         <span v-else-if="peersCount" class="peer-badge">{{ peersCount }}</span>
       </a>
     </nav>
+    <nav v-if="pluginPages.length" aria-label="Plugins"><a v-for="page in pluginPages" :key="page.key" class="nav-item" href="#" :class="{ active: activeNav === `plugins/${page.pluginId}/${page.id}` }" @click.prevent="emit('navigatePlugin', `plugins/${page.pluginId}/${page.id}`)"><AppIcon name="settings" :size="22" />{{ page.label }}</a></nav>
     <nav class="sidebar-settings">
       <a class="nav-item" :class="{ active: activeNav === 'settings' || activeNav.startsWith('settings/') || activeNav === 'about' }" href="#" @click.prevent="emit('navigateSettings')">
         <AppIcon name="settings" :size="22" />

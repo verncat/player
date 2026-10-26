@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use tauri::Emitter;
 use walkdir::WalkDir;
 
+use crate::import_paths::{build_metadata_based_path, extract_audio_metadata};
 use crate::library::{index_file, is_audio_extension, is_cue_extension, LibraryState};
-use crate::soulseek::{build_metadata_based_path, extract_audio_metadata};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

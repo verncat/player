@@ -7,6 +7,7 @@ import ts from 'typescript';
 const compile = source => ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const helpers = {};
 new Function('exports', compile(readFileSync(new URL('../src/utils/playbackSession.ts', import.meta.url), 'utf8')))(helpers);
+new Function('exports', compile(readFileSync(new URL('../src/plugins/tracks.ts', import.meta.url), 'utf8')))(helpers);
 const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
 const parsed = ts.createSourceFile('App.ts', app, ts.ScriptTarget.Latest, true);
 const functions = ['restorePlaybackSession', 'refreshPlaybackState', 'applyRemotePlaybackStatus'];
@@ -19,7 +20,7 @@ const saved = overrides => ({ version: 1, libraryDir: '/music', sourceId: 'sessi
   pagedSource: null, shuffled: true, repeat: 1, remotePeer: null, ...overrides });
 function harness({ cache = saved(), playing = true, sourceId = 'session-1', active = track(900, true), sessionRequest, remoteStatus } = {}) {
   const calls = [];
-  const values = ['libraryDataDir', 'nativePlaybackSourceId', 'volume', 'isPlaying', 'currentTime', 'duration', 'nowPlaying', 'queueSource', 'queueLibraryTracks', 'queuePlaylistTracks', 'queue', 'queueSourceIndex', 'queuedPagedSource', 'isShuffled', 'repeatMode', 'recentTracks', 'smartPlaylists', 'nativeSampleRate', 'remoteOutputPeer', 'deviceMenuError', 'seekPreviewPos'];
+  const values = ['libraryDataDir', 'nativePlaybackSourceId', 'volume', 'isPlaying', 'currentTime', 'duration', 'nowPlaying', 'queueSource', 'queueLibraryTracks', 'queuePlaylistTracks', 'queuePluginTracks', 'queue', 'queueSourceIndex', 'queuedPagedSource', 'isShuffled', 'repeatMode', 'recentTracks', 'smartPlaylists', 'nativeSampleRate', 'remoteOutputPeer', 'deviceMenuError', 'seekPreviewPos'];
   const state = Object.fromEntries(values.map(name => [name, { value: null }]));
   Object.assign(state, { playbackRestoring: { value: true }, playbackTransitionSequence: 0, playbackRestoreDisposed: false, ticks: 0, notifications: 0, errors: [], ...helpers });
   state.queue.value = []; state.smartPlaylists.value = []; state.remoteOutputPeer.value = null;
@@ -33,7 +34,7 @@ function harness({ cache = saved(), playing = true, sourceId = 'session-1', acti
   state.lastRemoteBeatSeq = 0;
   const status = () => ({ source_id: sourceId, playing, finished: false, position: 42, duration: 200, source_sample_rate: 96000 });
   const session = { library_dir: '/music', playback: status(), volume: 0.38,
-    source: sourceId ? { path: `/music/${active?.path}`, follow_growing: false, preview: null } : null,
+    source: sourceId ? { path: `/music/${active?.path}`, follow_growing: false, resource: null } : null,
     track: active, tracks: [track(900, true), track(901), track(902)] };
   state.invoke = async (command, args) => {
     calls.push([command, args]);
@@ -123,4 +124,17 @@ test('bad cache and a cache for a different library or engine session are ignore
   assert.equal(helpers.matchesPlaybackContext(context, '/other', 'session-1', 900), false);
   assert.equal(helpers.matchesPlaybackContext(context, '/music', 'session-2', 900), false);
   assert.equal(helpers.matchesPlaybackContext(context, '/music', 'session-1', 901), false);
+});
+
+
+test('reload restores a plugin resource from native metadata without restarting its decoder', async () => {
+  const { state, calls, session } = harness({ active: null, cache: null });
+  session.source = { path: '/cache/song.flac', follow_growing: true, resource: { pluginId: 'example.radio', resourceId: 'song', title: 'External song', artist: 'Artist', album: '', durationSeconds: 200, coverHash: null } };
+  await state.restorePlaybackSession();
+  assert.equal(state.nowPlaying.value.title, 'External song');
+  assert.equal(state.nowPlaying.value.plugin_source.resource.pluginId, 'example.radio');
+  assert.equal(state.queueSource.value, 'plugin');
+  assert.equal(state.currentTime.value, 42);
+  assert.deepEqual(calls.map(([command]) => command), ['playback_session', 'playback_status']);
+  assert.equal(state.errors.length, 0);
 });

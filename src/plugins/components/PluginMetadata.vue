@@ -1,0 +1,34 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import type { InstallSource, PluginManifest } from '../types';
+const props = defineProps<{ manifest: PluginManifest; source?: InstallSource | null }>();
+const error = ref('');
+const author = computed(() => typeof props.manifest.author === 'string'
+  ? { name: props.manifest.author, url: undefined } : props.manifest.author);
+function webLink(value?: string | null) {
+  try {
+    const url = new URL(value || '');
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : undefined;
+  } catch { return undefined; }
+}
+async function open(url: string) {
+  try { error.value = ''; await openUrl(url); } catch { error.value = 'Could not open this link.'; }
+}
+</script>
+<template>
+  <div class="plugin-metadata">
+    <span v-if="author">By <a v-if="webLink(author.url)" :href="webLink(author.url)" @click.prevent="open(webLink(author.url)!)">{{ author.name }}</a><span v-else>{{ author.name }}</span></span>
+    <span class="plugin-links">
+      <a v-if="webLink(manifest.repository)" :href="webLink(manifest.repository)" @click.prevent="open(webLink(manifest.repository)!)">Repository</a>
+      <a v-if="webLink(manifest.homepage) && manifest.homepage !== manifest.repository" :href="webLink(manifest.homepage)" @click.prevent="open(webLink(manifest.homepage)!)">Website</a>
+    </span>
+    <span v-if="source && webLink(source.url)" class="plugin-origin">Source: <a :href="webLink(source.url)" @click.prevent="open(webLink(source.url)!)">{{ source.url }}</a><span v-if="source.revision"> · commit {{ source.revision.slice(0, 12) }}</span></span>
+    <span v-if="error" role="alert">{{ error }}</span>
+  </div>
+</template>
+<style scoped>
+.plugin-metadata { display: grid; gap: 6px; color: var(--color-text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.plugin-links { display: flex; gap: 14px; flex-wrap: wrap; }.plugin-links:empty { display: none; }
+.plugin-metadata a { color: var(--color-text-muted); text-decoration: underline; text-underline-offset: 3px; }.plugin-metadata a:hover { color: var(--color-text); }
+</style>

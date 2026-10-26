@@ -241,7 +241,7 @@ Main source files:
 - `src-tauri/src/audio_codecs.rs`: the codecs playback decodes with, including Opus through libopus.
 - `src-tauri/src/discovery.rs`: peer discovery.
 - `src-tauri/src/sync.rs`: sync protocol, peer HTTP server, remote playback.
-- `src-tauri/src/soulseek.rs`: Soulseek integration.
+- `src-tauri/src/plugins/soulseek.rs`: Soulseek integration.
 
 For a deeper architecture write-up, see [DESIGN.md](./DESIGN.md).
 
@@ -338,3 +338,8 @@ pnpm android:build-deploy
 This project is actively evolving. The architecture is intentionally pragmatic: some surfaces are already well-isolated, while others are still consolidated to keep product iteration fast.
 
 If you want the full descriptive architecture document, read [DESIGN.md](./DESIGN.md).
+
+### Plugin development
+
+See [the plugin guide](docs/plugin/readme.md) for package installation, the SDK,
+UI contributions, native capabilities and development scopes.

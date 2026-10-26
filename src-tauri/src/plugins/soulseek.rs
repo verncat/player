@@ -1,14 +1,14 @@
 use crate::library::{DeviceSettings, LibraryState};
-use lofty::prelude::{Accessor, TaggedFileExt};
-use lofty::probe::Probe;
 use serde::{Deserialize, Serialize};
 use soulseek_rs::types::Download;
 use soulseek_rs::{Client, DownloadCanceller, DownloadHandle, DownloadStatus, File};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "ogg", "opus", "aac", "m4a", "wav", "wv", "ape", "alac", "aiff",
@@ -18,32 +18,12 @@ const COVER_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 
 const COVER_BASENAME_PRIORITY: &[&str] = &["cover", "folder", "front", "album", "art"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreviewTransferState {
-    Active,
-    Completed,
-    Failed,
-    TimedOut,
-    Cancelled,
-}
-
-static PREVIEW_TRANSFERS: LazyLock<Mutex<HashMap<String, PreviewTransferState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-pub fn preview_transfer_state(path: &Path) -> Option<PreviewTransferState> {
-    PREVIEW_TRANSFERS
-        .lock()
-        .unwrap()
-        .get(&path.to_string_lossy().to_string())
-        .copied()
-}
-
-fn set_preview_transfer_state(path: &Path, state: PreviewTransferState) {
-    PREVIEW_TRANSFERS
-        .lock()
-        .unwrap()
-        .insert(path.to_string_lossy().to_string(), state);
-}
+use crate::import_paths::{
+    build_metadata_based_path, extract_audio_metadata, sanitize_path_segment,
+};
+use crate::plugin_sources::{
+    set_transfer_state as set_preview_transfer_state, TransferState as PreviewTransferState,
+};
 
 #[derive(Clone, PartialEq, Eq)]
 struct SoulseekConfig {
@@ -58,34 +38,120 @@ struct SoulseekInner {
 }
 
 pub struct SoulseekState {
+    config: Mutex<Option<DeviceSettings>>,
+    cache_root: PathBuf,
+    epoch: AtomicU64,
+    preview_paths: Mutex<HashMap<String, PathBuf>>,
     inner: Arc<Mutex<SoulseekInner>>,
     preview_cancellers: Arc<Mutex<HashMap<String, DownloadCanceller>>>,
 }
 
 impl SoulseekState {
-    pub fn new() -> Self {
+    pub fn new(cache_root: PathBuf) -> Self {
         Self {
+            cache_root,
+            config: Mutex::new(None),
+            epoch: AtomicU64::new(0),
+            preview_paths: Mutex::new(HashMap::new()),
             inner: Arc::new(Mutex::new(SoulseekInner::default())),
             preview_cancellers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    pub fn configure(&self, settings: DeviceSettings) {
+        *self.config.lock().unwrap() = Some(settings);
+    }
+    pub fn deactivate(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        for (_, cancel) in self.preview_cancellers.lock().unwrap().drain() {
+            cancel.cancel();
+        }
+        self.inner.lock().unwrap().client = None;
+        if let Some(config) = self.config.lock().unwrap().as_mut() {
+            config.soulseek_enabled = false;
+        }
+    }
+    fn settings(&self, library: &LibraryState) -> Result<DeviceSettings, String> {
+        if let Some(config) = self.config.lock().unwrap().clone() {
+            Ok(config)
+        } else {
+            library.get_device_settings().map_err(|e| e.to_string())
+        }
+    }
+    fn check_epoch(&self, epoch: u64) -> Result<(), String> {
+        if self.epoch.load(Ordering::SeqCst) != epoch {
+            Err("CANCELLED: Soulseek activation ended".into())
+        } else {
+            Ok(())
+        }
+    }
+    pub fn cache_path(
+        &self,
+        _library: &LibraryState,
+        username: &str,
+        filename: &str,
+    ) -> Result<PathBuf, String> {
+        self.preview_paths
+            .lock()
+            .unwrap()
+            .get(&Self::preview_key(username, filename))
+            .cloned()
+            .ok_or("Preview has not been downloaded".into())
+    }
     fn preview_key(username: &str, filename: &str) -> String {
         format!("{}\u{0}{}", username, filename)
     }
 
-    fn register_preview_canceller(&self, username: &str, filename: &str, canceler: DownloadCanceller) {
-        self.preview_cancellers
-            .lock()
-            .unwrap()
-            .insert(Self::preview_key(username, filename), canceler);
+    fn register_preview_canceller(
+        &self,
+        username: &str,
+        filename: &str,
+        transfer_id: &str,
+        canceler: DownloadCanceller,
+        epoch: u64,
+    ) -> Result<(), String> {
+        let mut registry = self.preview_cancellers.lock().unwrap();
+        if let Err(error) = self.check_epoch(epoch) {
+            canceler.cancel();
+            return Err(error);
+        }
+        registry.insert(
+            format!(
+                "{}\u{0}{}",
+                Self::preview_key(username, filename),
+                transfer_id
+            ),
+            canceler,
+        );
+        Ok(())
+    }
+    fn cancellation_scope(
+        &self,
+        username: &str,
+        filename: &str,
+        canceler: DownloadCanceller,
+        epoch: u64,
+    ) -> Result<CancellationScope, String> {
+        let id = format!(
+            "aux-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        self.register_preview_canceller(username, filename, &id, canceler.clone(), epoch)?;
+        Ok(CancellationScope {
+            registry: self.preview_canceller_registry(),
+            key: format!("{}\u{0}{}", Self::preview_key(username, filename), id),
+            canceler,
+        })
     }
 
     fn take_preview_canceller(&self, username: &str, filename: &str) -> Option<DownloadCanceller> {
-        self.preview_cancellers
-            .lock()
-            .unwrap()
-            .remove(&Self::preview_key(username, filename))
+        let prefix = format!("{}\u{0}", Self::preview_key(username, filename));
+        let mut map = self.preview_cancellers.lock().unwrap();
+        let key = map.keys().find(|k| k.starts_with(&prefix)).cloned()?;
+        map.remove(&key)
     }
 
     fn preview_canceller_registry(&self) -> Arc<Mutex<HashMap<String, DownloadCanceller>>> {
@@ -135,6 +201,35 @@ impl SoulseekState {
             }
         })
     }
+}
+
+struct CancellationScope {
+    registry: Arc<Mutex<HashMap<String, DownloadCanceller>>>,
+    key: String,
+    canceler: DownloadCanceller,
+}
+impl Drop for CancellationScope {
+    fn drop(&mut self) {
+        self.canceler.cancel();
+        self.registry.lock().unwrap().remove(&self.key);
+    }
+}
+fn validate_remote_filename(filename: &str) -> Result<(), String> {
+    let basename = soulseek_basename(filename);
+    if filename.len() > 8192
+        || filename.contains('\0')
+        || basename != sanitize_path_segment(basename)
+    {
+        return Err("Invalid remote filename".into());
+    }
+    Ok(())
+}
+fn assert_generation(app: &tauri::AppHandle, generation: u64) -> Result<(), String> {
+    app.state::<crate::plugins::PluginState>().authorize(
+        "player.soulseek",
+        generation,
+        "native.soulseek",
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -237,7 +332,7 @@ pub fn soulseek_get_status(
     state: tauri::State<'_, SoulseekState>,
     library: tauri::State<'_, LibraryState>,
 ) -> Result<SoulseekStatus, String> {
-    let settings = library.get_device_settings().map_err(|e| e.to_string())?;
+    let settings = state.settings(&library)?;
     let configured = SoulseekState::desired_config(&settings).is_some();
     let active_session = state.maybe_client_for_settings(&settings).is_some();
     let username = if settings.soulseek_username.trim().is_empty() {
@@ -259,18 +354,24 @@ pub async fn soulseek_search(
     query: String,
     state: tauri::State<'_, SoulseekState>,
     library: tauri::State<'_, LibraryState>,
+    app: tauri::AppHandle,
+    generation: u64,
 ) -> Result<Vec<SoulseekSearchResult>, String> {
+    assert_generation(&app, generation)?;
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
 
-    let settings = library.get_device_settings().map_err(|e| e.to_string())?;
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    let settings = state.settings(&library)?;
     let Some(client) = state.maybe_client_for_settings(&settings) else {
         return Ok(Vec::new());
     };
 
     client.connect().await.map_err(|e| e.to_string())?;
+    state.check_epoch(epoch)?;
+    assert_generation(&app, generation)?;
     let results = client
         .search(query, Duration::from_secs(10))
         .await
@@ -285,7 +386,14 @@ pub async fn soulseek_download(
     app: tauri::AppHandle,
     state: tauri::State<'_, SoulseekState>,
     library: tauri::State<'_, LibraryState>,
+    generation: u64,
 ) -> Result<String, String> {
+    assert_generation(&app, generation)?;
+    validate_remote_filename(&request.filename)?;
+    if let Some(cover) = &request.cover_filename {
+        validate_remote_filename(cover)?;
+    }
+
     eprintln!(
         "[soulseek] download request: user={} remote={} size={} cover={:?} cover_size={:?}",
         request.username,
@@ -295,7 +403,8 @@ pub async fn soulseek_download(
         request.cover_size,
     );
 
-    let settings = library.get_device_settings().map_err(|e| e.to_string())?;
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    let settings = state.settings(&library)?;
     let client = state.client_for_download(&settings)?;
     eprintln!(
         "[soulseek] connecting download session: user={} remote={}",
@@ -309,10 +418,12 @@ pub async fn soulseek_download(
         e.to_string()
     })?;
 
+    state.check_epoch(epoch)?;
+    assert_generation(&app, generation)?;
     // Use temporary download directory for organizing files after download
-    let data_dir = library.data_dir();
-    let temp_download_root = data_dir.join(".soulseek-temp");
-    let download_dir = build_download_directory(&temp_download_root, &request.username, &request.filename);
+    let temp_download_root = state.cache_root.join("downloads");
+    let download_dir =
+        build_download_directory(&temp_download_root, &request.username, &request.filename);
     eprintln!(
         "[soulseek] resolved local download dir: user={} remote={} local_dir={}",
         request.username,
@@ -376,6 +487,8 @@ pub async fn soulseek_download(
                 cover_filename,
                 cover_size,
                 &download_dir,
+                &state,
+                epoch,
             ) {
                 eprintln!(
                     "[soulseek] failed to queue sidecar cover for {}: {}",
@@ -395,8 +508,16 @@ pub async fn soulseek_download(
     );
 
     let data_dir_pathbuf = library.data_dir().to_path_buf();
+    state.register_preview_canceller(
+        &request.username,
+        &request.filename,
+        &transfer_id,
+        handle.cancel_handle(),
+        epoch,
+    )?;
+    let cancel_registry = state.preview_canceller_registry();
     tauri::async_runtime::spawn(monitor_download(
-        app,
+        app.clone(),
         "soulseek-download",
         transfer_id.clone(),
         download,
@@ -408,7 +529,8 @@ pub async fn soulseek_download(
             .as_ref()
             .filter(|cover| *cover != &request.filename)
             .cloned(),
-        None,
+        Some(cancel_registry),
+        generation,
     ));
 
     eprintln!(
@@ -428,19 +550,34 @@ pub async fn soulseek_preview(
     app: tauri::AppHandle,
     state: tauri::State<'_, SoulseekState>,
     library: tauri::State<'_, LibraryState>,
+    generation: u64,
 ) -> Result<String, String> {
+    assert_generation(&app, generation)?;
+    validate_remote_filename(&request.filename)?;
+    if let Some(cover) = &request.cover_filename {
+        validate_remote_filename(cover)?;
+    }
+
     eprintln!(
         "[soulseek] preview request: user={} remote={} size={}",
-        request.username,
-        request.filename,
-        request.size,
+        request.username, request.filename, request.size,
     );
 
-    let settings = library.get_device_settings().map_err(|e| e.to_string())?;
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    let settings = state.settings(&library)?;
     let client = state.client_for_download(&settings)?;
     client.connect().await.map_err(|e| e.to_string())?;
+    state.check_epoch(epoch)?;
+    assert_generation(&app, generation)?;
 
-    let preview_root = preview_cache_root(&library);
+    let preview_root = state.cache_root.join("previews").join(format!(
+        "{}-{}",
+        epoch,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
     let preview_dir = build_download_directory(&preview_root, &request.username, &request.filename);
     fs::create_dir_all(&preview_dir).map_err(|e| e.to_string())?;
 
@@ -471,6 +608,8 @@ pub async fn soulseek_preview(
                 cover_filename,
                 cover_size,
                 &preview_dir,
+                &state,
+                epoch,
             ) {
                 eprintln!(
                     "[soulseek] failed to queue preview sidecar cover for {}: {}",
@@ -480,6 +619,10 @@ pub async fn soulseek_preview(
         }
     }
 
+    state.preview_paths.lock().unwrap().insert(
+        SoulseekState::preview_key(&request.username, &request.filename),
+        local_path.clone(),
+    );
     set_preview_transfer_state(&local_path, PreviewTransferState::Active);
 
     let transfer_id = format!(
@@ -497,10 +640,12 @@ pub async fn soulseek_preview(
     state.register_preview_canceller(
         &request.username,
         &request.filename,
+        &transfer_id,
         preview_canceller,
-    );
+        epoch,
+    )?;
     tauri::async_runtime::spawn(monitor_download(
-        app,
+        app.clone(),
         "soulseek-preview",
         transfer_id.clone(),
         download,
@@ -513,6 +658,7 @@ pub async fn soulseek_preview(
             .filter(|cover| *cover != &request.filename)
             .cloned(),
         Some(preview_cancel_registry),
+        generation,
     ));
 
     Ok(transfer_id)
@@ -523,12 +669,12 @@ pub fn soulseek_cancel_preview(
     request: SoulseekCancelPreviewRequest,
     state: tauri::State<'_, SoulseekState>,
 ) -> Result<bool, String> {
-    let Some(canceller) = state.take_preview_canceller(&request.username, &request.filename) else {
-        return Ok(false);
-    };
-
-    canceller.cancel();
-    Ok(true)
+    let mut cancelled = false;
+    while let Some(canceller) = state.take_preview_canceller(&request.username, &request.filename) {
+        canceller.cancel();
+        cancelled = true;
+    }
+    Ok(cancelled)
 }
 
 #[tauri::command]
@@ -545,10 +691,16 @@ pub fn soulseek_play_preview(
         ));
     }
 
-    playback.play_track_source(crate::library::TrackSource::SoulseekPreview {
-        username: request.username,
-        filename: request.filename,
-        size: request.size,
+    playback.play_track_source(crate::library::TrackSource::GrowingFile {
+        resource: crate::plugin_sources::ResourceIdentity {
+            plugin_id: "player.soulseek".into(),
+            resource_id: serde_json::to_string(&(request.username, request.filename)).unwrap(),
+            title: "Soulseek preview".into(),
+            artist: String::new(),
+            album: String::new(),
+            duration_seconds: None,
+            cover_hash: None,
+        },
         cache_path,
     })
 }
@@ -562,7 +714,10 @@ pub fn soulseek_promote_preview(
     use tauri::Emitter;
 
     let preview_path = PathBuf::from(&request.local_path);
-    if preview_path.starts_with(library.data_dir()) && preview_path.exists() {
+    if preview_path.starts_with(library.data_dir())
+        && !preview_path.starts_with(preview_cache_root(&library))
+        && preview_path.exists()
+    {
         let _ = app.emit("library-changed", ());
         return Ok(request.local_path);
     }
@@ -575,14 +730,18 @@ pub fn soulseek_promote_preview(
     }
 
     let source_dir = preview_path.parent().map(Path::to_path_buf);
-    let final_path = reorganize_downloaded_file(&preview_path, library.data_dir())?;
+    let staging_copy = preview_path.with_extension(format!(
+        "import-{}",
+        preview_path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+    ));
+    fs::copy(&preview_path, &staging_copy).map_err(|e| e.to_string())?;
+    let final_path = reorganize_downloaded_file(&staging_copy, library.data_dir())?;
 
     if let (Some(source_dir), Some(target_dir)) = (source_dir.as_deref(), final_path.parent()) {
-        move_downloaded_sidecar_cover(
-            source_dir,
-            target_dir,
-            request.cover_filename.as_deref(),
-        )?;
+        move_downloaded_sidecar_cover(source_dir, target_dir, request.cover_filename.as_deref())?;
     }
 
     {
@@ -603,17 +762,29 @@ pub async fn soulseek_fetch_cover(
     request: SoulseekCoverRequest,
     state: tauri::State<'_, SoulseekState>,
     library: tauri::State<'_, LibraryState>,
+    app: tauri::AppHandle,
+    generation: u64,
 ) -> Result<Option<String>, String> {
+    assert_generation(&app, generation)?;
+    validate_remote_filename(&request.cover_filename)?;
+    if request.cover_size > 32 * 1024 * 1024 {
+        return Err("Cover exceeds 32 MiB".into());
+    }
+
     if request.cover_size == 0 {
         return Ok(None);
     }
 
-    let settings = library.get_device_settings().map_err(|e| e.to_string())?;
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    let settings = state.settings(&library)?;
     let client = state.client_for_download(&settings)?;
     client.connect().await.map_err(|e| e.to_string())?;
+    state.check_epoch(epoch)?;
+    assert_generation(&app, generation)?;
 
-    let cache_root = library.data_dir().join(".soulseek-cover-cache");
-    let download_dir = build_download_directory(&cache_root, &request.username, &request.cover_filename);
+    let cache_root = state.cache_root.join("covers");
+    let download_dir =
+        build_download_directory(&cache_root, &request.username, &request.cover_filename);
     fs::create_dir_all(&download_dir).map_err(|e| e.to_string())?;
 
     let local_path = download_dir.join(soulseek_basename(&request.cover_filename));
@@ -642,6 +813,12 @@ pub async fn soulseek_fetch_cover(
         )
         .map_err(|e| e.to_string())?;
 
+    let _scope = state.cancellation_scope(
+        &request.username,
+        &request.cover_filename,
+        handle.cancel_handle(),
+        epoch,
+    )?;
     while let Some(status) = handle.recv().await {
         match status {
             DownloadStatus::QueuedLocally
@@ -653,9 +830,7 @@ pub async fn soulseek_fetch_cover(
             DownloadStatus::Failed => {
                 eprintln!(
                     "[soulseek] cover preview download failed: user={} cover={} destination_dir={}",
-                    download.username,
-                    download.filename,
-                    download.download_directory
+                    download.username, download.filename, download.download_directory
                 );
                 return Ok(None);
             }
@@ -810,44 +985,6 @@ fn soulseek_basename(filename: &str) -> &str {
         .unwrap_or(filename)
 }
 
-pub(crate) fn sanitize_path_segment(segment: &str) -> String {
-    let sanitized: String = segment
-        .chars()
-        .map(|ch| match ch {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            value if value.is_control() => '_',
-            value => value,
-        })
-        .collect();
-
-    let sanitized = sanitized.trim().trim_matches('.').trim();
-    if sanitized.is_empty() {
-        "_".to_string()
-    } else {
-        sanitized.to_string()
-    }
-}
-
-/// Builds a download path based on metadata (Artist/Album structure).
-/// - If both artist and album exist: root/[Artist]/[Album]
-/// - If only artist exists: root/[Artist]
-/// - Otherwise: root
-pub(crate) fn build_metadata_based_path(root: &Path, artist: Option<&str>, album: Option<&str>) -> PathBuf {
-    let mut path = root.to_path_buf();
-    
-    if let Some(artist_name) = artist {
-        let sanitized_artist = sanitize_path_segment(artist_name);
-        path.push(&sanitized_artist);
-        
-        if let Some(album_name) = album {
-            let sanitized_album = sanitize_path_segment(album_name);
-            path.push(&sanitized_album);
-        }
-    }
-    
-    path
-}
-
 fn build_download_directory(root: &Path, username: &str, remote_filename: &str) -> PathBuf {
     let mut directory = root.join(sanitize_path_segment(username));
     let mut segments: Vec<&str> = remote_filename
@@ -866,39 +1003,19 @@ fn build_download_directory(root: &Path, username: &str, remote_filename: &str) 
     directory
 }
 
-/// Extracts artist and album metadata from an audio file.
-pub(crate) fn extract_audio_metadata(file_path: &Path) -> (Option<String>, Option<String>) {
-    match Probe::open(file_path) {
-        Ok(probe) => {
-            match probe.read() {
-                Ok(tagged) => {
-                    if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
-                        let artist = tag.artist().as_deref().map(|s| s.to_owned());
-                        let album = tag.album().as_deref().map(|s| s.to_owned());
-                        return (artist, album);
-                    }
-                }
-                Err(_) => {}
-            }
-        }
-        Err(_) => {}
-    }
-    (None, None)
-}
-
 /// Reorganizes a downloaded file to its final location based on metadata.
 /// Moves file from its temporary download location to a metadata-based path.
-/// 
+///
 /// Path structure:
 /// - If both artist and album exist: data_dir/[Artist]/[Album]/filename
 /// - If only artist exists: data_dir/[Artist]/filename
 /// - Otherwise: data_dir/filename
-fn reorganize_downloaded_file(
-    file_path: &Path,
-    data_dir: &Path,
-) -> Result<PathBuf, String> {
+fn reorganize_downloaded_file(file_path: &Path, data_dir: &Path) -> Result<PathBuf, String> {
     if !file_path.exists() {
-        return Err(format!("Downloaded file not found: {}", file_path.display()));
+        return Err(format!(
+            "Downloaded file not found: {}",
+            file_path.display()
+        ));
     }
 
     // Extract metadata
@@ -1020,6 +1137,8 @@ fn queue_sidecar_cover_download(
     cover_filename: &str,
     cover_size: u64,
     download_dir: &Path,
+    state: &SoulseekState,
+    epoch: u64,
 ) -> Result<(), String> {
     let destination = download_dir.join(soulseek_basename(cover_filename));
     if destination.exists() {
@@ -1061,7 +1180,12 @@ fn queue_sidecar_cover_download(
         destination.display()
     );
 
-    tauri::async_runtime::spawn(monitor_aux_download(download, handle));
+    let scope =
+        state.cancellation_scope(username, cover_filename, handle.cancel_handle(), epoch)?;
+    tauri::async_runtime::spawn(async move {
+        let _scope = scope;
+        monitor_aux_download(download, handle).await;
+    });
     Ok(())
 }
 
@@ -1082,16 +1206,13 @@ async fn monitor_aux_download(download: Download, mut handle: DownloadHandle) {
             DownloadStatus::QueuedLocally => {
                 eprintln!(
                     "[soulseek] sidecar cover queued locally: user={} cover={}",
-                    download.username,
-                    download.filename
+                    download.username, download.filename
                 );
             }
             DownloadStatus::QueuedRemotely { place } => {
                 eprintln!(
                     "[soulseek] sidecar cover queued remotely: user={} cover={} place={:?}",
-                    download.username,
-                    download.filename,
-                    place
+                    download.username, download.filename, place
                 );
             }
             DownloadStatus::InProgress {
@@ -1122,27 +1243,21 @@ async fn monitor_aux_download(download: Download, mut handle: DownloadHandle) {
             DownloadStatus::Failed => {
                 eprintln!(
                     "[soulseek] sidecar cover failed: user={} cover={} destination_dir={}",
-                    download.username,
-                    download.filename,
-                    download.download_directory
+                    download.username, download.filename, download.download_directory
                 );
                 break;
             }
             DownloadStatus::TimedOut => {
                 eprintln!(
                     "[soulseek] sidecar cover timed out: user={} cover={} destination_dir={}",
-                    download.username,
-                    download.filename,
-                    download.download_directory
+                    download.username, download.filename, download.download_directory
                 );
                 break;
             }
             DownloadStatus::Cancelled => {
                 eprintln!(
                     "[soulseek] sidecar cover cancelled: user={} cover={} destination_dir={}",
-                    download.username,
-                    download.filename,
-                    download.download_directory
+                    download.username, download.filename, download.download_directory
                 );
                 break;
             }
@@ -1151,9 +1266,7 @@ async fn monitor_aux_download(download: Download, mut handle: DownloadHandle) {
 
     eprintln!(
         "[soulseek] sidecar cover monitor ended: user={} cover={} destination_dir={}",
-        download.username,
-        download.filename,
-        download.download_directory
+        download.username, download.filename, download.download_directory
     );
 }
 
@@ -1167,6 +1280,7 @@ async fn monitor_download(
     data_dir: PathBuf,
     sidecar_cover_filename: Option<String>,
     preview_cancel_registry: Option<Arc<Mutex<HashMap<String, DownloadCanceller>>>>,
+    generation: u64,
 ) {
     use tauri::Emitter;
 
@@ -1181,6 +1295,7 @@ async fn monitor_download(
         download.size
     );
 
+    let mut last_progress = std::time::Instant::now() - Duration::from_secs(1);
     while let Some(status) = handle.recv().await {
         let basename = download.filename.filename().to_string();
         let filename = download.filename.to_string();
@@ -1202,13 +1317,14 @@ async fn monitor_download(
             DownloadStatus::QueuedLocally => {
                 eprintln!(
                     "[soulseek] download status queued locally: transfer_id={} user={} remote={}",
-                    transfer_id,
-                    download.username,
-                    download.filename
+                    transfer_id, download.username, download.filename
                 );
                 event.state = "queued_local".to_string();
                 if is_preview {
-                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Active);
+                    set_preview_transfer_state(
+                        Path::new(&local_path),
+                        PreviewTransferState::Active,
+                    );
                 }
                 false
             }
@@ -1223,7 +1339,10 @@ async fn monitor_download(
                 event.state = "queued_remote".to_string();
                 event.queue_position = place;
                 if is_preview {
-                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Active);
+                    set_preview_transfer_state(
+                        Path::new(&local_path),
+                        PreviewTransferState::Active,
+                    );
                 }
                 false
             }
@@ -1246,17 +1365,17 @@ async fn monitor_download(
                 event.total_bytes = Some(total_bytes);
                 event.speed_bytes_per_sec = Some(speed_bytes_per_sec);
                 if is_preview {
-                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Active);
+                    set_preview_transfer_state(
+                        Path::new(&local_path),
+                        PreviewTransferState::Active,
+                    );
                 }
                 false
             }
             DownloadStatus::Completed => {
                 eprintln!(
                     "[soulseek] download completed: transfer_id={} user={} remote={} local_path={}",
-                    transfer_id,
-                    download.username,
-                    download.filename,
-                    local_path
+                    transfer_id, download.username, download.filename, local_path
                 );
                 event.state = "completed".to_string();
                 event.bytes_downloaded = Some(download.size);
@@ -1284,7 +1403,8 @@ async fn monitor_download(
                             event.local_path = Some(final_path_str);
                             eprintln!(
                                 "[soulseek] file reorganized successfully: {} -> {}",
-                                local_path, final_path.display()
+                                local_path,
+                                final_path.display()
                             );
                         }
                         Err(e) => {
@@ -1297,7 +1417,10 @@ async fn monitor_download(
                 }
 
                 if is_preview {
-                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Completed);
+                    set_preview_transfer_state(
+                        Path::new(&local_path),
+                        PreviewTransferState::Completed,
+                    );
                 }
                 true
             }
@@ -1312,7 +1435,10 @@ async fn monitor_download(
                 event.state = "failed".to_string();
                 event.error = Some("Download failed".to_string());
                 if is_preview {
-                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Failed);
+                    set_preview_transfer_state(
+                        Path::new(&local_path),
+                        PreviewTransferState::Failed,
+                    );
                 }
                 true
             }
@@ -1327,7 +1453,10 @@ async fn monitor_download(
                 event.state = "timed_out".to_string();
                 event.error = Some("Download timed out".to_string());
                 if is_preview {
-                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::TimedOut);
+                    set_preview_transfer_state(
+                        Path::new(&local_path),
+                        PreviewTransferState::TimedOut,
+                    );
                 }
                 true
             }
@@ -1342,12 +1471,28 @@ async fn monitor_download(
                 event.state = "cancelled".to_string();
                 event.error = Some("Download cancelled".to_string());
                 if is_preview {
-                    set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Cancelled);
+                    set_preview_transfer_state(
+                        Path::new(&local_path),
+                        PreviewTransferState::Cancelled,
+                    );
                 }
                 true
             }
         };
 
+        if event.state == "progress" && last_progress.elapsed() < Duration::from_millis(200) {
+            continue;
+        }
+        if event.state == "progress" {
+            last_progress = std::time::Instant::now();
+        }
+        crate::plugins::emit_generation_event(
+            &app,
+            "player.soulseek",
+            generation,
+            event_name,
+            serde_json::to_value(&event).unwrap_or_default(),
+        );
         if let Err(error) = app.emit(event_name, event) {
             eprintln!(
                 "[soulseek] failed to emit download event: transfer_id={} user={} remote={} error={}",
@@ -1362,20 +1507,43 @@ async fn monitor_download(
         }
     }
 
+    if is_preview
+        && crate::plugin_sources::transfer_state(Path::new(&local_path))
+            == Some(PreviewTransferState::Active)
+    {
+        set_preview_transfer_state(Path::new(&local_path), PreviewTransferState::Failed);
+        crate::plugins::emit_generation_event(
+            &app,
+            "player.soulseek",
+            generation,
+            event_name,
+            serde_json::json!({"transferId":transfer_id,"username":download.username,"filename":download.filename.to_string(),"state":"failed","error":"Transfer ended unexpectedly"}),
+        );
+    }
     eprintln!(
         "[soulseek] download monitor ended: transfer_id={} user={} remote={} destination_dir={}",
-        transfer_id,
-        download.username,
-        download.filename,
-        download.download_directory
+        transfer_id, download.username, download.filename, download.download_directory
     );
 
-    if is_preview {
+    {
         if let Some(registry) = preview_cancel_registry {
-            registry
-                .lock()
-                .unwrap()
-                .remove(&SoulseekState::preview_key(&download.username, &download.filename.to_string()));
+            registry.lock().unwrap().remove(&format!(
+                "{}\u{0}{}",
+                SoulseekState::preview_key(&download.username, &download.filename.to_string()),
+                transfer_id
+            ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn remote_basenames_cannot_escape_staging() {
+        assert!(validate_remote_filename("Artist\\Album\\song.flac").is_ok());
+        assert!(validate_remote_filename("../..").is_err());
+        assert!(validate_remote_filename("C:escape.mp3").is_err());
+        assert!(validate_remote_filename("bad\0.mp3").is_err());
     }
 }

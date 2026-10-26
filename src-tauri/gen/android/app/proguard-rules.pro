@@ -19,3 +19,11 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Tauri creates these classes and parses argument fields through reflection.
+-keep class dev.verncat.player.ApkPlugins { *; }
+-keep class dev.verncat.player.ApkBinding { *; }
+-keep class dev.verncat.player.ApkCallArgs { *; }
+-keep class dev.verncat.player.ApkDeactivateArgs { *; }
+-keep class dev.verncat.player.PluginSecrets { *; }
+-keep class dev.verncat.player.PluginSecretArgs { *; }

@@ -4,7 +4,7 @@ export interface SavedPlaybackContext {
   libraryDir: string;
   sourceId: string;
   trackId: number;
-  source: 'library' | 'playlist' | 'recent' | 'soulseek';
+  source: 'library' | 'playlist' | 'recent' | 'plugin';
   sourceIds: number[];
   queueIds: number[];
   sourceIndex: number;
@@ -24,7 +24,7 @@ export function readPlaybackContext(raw: string | null): SavedPlaybackContext | 
       && values.every(id => Number.isSafeInteger(id) && id > 0);
     if (!value || value.version !== 1 || typeof value.libraryDir !== 'string'
       || typeof value.sourceId !== 'string' || !Number.isSafeInteger(value.trackId)
-      || !['library', 'playlist', 'recent', 'soulseek'].includes(value.source)
+      || !['library', 'playlist', 'recent', 'plugin'].includes(value.source)
       || !ids(value.sourceIds) || !ids(value.queueIds) || !Number.isSafeInteger(value.sourceIndex)
       || value.sourceIndex < -1 || value.sourceIndex >= Math.max(1, value.sourceIds.length)
       || typeof value.shuffled !== 'boolean' || ![0, 1, 2].includes(value.repeat)) return null;

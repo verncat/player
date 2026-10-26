@@ -21,7 +21,11 @@
     "android:build": "pnpm tauri android build",
     "android:sign": "source ~/keys/player-keystore.env && BT=$ANDROID_HOME/build-tools/35.0.0 && $BT/zipalign -f -p 4 src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk /tmp/app-aligned.apk && $BT/apksigner sign --ks $KEYSTORE_PATH --ks-key-alias $KEYSTORE_ALIAS --ks-pass pass:$KEYSTORE_PASS --key-pass pass:$KEYSTORE_PASS --out src-tauri/gen/android/app/build/outputs/apk/universal/release/app-signed.apk /tmp/app-aligned.apk && echo 'Signed: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-signed.apk'",
     "android:deploy": "ADB_SERIAL=${ANDROID_SERIAL:-$(sh ./scripts/resolve-adb-serial.sh)} && pnpm android:sign && { adb -s \"$ADB_SERIAL\" uninstall dev.verncat.player || true; adb -s \"$ADB_SERIAL\" install src-tauri/gen/android/app/build/outputs/apk/universal/release/app-signed.apk; }",
-    "android:build-deploy": "pnpm android:build && pnpm android:deploy"
+    "android:build-deploy": "pnpm android:build && pnpm android:deploy",
+    "plugins:pack": "node ./scripts/package-plugin.mjs",
+    "plugins:android:build": "./src-tauri/gen/android/gradlew -p plugins/examples/android-native assembleDebug",
+    "test:plugins": "node --test ./tests/plugins.test.mjs",
+    "test:plugin-sdk": "tsc -p plugins/tsconfig.sdk.json"
   },
   "dependencies": {
     "@lucide/vue": "^1.59.0",

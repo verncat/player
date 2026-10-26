@@ -2,44 +2,6 @@
 export interface AudioDevice { name: string; sample_rates: number[] }
 export interface DeviceList { devices: AudioDevice[]; current: string | null; current_sample_rate: number | null }
 
-export interface SoulseekStatus {
-  enabled: boolean;
-  configured: boolean;
-  username: string | null;
-  activeSession: boolean;
-}
-
-export interface SoulseekSearchResult {
-  username: string;
-  filename: string;
-  basename: string;
-  coverFilename: string | null;
-  coverSize: number | null;
-  size: number;
-  bitrate: number | null;
-  duration: number | null;
-  sampleRate: number | null;
-  bitDepth: number | null;
-  vbr: boolean | null;
-  peerSpeed: number;
-  freeUploadSlots: number;
-  extension: string | null;
-}
-
-export interface SoulseekDownloadEvent {
-  transferId: string;
-  username: string;
-  filename: string;
-  basename: string;
-  state: string;
-  bytesDownloaded: number | null;
-  totalBytes: number | null;
-  speedBytesPerSec: number | null;
-  queuePosition: number | null;
-  localPath: string | null;
-  error: string | null;
-}
-
 export interface Track {
   id: number;
   path: string;
@@ -66,12 +28,11 @@ export interface Track {
   /** Names the track's cover for coverUrl() in utils/covers.ts; null when it
    *  has none. */
   cover_hash: string | null;
-  local_preview_path?: string | null;
-  preview_growing?: boolean;
-  soulseek_preview?: boolean;
-  soulseek_username?: string | null;
-  soulseek_filename?: string | null;
-  soulseek_size?: number | null;
+  plugin_source?: {
+    resource: import('./plugins/types').ResourceIdentity;
+    sourceToken: string;
+    generation: number;
+  };
 }
 
 export interface AlbumSummary {

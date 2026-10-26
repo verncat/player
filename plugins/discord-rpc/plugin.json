@@ -1,0 +1,34 @@
+{
+  "id": "player.discord-rpc",
+  "name": "Discord RPC",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Share your listening activity with Discord.",
+  "platforms": [
+    "macos",
+    "windows",
+    "linux"
+  ],
+  "permissions": [
+    "ui",
+    "playback.read",
+    "settings",
+    "native.discord"
+  ],
+  "contributions": [
+    {
+      "id": "general",
+      "kind": "settings",
+      "label": "Discord RPC",
+      "description": "Share your listening activity",
+      "icon": "presence"
+    }
+  ],
+  "author": {
+    "name": "Player contributors",
+    "url": "https://github.com/verncat/player/graphs/contributors"
+  },
+  "repository": "https://github.com/verncat/player",
+  "homepage": "https://github.com/verncat/player",
+  "image": "data:image/png;base64,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"
+}

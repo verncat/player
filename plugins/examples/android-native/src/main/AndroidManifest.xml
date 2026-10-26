@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="Player native example" android:allowBackup="false">
+        <meta-data android:name="dev.verncat.player.plugin.API" android:value="1" />
+        <meta-data android:name="dev.verncat.player.plugin.ID" android:value="example.android-native" />
+        <meta-data android:name="dev.verncat.player.plugin.CLASS" android:value="dev.verncat.player.example.nativeplugin.NativePlugin" />
+        <!-- Discovery marker only; Player never launches this activity. No launcher icon. -->
+        <activity android:name=".DiscoveryActivity" android:exported="true">
+            <intent-filter><action android:name="dev.verncat.player.PLUGIN" /></intent-filter>
+        </activity>
+    </application>
+</manifest>

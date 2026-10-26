@@ -1,15 +1,17 @@
 pub mod about;
 pub mod audio;
-pub mod covers;
 mod audio_codecs;
+pub mod covers;
 pub mod demo;
 pub mod discovery;
-pub mod discord_presence;
+mod file_rollback;
 pub mod identify;
 pub mod import;
+mod import_paths;
 pub mod library;
 pub mod playback;
-pub mod soulseek;
+pub mod plugin_sources;
+pub mod plugins;
 pub mod sync;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -132,6 +134,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol(covers::SCHEME, covers::handle_request);
 
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(plugins::secrets::mobile_plugin())
+        .plugin(plugins::android::mobile_plugin());
+
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_process::init())
@@ -173,10 +179,9 @@ pub fn run() {
                 .sync_enabled;
             app.manage(library);
             app.manage(audio::AudioState::new());
-            app.manage(discord_presence::DiscordPresenceState::default());
             app.manage(playback::PlaybackState::new(app.handle().clone()));
+            plugins::initialize(app.handle()).map_err(std::io::Error::other)?;
             app.manage(discovery::DiscoveryState::new());
-            app.manage(soulseek::SoulseekState::new());
             app.manage(sync::SyncState::new(sync_enabled));
             if !demo_mode {
                 // Auto-start discovery
@@ -194,6 +199,20 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            plugins::plugins_list,
+            plugins::android::plugins_android_discover,
+            plugins::plugins_diagnostics,
+            plugins::plugins_preview,
+            plugins::plugins_download,
+            plugins::plugins_install,
+            plugins::plugins_uninstall,
+            plugins::plugins_clear_cache,
+            plugins::plugins_set_enabled,
+            plugins::plugins_migrate_enabled,
+            plugins::plugin_load,
+            plugins::plugin_call,
+            plugins::plugin_play_source,
+            plugins::plugin_current_source,
             library::search_tracks,
             library::get_all_tracks,
             library::get_tracks_page,
@@ -232,14 +251,6 @@ pub fn run() {
             library::set_device_emoji,
             library::get_device_settings,
             library::set_device_settings,
-            soulseek::soulseek_get_status,
-            soulseek::soulseek_search,
-            soulseek::soulseek_fetch_cover,
-            soulseek::soulseek_download,
-            soulseek::soulseek_preview,
-            soulseek::soulseek_cancel_preview,
-            soulseek::soulseek_play_preview,
-            soulseek::soulseek_promote_preview,
             audio::get_output_devices,
             audio::set_output_device,
             audio::get_volume,
@@ -247,8 +258,6 @@ pub fn run() {
             about::about_info,
             about::about_check_updates,
             about::about_do_update,
-            discord_presence::discord_availability,
-            discord_presence::discord_update_presence,
             playback::playback_play,
             playback::playback_play_track,
             playback::playback_play_absolute,
@@ -279,8 +288,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                use tauri::Manager;
-                app.state::<discord_presence::DiscordPresenceState>().shutdown();
+                plugins::shutdown(app);
             }
         });
 }

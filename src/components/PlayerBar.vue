@@ -37,8 +37,6 @@ const props = defineProps<{
   repeatMode: number;
   currentTime: number;
   duration: number;
-  showSoulseekPreviewBuffer: boolean;
-  soulseekPreviewBufferPercent: number;
   displayProgressPercent: number;
   seeking: boolean;
   showQueueMenu: boolean;
@@ -101,7 +99,7 @@ const QUEUE_SOURCE_LABELS: Record<string, string> = {
   recent: "Recently played",
   library: "Library",
   playlist: "Playlist",
-  soulseek: "Soulseek",
+  plugin: "Plugin",
 };
 
 const ZIPPY_TOGGLE_COUNT = 5;
@@ -505,7 +503,6 @@ onUnmounted(() => {
         <div class="seek-hit" :class="{ dragging: seeking }" role="slider" :tabindex="nowPlaying && duration > 0 ? 0 : -1" aria-label="Playback position" :aria-disabled="!nowPlaying || duration <= 0" :aria-valuemin="0" :aria-valuemax="duration" :aria-valuenow="currentTime" :aria-valuetext="`${formatTime(currentTime)} of ${formatTime(duration)}`"
           @pointerdown="emit('seekStart', $event)" @pointermove="emit('seekMove', $event)" @pointerup="emit('seekEnd', $event)" @pointercancel="emit('seekEnd', $event)" @lostpointercapture="emit('seekEnd', $event)" @keydown="seekKeydown">
           <div class="bar">
-            <div v-if="showSoulseekPreviewBuffer" class="bar-buffer" :style="`width:${soulseekPreviewBufferPercent}%`" />
             <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
               <div class="bar-thumb" />
             </div>
@@ -516,6 +513,8 @@ onUnmounted(() => {
     </div>
 
     <div class="player-right">
+      <slot name="plugin-actions" />
+      <slot name="plugin-status" />
       <ResponsivePopup
         :open="showQueueMenu"
         wrapper-class="queue-menu-wrapper"
