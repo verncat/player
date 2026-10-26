@@ -2,6 +2,7 @@
 import type { UiNode } from '../types';
 import CoverImage from '../../components/CoverImage.vue';
 import { coverUrl } from '../../utils/covers';
+import '../controls.css';
 defineProps<{ node: UiNode; fields: Record<string, string | boolean>; busy: boolean }>();
 const emit = defineEmits<{ action: [action: string, payload?: Record<string, unknown>] }>();
 </script>
@@ -14,13 +15,13 @@ const emit = defineEmits<{ action: [action: string, payload?: Record<string, unk
   <label v-else-if="node.type === 'input' && node.key" class="plugin-field">
     <span>{{ node.label }}</span><input v-model="fields[node.key]" :type="node.inputType === 'password' ? 'password' : 'text'" :autocomplete="node.inputType === 'password' ? 'new-password' : 'off'" :disabled="busy" />
   </label>
-  <button v-else-if="node.type === 'button' && node.action" class="btn-secondary" :disabled="busy || node.disabled" @click="emit('action', node.action!, node.payload)">{{ node.label }}</button>
+  <button v-else-if="node.type === 'button' && node.action" class="plugin-button btn-secondary" :disabled="busy || node.disabled" @click="emit('action', node.action!, node.payload)">{{ node.label }}</button>
   <label v-else-if="node.type === 'toggle' && node.action" class="plugin-field plugin-toggle"><span>{{ node.label }}</span><input type="checkbox" :checked="Boolean(node.value)" :disabled="busy || node.disabled" @change="emit('action', node.action!, { ...node.payload, value: ($event.target as HTMLInputElement).checked })" /></label>
   <div v-else-if="node.type === 'results'" class="plugin-results">
     <div v-for="item in node.items || []" :key="item.id" class="plugin-result">
       <CoverImage class="track-cover-sm" :src="coverUrl(item.coverHash, 'small')" />
       <div class="plugin-result-copy"><strong>{{ item.title }}</strong><span>{{ item.subtitle }}</span><span v-if="item.status">{{ item.status }}</span></div>
-      <div class="plugin-result-actions"><button v-for="action in item.actions || []" :key="action.id" class="btn-secondary" :disabled="busy || action.disabled" @click="emit('action', action.id, { resourceId: item.id })">{{ action.label }}</button></div>
+      <div class="plugin-result-actions"><button v-for="action in item.actions || []" :key="action.id" class="plugin-button btn-secondary" :disabled="busy || action.disabled" @click="emit('action', action.id, { resourceId: item.id })">{{ action.label }}</button></div>
     </div>
   </div>
 </template>

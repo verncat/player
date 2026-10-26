@@ -6,6 +6,7 @@ import type { AndroidPluginDiscovery, PluginDownload, PluginPreview } from '../t
 import SettingsToggle from '../../components/SettingsToggle.vue';
 import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
+import '../controls.css';
 
 const host = usePluginHost();
 const error = ref('');
@@ -95,30 +96,30 @@ async function uninstall(id: string) {
       <p v-if="!plugin.supported">Unavailable on this platform.</p>
       <p v-else-if="plugin.enabled && !host.running.value.includes(plugin.manifest.id)">Not running</p>
       <p v-if="host.errors.value[plugin.manifest.id]" class="error" role="alert">{{ host.errors.value[plugin.manifest.id] }}</p>
-      <button v-if="(plugin.enabled || host.errors.value[plugin.manifest.id]) && plugin.supported && !host.running.value.includes(plugin.manifest.id)" class="btn-secondary" :disabled="Boolean(busy)" @click="host.retry(plugin.manifest.id)">Retry</button>
-      <button v-if="!plugin.builtin && !plugin.enabled" class="btn-secondary" :disabled="Boolean(busy)" @click="uninstall(plugin.manifest.id)">Uninstall</button>
-      <button v-if="!plugin.enabled" class="btn-secondary" :disabled="Boolean(busy)" @click="clearCache(plugin.manifest.id)">Clear cache</button>
+      <button v-if="(plugin.enabled || host.errors.value[plugin.manifest.id]) && plugin.supported && !host.running.value.includes(plugin.manifest.id)" class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="host.retry(plugin.manifest.id)">Retry</button>
+      <button v-if="!plugin.builtin && !plugin.enabled" class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="uninstall(plugin.manifest.id)">Uninstall</button>
+      <button v-if="!plugin.enabled" class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="clearCache(plugin.manifest.id)">Clear cache</button>
       <small v-if="!plugin.builtin">{{ plugin.manifest.id }}</small>
     </article>
     <div class="plugin-install">
       <h4>Install a plugin</h4>
       <template v-if="android">
         <p>Install the extension APK on Android, then find it here.</p>
-        <button class="btn-secondary" :disabled="Boolean(busy)" @click="scanApks">{{ busy === 'scan' ? 'Scanning…' : 'Find APK plugins' }}</button>
+        <button class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="scanApks">{{ busy === 'scan' ? 'Scanning…' : 'Find APK plugins' }}</button>
         <p v-for="warning in apkWarnings" :key="warning" class="error" role="alert">{{ warning }}</p>
         <div v-for="plugin in apkPlugins" :key="plugin.manifest.id" class="plugin-card">
           <div class="plugin-heading">
             <PluginImage :manifest="plugin.manifest" />
             <div><h4>{{ plugin.manifest.name }} <small>{{ plugin.manifest.version }}</small></h4><p>{{ plugin.manifest.description }}</p></div>
           </div>
-          <button class="btn-secondary" :disabled="Boolean(busy)" @click="previewApk(plugin)">Review connection</button>
+          <button class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="previewApk(plugin)">Review connection</button>
         </div>
       </template>
       <form class="plugin-url" @submit.prevent="loadUrl">
         <label for="plugin-url">Public GitHub repository, plugin folder or package URL</label>
-        <div class="plugin-url-row"><input id="plugin-url" v-model="url" type="url" placeholder="https://github.com/author/plugin" autocomplete="off" :disabled="Boolean(busy)" /><button class="btn-secondary" :disabled="Boolean(busy) || !url.trim()">{{ busy === 'download' ? 'Loading…' : 'Load from URL' }}</button></div>
+        <div class="plugin-url-row"><input id="plugin-url" v-model="url" type="url" placeholder="https://github.com/author/plugin" autocomplete="off" :disabled="Boolean(busy)" /><button class="plugin-button btn-secondary" :disabled="Boolean(busy) || !url.trim()">{{ busy === 'download' ? 'Loading…' : 'Load from URL' }}</button></div>
       </form>
-      <label>Or choose a .player-plugin package<input type="file" accept=".player-plugin,.json" :disabled="Boolean(busy)" @change="load" /></label>
+      <label>Or choose a .player-plugin package<input class="plugin-file" type="file" accept=".player-plugin,.json" :disabled="Boolean(busy)" @change="load" /></label>
       <div v-if="preview" class="plugin-card">
         <div class="plugin-heading">
           <PluginImage :manifest="preview.manifest" />
@@ -133,8 +134,8 @@ async function uninstall(id: string) {
           <small class="fingerprint">APK SHA-256: {{ preview.manifest.androidNative.apkSha256 }}</small>
         </template>
         <small class="fingerprint">BLAKE3: {{ preview.fingerprint }}</small>
-        <button class="btn-primary" :disabled="Boolean(busy)" @click="install">Install and grant these permissions</button>
-        <button class="btn-secondary" :disabled="Boolean(busy)" @click="resetPreview">Cancel</button>
+        <button class="plugin-button btn-primary" :disabled="Boolean(busy)" @click="install">Install and grant these permissions</button>
+        <button class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="resetPreview">Cancel</button>
       </div>
     </div>
   </section>
@@ -149,12 +150,6 @@ async function uninstall(id: string) {
 .plugin-heading h4 { margin-bottom: 8px; color: var(--color-text); font-size: 16px; }
 .plugin-card > strong { color: var(--color-text); font-size: 16px; }
 .plugin-card small { color: var(--color-text-muted); }.plugin-card button { justify-self: start; }
-.plugin-manager button:where(:not(.settings-switch)) { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); padding: 9px 16px; border-radius: 99px; cursor: pointer; font-size: 13px; font-weight: 600; }
-.plugin-manager button:where(:not(.settings-switch)):enabled:is(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); border-color: var(--color-text-faint); }
-.plugin-manager button:where(:not(.settings-switch)):disabled { opacity: .5; cursor: default; }
-.plugin-manager button:where(:not(.settings-switch)):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
-.plugin-manager .btn-primary { background: var(--color-accent); color: var(--color-on-accent); border-color: var(--color-accent); }
-.plugin-manager .btn-primary:enabled:is(:hover, :active) { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
 .plugin-install { display: grid; gap: 12px; margin-top: 16px; }.plugin-install label,.plugin-url { display: grid; gap: 12px; }
 .plugin-url-row { display: flex; gap: 10px; }.plugin-url-row input { min-width: 0; flex: 1; padding: 10px; color: var(--color-text); background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: 6px; }
 .fingerprint { overflow-wrap: anywhere; }.error { color: var(--color-danger-text) !important; }

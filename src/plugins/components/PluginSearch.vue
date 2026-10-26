@@ -3,6 +3,7 @@ import { onUnmounted, ref, watch } from 'vue';
 import { usePluginHost, validateUiNode } from '../host';
 import type { SearchItem, UiContribution } from '../types';
 import PluginTree from './PluginTree.vue';
+import '../controls.css';
 const props = defineProps<{ contribution: UiContribution; query: string }>();
 const host = usePluginHost(); const items = ref<SearchItem[]>([]); const error = ref(''); const loading = ref(false); const submitted = ref('');
 let sequence = 0; let disposed = false;
@@ -34,5 +35,5 @@ watch(host.revision, async () => {
 });
 onUnmounted(() => { disposed = true; sequence++; });
 </script>
-<template><section class="plugin-search"><div class="section-head"><h2>{{ contribution.label }}</h2><button class="btn-secondary" :disabled="loading || !query.trim()" @click="search()">{{ loading ? 'Searching…' : 'Search' }}</button></div><p v-if="error" role="alert">{{ error }}</p><p v-else-if="!submitted">Press Search to query {{ contribution.label }}.</p><p v-else-if="!loading && !items.length">No matches for “{{ submitted }}”.</p><PluginTree :node="{ type: 'results', items }" :fields="{}" :busy="false" @action="action" /><div v-if="previousCursors.length || nextCursor" class="plugin-search-pages"><button class="btn-secondary" :disabled="loading || !previousCursors.length" @click="search(previousCursors[previousCursors.length - 1] ?? null, 'previous')">Previous</button><button class="btn-secondary" :disabled="loading || !nextCursor" @click="search(nextCursor, 'next')">Next</button></div></section></template>
+<template><section class="plugin-search"><div class="section-head"><h2>{{ contribution.label }}</h2><button class="plugin-button btn-secondary" :disabled="loading || !query.trim()" @click="search()">{{ loading ? 'Searching…' : 'Search' }}</button></div><p v-if="error" role="alert">{{ error }}</p><p v-else-if="!submitted">Press Search to query {{ contribution.label }}.</p><p v-else-if="!loading && !items.length">No matches for “{{ submitted }}”.</p><PluginTree :node="{ type: 'results', items }" :fields="{}" :busy="false" @action="action" /><div v-if="previousCursors.length || nextCursor" class="plugin-search-pages"><button class="plugin-button btn-secondary" :disabled="loading || !previousCursors.length" @click="search(previousCursors[previousCursors.length - 1] ?? null, 'previous')">Previous</button><button class="plugin-button btn-secondary" :disabled="loading || !nextCursor" @click="search(nextCursor, 'next')">Next</button></div></section></template>
 <style scoped>.plugin-search { margin-top: 24px; }.plugin-search .section-head { display: flex; justify-content: space-between; gap: 16px; }.plugin-search-pages { display: flex; justify-content: flex-end; gap: 12px; margin-top: 12px; }.plugin-search > p { color: var(--color-text-muted); }</style>
