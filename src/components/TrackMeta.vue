@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { Track } from "../types";
 import { artistLabel, hasArtistPage } from "../utils/artists";
+import ArtistLink from './ArtistLink.vue';
 
 const props = withDefaults(defineProps<{
   track: Track;
@@ -43,8 +44,9 @@ function open(part: Part) {
   <span class="track-album">
     <template v-for="(part, i) in parts" :key="i">
       <template v-if="i > 0"> · </template>
+      <ArtistLink v-if="part.link === 'artist'" :artist="part.text" @open="emit('openArtist', $event)" />
       <a
-        v-if="part.link"
+        v-else-if="part.link"
         class="meta-link"
         href="#"
         @click.prevent.stop="open(part)"

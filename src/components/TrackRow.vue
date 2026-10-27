@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import type { Track } from "../types";
 import { formatDuration } from "../utils/format";
 import { rarityClass, rarityVars } from "../utils/rarity";
@@ -31,13 +32,13 @@ const props = withDefaults(defineProps<{
   hide: () => [],
 });
 
-const shows = (button: TrackButton) => !props.hide.includes(button);
-
 const emit = defineEmits<{
   play: [];
 }>();
 
 const actions = useTrackActions();
+const isPlaybackRow = computed(() => actions.isCurrent(props.track.id) || actions.isNext(props.track.id));
+const shows = (button: TrackButton) => !props.hide.includes(button);
 
 
 const LONG_PRESS_MS = 420;
@@ -121,7 +122,9 @@ function onClick() {
       />
     </div>
 
-    <slot name="extra" />
+    <span v-if="$slots.extra" class="track-extra-actions inline-action" :class="{ 'hover-action': isPlaybackRow }">
+      <slot name="extra" />
+    </span>
 
     <button v-if="shows('identify')" class="icon-btn hover-action inline-action" title="Identify" @click.stop="actions.identify(track)">
       <AppIcon name="identify" :size="14" />
@@ -129,13 +132,15 @@ function onClick() {
     <button v-if="shows('edit')" class="icon-btn hover-action inline-action" title="Edit" @click.stop="actions.edit(track)">
       <AppIcon name="edit" :size="14" />
     </button>
-    <span v-if="shows('playCount')" class="play-count" :title="track.play_count > 0 ? 'Play count' : undefined">
+    <span v-if="shows('playCount')" class="play-count hover-action" :title="track.play_count > 0 ? 'Play count' : undefined">
       <template v-if="track.play_count > 0"><AppIcon name="play-count" :size="12" /> {{ track.play_count }}</template>
     </span>
     <button
       v-if="shows('like')"
-      class="icon-btn inline-action"
+      class="icon-btn track-like"
+      :class="{ 'hover-action': !track.is_liked || isPlaybackRow, 'inline-action': !track.is_liked || isPlaybackRow }"
       :title="track.is_liked ? 'Unlike' : 'Like'"
+      :aria-pressed="track.is_liked"
       @click.stop="actions.toggleLike(track)"
     >
       <AppIcon :name="track.is_liked ? 'liked' : 'like'" :size="16" :class="{ liked: track.is_liked }" />
@@ -229,7 +234,9 @@ function onClick() {
 .liked { color: var(--color-accent); }
 .hover-action { opacity: 0; }
 .track-row:hover .hover-action,
+.track-row:focus-within .hover-action,
 .hover-action:focus-visible { opacity: 1; }
+.track-extra-actions { display: inline-flex; align-items: center; flex-shrink: 0; }
 .play-count {
   display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px;
   min-width: 36px;
@@ -243,7 +250,7 @@ function onClick() {
   .track-row { gap: 8px; padding: 6px 4px; }
   .track-cover-sm { width: 32px; height: 32px; }
   .track-num { display: none; }
-  /* No hover on touch screens: actions are in the long-press menu. */
+  /* Keep liked hearts visible; other actions are in the long-press menu. */
   .inline-action, .play-count { display: none; }
 }
 @media (max-width: 480px) {

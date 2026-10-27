@@ -2,6 +2,7 @@
 html, body, #app { height: 100%; overflow: hidden; }
 body { background: var(--color-bg); font-family: var(--font-body); }
 button, input, select, textarea { font: inherit; }
+.plugin-image, .track-cover-sm, .peer-icon { background: var(--color-surface); }
 a, button, [role="button"] {
   -webkit-tap-highlight-color: transparent;
   outline: none;

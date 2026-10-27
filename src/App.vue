@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
+import ArtistLink from "./components/ArtistLink.vue";
+import { PLAYBACK_SESSION_KEY, readPlaybackContext, matchesPlaybackContext, type SavedPlaybackContext } from './utils/playbackSession';
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -75,9 +77,20 @@ const isPlaying = ref(false);
 const currentTime = ref(0);
 const duration = ref(213);
 const volume = ref(70);
+const volumeBeforeMute = ref(70);
+const VOLUME_BEFORE_MUTE_KEY = 'player.volume-before-mute';
+try {
+  const saved = Number(sessionStorage.getItem(VOLUME_BEFORE_MUTE_KEY));
+  if (Number.isFinite(saved) && saved > 0 && saved <= 100) volumeBeforeMute.value = saved;
+} catch { /* Keep the fallback if storage is unavailable. */ }
+function rememberAudibleVolume(value: number) {
+  if (value <= 0 || value > 100 || !Number.isFinite(value)) return;
+  volumeBeforeMute.value = value;
+  try { sessionStorage.setItem(VOLUME_BEFORE_MUTE_KEY, String(value)); } catch { /* Muting does not require storage. */ }
+}
+watch(volume, value => { if (value > 0) rememberAudibleVolume(value); });
 const isShuffled = ref(false);
 const repeatMode = ref(0);
-const isLiked = ref(true);
 const showUserMenu = ref(false);
 const showDeviceMenu = ref(false);
 const showMobileNav = ref(false);
@@ -402,6 +415,7 @@ const queuedPagedSource = ref<QueuedPagedSource | null>(null);
 const queuedPageLoading = ref(false);
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
+const pendingLikes = ref(new Set<number>());
 const discord = useDiscordPresence(() => nowPlaying.value ? {
   title: nowPlaying.value.title || 'Unknown track',
   artist: nowPlaying.value.artist || 'Unknown artist',
@@ -1688,7 +1702,7 @@ async function stopActiveSoulseekPreview(result: SoulseekSearchResult) {
   duration.value = 0;
   currentTime.value = 0;
   isPlaying.value = false;
-  isLiked.value = false;
+
   stopTicker();
   syncAndroid();
   return true;
@@ -1920,7 +1934,7 @@ async function maybeReplaceActiveSoulseekPreviewWithLibraryTrack(
   // The preview file is renamed into the library, so the active decoder can
   // continue reading the same file handle without an audible restart.
   replaceSoulseekTrackInPlaybackState(previewTrackId, indexedTrack);
-  isLiked.value = indexedTrack.is_liked;
+
   duration.value = indexedTrack.duration_secs || duration.value;
   syncAndroid();
 }
@@ -2585,12 +2599,12 @@ async function performTrackReplacement(
     const previewTrackId = soulseekTrackId(result);
     if (nowPlaying.value?.id === previewTrackId && !!nowPlaying.value.soulseek_preview) {
       replaceSoulseekTrackInPlaybackState(previewTrackId, replacedTrack);
-      isLiked.value = replacedTrack.is_liked;
+
       duration.value = replacedTrack.duration_secs || duration.value;
       syncAndroid();
     } else if (nowPlaying.value?.id === replacedTrack.id) {
       nowPlaying.value = { ...replacedTrack };
-      isLiked.value = replacedTrack.is_liked;
+
       duration.value = replacedTrack.duration_secs || duration.value;
       syncAndroid();
     }
@@ -2890,6 +2904,12 @@ function spectrumBarStyle(segment: (typeof spectrumSegments)[number]) {
 const mobileSeekActive = ref(false);
 const seekPreviewPos = ref<number | null>(null);
 const showDetail = ref(false);
+function openPlayerArtist(name: string) {
+  showDetail.value = false;
+  showQueueMenu.value = false;
+  showDeviceMenu.value = false;
+  openArtist(name);
+}
 
 let spectrumPollTimer: ReturnType<typeof setInterval> | null = null;
 let spectrumPollPending = false;
@@ -3115,6 +3135,7 @@ watch(reducedMotion, (reduce) => {
 });
 
 watch(() => nowPlaying.value?.id, () => {
+  cancelSeekGesture();
   resetSpectrum();
   if (showDetail.value) {
     void refreshSpectrum(spectrumPollVersion);
@@ -3318,15 +3339,37 @@ function syncAndroid() {
   }
 }
 
+let activeSeekGesture: { pointerId: number; element: HTMLElement; trackId: number; playbackSequence: number } | null = null;
+let seekRequestSequence = 0;
+
+function releaseSeekPointer() {
+  const gesture = activeSeekGesture;
+  activeSeekGesture = null;
+  mobileSeekActive.value = false;
+  if (gesture?.element.hasPointerCapture?.(gesture.pointerId)) gesture.element.releasePointerCapture(gesture.pointerId);
+}
+
+function cancelSeekGesture() {
+  seekRequestSequence++;
+  releaseSeekPointer();
+  seekPreviewPos.value = null;
+}
+
 function seekPosFromEvent(e: MouseEvent | PointerEvent, el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
+  if (rect.width <= 0) return seekPreviewPos.value ?? currentTime.value;
   const ratio = (e.clientX - rect.left) / rect.width;
   return Math.max(0, Math.min(1, ratio)) * duration.value;
 }
 
 function mobileSeekHoldStart(e: PointerEvent) {
+  if (e.button !== 0 || activeSeekGesture || !nowPlaying.value || duration.value <= 0) return;
   const el = e.currentTarget as HTMLElement;
+  e.preventDefault();
+  seekRequestSequence++;
+  activeSeekGesture = { pointerId: e.pointerId, element: el, trackId: nowPlaying.value.id, playbackSequence: playbackTransitionSequence };
   mobileSeekActive.value = true;
+  el.focus({ preventScroll: true });
   el.setPointerCapture?.(e.pointerId);
   const pos = seekPosFromEvent(e, el);
   seekPreviewPos.value = pos;
@@ -3334,34 +3377,23 @@ function mobileSeekHoldStart(e: PointerEvent) {
 }
 
 function mobileSeekHoldMove(e: PointerEvent) {
-  if (!mobileSeekActive.value) return;
-  const el = e.currentTarget as HTMLElement;
-  const pos = seekPosFromEvent(e, el);
+  if (!activeSeekGesture || e.pointerId !== activeSeekGesture.pointerId) return;
+  const pos = seekPosFromEvent(e, activeSeekGesture.element);
   seekPreviewPos.value = pos;
   currentTime.value = Math.round(pos);
 }
 
 async function mobileSeekHoldEnd(e: PointerEvent) {
-  if (!mobileSeekActive.value) return;
-  const el = e.currentTarget as HTMLElement;
-  // On pointercancel the browser reports clientX/clientY = 0, so use the last
-  // known preview position instead of recalculating from the (bogus) event.
-  const pos = e.type === 'pointercancel'
-    ? (seekPreviewPos.value ?? currentTime.value)
-    : seekPosFromEvent(e, el);
-  seekPreviewPos.value = pos;
-  currentTime.value = Math.round(pos);
-  await seekCurrentOutput(pos);
-  const st = await refreshPlaybackState();
-  if (st.playing) {
-    startTicker();
-  } else {
-    stopTicker();
+  const gesture = activeSeekGesture;
+  if (!gesture || e.pointerId !== gesture.pointerId) return;
+  const pos = e.type === 'pointercancel' || e.type === 'lostpointercapture' ? (seekPreviewPos.value ?? currentTime.value) : seekPosFromEvent(e, gesture.element);
+  // Clear capture before awaiting IPC, so a second pointerup cannot seek twice.
+  releaseSeekPointer();
+  if (nowPlaying.value?.id !== gesture.trackId || playbackTransitionSequence !== gesture.playbackSequence) {
+    cancelSeekGesture();
+    return;
   }
-  syncAndroid();
-  seekPreviewPos.value = null;
-  mobileSeekActive.value = false;
-  el.releasePointerCapture?.(e.pointerId);
+  await seek(pos, gesture.playbackSequence);
 }
 
 /** Start playing a specific track from a given source list at a given index */
@@ -3434,6 +3466,7 @@ async function playTrackFrom(src: QueueSource, index: number) {
 
 /** Advance to next track in queue */
 async function playNext() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   bumpPlaybackTransitionSequence();
   if (!queue.value.length) {
     if (await loadNextQueuedSourcePage()) {
@@ -3463,6 +3496,7 @@ async function playNext() {
 
 /** Go to previous track (restart current if >3s in, else go back in source) */
 async function playPrev() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   bumpPlaybackTransitionSequence();
   if (currentTime.value > 3) {
     currentTime.value = 0;
@@ -3496,7 +3530,138 @@ function jumpToQueueItem(index: number) {
   showQueueMenu.value = false;
 }
 
-interface PlaybackStatus { playing: boolean; finished: boolean; position: number; duration: number; source_sample_rate?: number | null; }
+interface PlaybackStatus { source_id?: string | null; playing: boolean; finished: boolean; position: number; duration: number; source_sample_rate?: number | null; }
+
+interface NativePlaybackSession {
+  playback: PlaybackStatus;
+  volume: number;
+  library_dir: string;
+  source: { path: string; follow_growing: boolean; preview: { username: string; filename: string; size: number } | null } | null;
+  track: Track | null;
+  tracks: Track[];
+}
+const nativePlaybackSourceId = ref<string | null>(null);
+const playbackRestoring = ref(true);
+let playbackRestorePromise: Promise<void> | null = null;
+let playbackRestoreDisposed = false;
+let playbackContextSaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+function savePlaybackContext() {
+  if (playbackRestoring.value || !nativePlaybackSourceId.value || !nowPlaying.value || !libraryDataDir.value) return;
+  const source = sourceList(queueSource.value);
+  // Preview playback is recovered from the native source; its temporary queue is not persisted.
+  if (source.some(track => track.id <= 0) || source.length > 5000) return;
+  const peer = remoteOutputPeer.value;
+  const snapshot: SavedPlaybackContext = {
+    version: 1, libraryDir: libraryDataDir.value, sourceId: nativePlaybackSourceId.value,
+    trackId: nowPlaying.value.id, source: queueSource.value,
+    sourceIds: source.map(track => track.id), queueIds: queue.value.filter(track => track.id > 0).map(track => track.id),
+    sourceIndex: queueSourceIndex.value, pagedSource: queuedPagedSource.value,
+    shuffled: isShuffled.value, repeat: repeatMode.value,
+    remotePeer: peer ? { name: peer.name, host: peer.host, port: peer.port, addresses: peer.addresses } : null,
+  };
+  try { sessionStorage.setItem(PLAYBACK_SESSION_KEY, JSON.stringify(snapshot)); } catch { /* Playback still works if session storage is unavailable. */ }
+}
+
+watch([nowPlaying, nativePlaybackSourceId, queue, queueSource, queueSourceIndex, queuedPagedSource,
+  queueLibraryTracks, queuePlaylistTracks, queueSoulseekTracks, recentTracks, isShuffled, repeatMode, remoteOutputPeer], () => {
+  clearTimeout(playbackContextSaveTimer);
+  if (!playbackRestoring.value) playbackContextSaveTimer = setTimeout(savePlaybackContext, 80);
+}, { deep: true });
+
+async function restorePlaybackSession() {
+  const sequence = playbackTransitionSequence;
+  let context: SavedPlaybackContext | null = null;
+  try { context = readPlaybackContext(sessionStorage.getItem(PLAYBACK_SESSION_KEY)); } catch { /* Native state remains authoritative. */ }
+  try {
+    const ids = context ? [...new Set([context.trackId, ...context.sourceIds, ...context.queueIds])].filter(id => id > 0).slice(0, 5000) : [];
+    const session = await invoke<NativePlaybackSession>('playback_session', { trackIds: ids });
+    if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
+    libraryDataDir.value = session.library_dir;
+    nativePlaybackSourceId.value = session.playback.source_id ?? null;
+    volume.value = Math.round(session.volume * 100);
+    if (context?.remotePeer && context.libraryDir === session.library_dir) {
+      try {
+        const remote = await invoke<RemoteDeviceStatus>('remote_playback_status', remotePeerArgs(context.remotePeer));
+        if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
+        remoteOutputPeer.value = context.remotePeer;
+        const playback = remote.playback;
+        const cachedTrack = session.tracks.find(track => track.file_hash === playback?.hash);
+        if (playback && playback.state !== 'stopped') {
+          session.track = cachedTrack ?? { ...makeSoulseekTrack({
+            username: playback.artist ?? '', filename: '', basename: playback.title ?? 'Current track',
+            size: 0, duration: playback.duration ?? 0, bitrate: null, sampleRate: null, bitDepth: null,
+            vbr: null, peerSpeed: 0, freeUploadSlots: 0, extension: null, coverFilename: null, coverSize: null,
+          }, ''), id: 0, album: playback.album ?? null, file_hash: playback.hash ?? null };
+          session.source = { path: session.track.path, follow_growing: false, preview: null };
+          session.playback = { playing: playback.state === 'playing', finished: playback.state === 'ended',
+            position: playback.position ?? 0, duration: playback.duration ?? 0,
+            source_id: `remote:${context.remotePeer.name}:${playback.hash ?? ''}` };
+          nativePlaybackSourceId.value = session.playback.source_id!;
+          if (playback.volume != null) volume.value = Math.round(playback.volume * 100);
+        } else { session.source = null; }
+      } catch { deviceMenuError.value = 'Could not reconnect to the remote player. Using local output.'; }
+    }
+    if (!session.source || !session.playback.source_id) {
+      isPlaying.value = false;
+      currentTime.value = 0;
+      duration.value = 0;
+      return;
+    }
+    let track = session.track;
+    if (!track) {
+      const preview = session.source.preview;
+      const basename = session.source.path.replace(/\\/g, '/').split('/').pop() || 'Current track';
+      const result: SoulseekSearchResult = {
+        username: preview?.username ?? '', filename: preview?.filename ?? basename, basename,
+        size: preview?.size ?? 0, duration: session.playback.duration, bitrate: null, sampleRate: null,
+        bitDepth: null, vbr: null, peerSpeed: 0, freeUploadSlots: 0, extension: null, coverFilename: null, coverSize: null,
+      };
+      track = preview ? makeSoulseekPreviewTrack(result, session.source.path, session.source.follow_growing)
+        : { ...makeSoulseekTrack(result, session.source.path), id: 0, soulseek_preview: false };
+    }
+    nowPlaying.value = track;
+    duration.value = Math.floor(session.playback.duration || track.duration_secs || 0);
+    const restoresQueue = matchesPlaybackContext(context, session.library_dir, session.playback.source_id, track.id);
+    if (context && restoresQueue) {
+      const tracks = new Map(session.tracks.map(track => [track.id, track]));
+      tracks.set(track.id, track);
+      const restore = (ids: number[]) => ids.map(id => tracks.get(id)).filter((track): track is Track => !!track);
+      const source = restore(context.sourceIds);
+      queueSource.value = context.source;
+      queueLibraryTracks.value = context.source === 'library' ? source : [];
+      queuePlaylistTracks.value = context.source === 'playlist' ? source : [];
+      if (context.source === 'recent') recentTracks.value = source;
+      queue.value = restore(context.queueIds);
+      queueSourceIndex.value = Math.max(-1, source.findIndex(track => track.id === context!.sourceIds[context!.sourceIndex]));
+      const paged = context.pagedSource as QueuedPagedSource | null;
+      // Paged source rules are reloaded from saved playlists, rather than trusting cached definitions.
+      if (paged?.kind === 'smart-playlist') {
+        if (!smartPlaylists.value.length) await loadSmartPlaylists();
+        if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
+        const playlist = smartPlaylists.value.find(playlist => playlist.id === paged.playlist?.id);
+        queuedPagedSource.value = playlist ? { ...paged, playlist } : null;
+      } else if (paged?.kind === 'library' && typeof paged.query === 'string' && typeof paged.includeDuplicates === 'boolean' && typeof paged.hasMore === 'boolean') {
+        queuedPagedSource.value = paged;
+      } else if (paged?.kind === 'regular-playlist' && Number.isSafeInteger(paged.playlistId) && typeof paged.name === 'string' && typeof paged.includeDuplicates === 'boolean' && typeof paged.hasMore === 'boolean') {
+        queuedPagedSource.value = paged;
+      } else { queuedPagedSource.value = null; }
+      if (context.source === 'library' && !queuedPagedSource.value) queuedPagedSource.value = { kind: 'library', query: '', includeDuplicates: showDuplicateTracks.value, hasMore: false };
+      isShuffled.value = context.shuffled;
+      repeatMode.value = context.repeat;
+    }
+    // Read transport state again after loading metadata; do not restart or seek the decoder.
+    const status = await refreshPlaybackState();
+    if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
+    if (status.playing) startTicker();
+    syncAndroid();
+    if (status.finished && restoresQueue) {
+      playbackRestoring.value = false;
+      await handleFinishedPlayback(sequence);
+    }
+  } catch (error) { console.error('Failed to restore playback session', error); }
+  finally { playbackRestoring.value = false; }
+}
 
 function trackForHash(hash?: string | null) {
   if (!hash) return null;
@@ -3588,6 +3753,7 @@ async function stopCurrentOutput() {
 }
 
 async function seekCurrentOutput(position: number) {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   if (remoteOutputPeer.value) {
     await invoke('remote_playback_seek', { ...remotePeerArgs(remoteOutputPeer.value), position });
   } else {
@@ -3597,6 +3763,8 @@ async function seekCurrentOutput(position: number) {
 
 function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
   const playback = status.playback;
+  nativePlaybackSourceId.value = remoteOutputPeer.value && playback?.hash
+    ? `remote:${remoteOutputPeer.value.name}:${playback.hash}` : null;
   if (status.device_name && remoteOutputPeer.value) {
     peerDeviceNames.value = { ...peerDeviceNames.value, [remoteOutputPeer.value.name]: status.device_name };
   }
@@ -3605,7 +3773,7 @@ function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
     nowPlaying.value = remoteTrack;
   }
   isPlaying.value = playback?.state === 'playing';
-  currentTime.value = Math.floor(playback?.position ?? 0);
+  if (seekPreviewPos.value === null) currentTime.value = Math.floor(playback?.position ?? 0);
   if ((playback?.duration ?? 0) > 0) {
     duration.value = Math.floor(playback?.duration ?? 0);
   }
@@ -3627,6 +3795,7 @@ function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
 }
 
 async function capturePlaybackSnapshot() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   if (remoteOutputPeer.value || isPlaying.value) {
     try {
       await refreshPlaybackState();
@@ -3647,11 +3816,12 @@ async function refreshPlaybackState() {
     return applyRemotePlaybackStatus(st);
   }
   const st = await invoke<PlaybackStatus>('playback_status');
+  nativePlaybackSourceId.value = st.source_id ?? null;
   const currentTrack = nowPlaying.value;
   const metadataDuration = Math.floor(currentTrack?.duration_secs ?? 0);
   const reportedDuration = st.duration > 0 ? Math.floor(st.duration) : 0;
   isPlaying.value = st.playing;
-  currentTime.value = Math.floor(st.position);
+  if (seekPreviewPos.value === null) currentTime.value = Math.floor(st.position);
   nativeSampleRate.value = st.source_sample_rate ?? nativeSampleRate.value;
   if (currentTrack?.preview_growing) {
     duration.value = Math.max(duration.value, metadataDuration, reportedDuration, currentTime.value);
@@ -3676,7 +3846,7 @@ function stopTicker() {
 }
 
 async function handleFinishedPlayback(expectedSequence = playbackTransitionSequence) {
-  if (remoteControlled.value) return; // queue advancement is owned by the controlling device
+  if (playbackRestoring.value || remoteControlled.value || seekPreviewPos.value !== null) return; // queue advancement is owned by the controlling device
   if (expectedSequence !== playbackTransitionSequence || handlingFinishedPlayback) return;
   handlingFinishedPlayback = true;
   try {
@@ -3714,6 +3884,7 @@ function startTicker() {
 }
 
 async function togglePlay() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
   if (remoteOutputPeer.value && !nowPlaying.value) {
     await refreshPlaybackState();
   }
@@ -3783,41 +3954,96 @@ async function pauseFromMediaControl() {
 }
 
 async function toggleLike(track: Track, e?: Event) {
-  if (e) e.stopPropagation();
+  e?.stopPropagation();
+  if (track.id <= 0 || pendingLikes.value.has(track.id)) return;
+  pendingLikes.value.add(track.id);
   try {
-    const isLiked = await invoke<boolean>('toggle_like', { id: track.id });
-    track.is_liked = isLiked;
-    // Update the nowPlaying reference as well if it's the same track
-    if (nowPlaying.value && nowPlaying.value.id === track.id) {
-      nowPlaying.value.is_liked = isLiked;
+    const liked = await invoke<boolean>('toggle_like', { id: track.id });
+    track.is_liked = liked;
+    // The same track can have separate objects after a library refresh or in another view.
+    const lists = [
+      libraryTracks.value, recentTracks.value, localSearchTracks.value,
+      queueLibraryTracks.value, queuePlaylistTracks.value, queueSoulseekTracks.value, queue.value,
+      playlistView.value?.tracks ?? [], smartViewTracks.value, editingSPTracks.value,
+      ...Object.values(homePinnedRegularTracks.value), historyEntries.value.map(entry => entry.track),
+    ];
+    for (const list of lists) for (const item of list) {
+      if (item.id === track.id) item.is_liked = liked;
     }
+    if (nowPlaying.value?.id === track.id) nowPlaying.value.is_liked = liked;
   } catch (error) {
     console.error('Failed to toggle like', error);
+  } finally {
+    pendingLikes.value.delete(track.id);
   }
 }
 
-async function seek(e: MouseEvent) {
-  const el = e.currentTarget as HTMLElement;
-  const pos = seekPosFromEvent(e, el);
+async function seek(position: number, expectedSequence = playbackTransitionSequence) {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
+  if (!nowPlaying.value || duration.value <= 0 || !Number.isFinite(position) || expectedSequence !== playbackTransitionSequence) return;
+  const request = ++seekRequestSequence;
+  const pos = Math.max(0, Math.min(duration.value, position));
+  const wasPlaying = isPlaying.value;
+  let finished = false;
+  seekPreviewPos.value = pos;
   currentTime.value = Math.round(pos);
-  await seekCurrentOutput(pos);
-  const st = await refreshPlaybackState();
-  if (st.playing) {
-    startTicker();
-  } else {
-    stopTicker();
+  try {
+    await seekCurrentOutput(pos);
+    if (request !== seekRequestSequence || expectedSequence !== playbackTransitionSequence) return;
+    const status = await refreshPlaybackState();
+    if (request !== seekRequestSequence || expectedSequence !== playbackTransitionSequence) return;
+    currentTime.value = Math.floor(status.position);
+    if (status.playing) startTicker(); else stopTicker();
+    finished = status.finished && wasPlaying;
+    syncAndroid();
+  } catch (error) {
+    if (request === seekRequestSequence) {
+      seekPreviewPos.value = null;
+      deviceMenuError.value = 'Could not seek. Please try again.';
+      await refreshPlaybackState().catch(() => {});
+    }
+    console.error('Failed to seek', error);
+  } finally {
+    if (request === seekRequestSequence) seekPreviewPos.value = null;
   }
-  syncAndroid();
+  if (finished && expectedSequence === playbackTransitionSequence) await handleFinishedPlayback(expectedSequence);
 }
 
-function setVolume(e: MouseEvent) {
-  const el = e.currentTarget as HTMLElement;
-  volume.value = Math.round(Math.max(0, Math.min(1, (e.clientX - el.getBoundingClientRect().left) / el.offsetWidth)) * 100);
-  if (remoteOutputPeer.value) {
-    invoke('remote_playback_volume', { ...remotePeerArgs(remoteOutputPeer.value), value: volume.value / 100 });
-  } else {
-    invoke('playback_set_volume', { value: volume.value / 100 });
-  }
+let volumeChangeSequence = 0;
+let pendingVolumeChange: { value: number; previous: number; sequence: number; peer: ReturnType<typeof remotePeerArgs> | null } | null = null;
+let volumeChangeRunning = false;
+async function flushVolumeChanges() {
+  volumeChangeRunning = true;
+  try {
+    while (pendingVolumeChange) {
+      const change = pendingVolumeChange;
+      pendingVolumeChange = null;
+      try {
+        if (change.peer) await invoke('remote_playback_volume', { ...change.peer, value: change.value / 100 });
+        else await invoke('playback_set_volume', { value: change.value / 100 });
+      } catch (error) {
+        if (change.sequence === volumeChangeSequence) volume.value = change.previous;
+        deviceMenuError.value = 'Could not change playback volume. Please try again.';
+        console.error('Failed to change playback volume', error);
+      }
+    }
+  } finally { volumeChangeRunning = false; }
+}
+async function applyVolume(value: number) {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
+  const previous = volume.value;
+  const next = Math.round(Math.max(0, Math.min(100, value)));
+  if (previous > 0) rememberAudibleVolume(previous);
+  if (next > 0) rememberAudibleVolume(next);
+  volume.value = next;
+  pendingVolumeChange = { value: next, previous, sequence: ++volumeChangeSequence,
+    peer: remoteOutputPeer.value ? remotePeerArgs(remoteOutputPeer.value) : null };
+  if (!volumeChangeRunning) await flushVolumeChanges();
+}
+
+async function toggleMute() {
+  if (playbackRestoring.value && playbackRestorePromise) await playbackRestorePromise;
+  await applyVolume(volume.value > 0 ? 0 : volumeBeforeMute.value);
 }
 
 async function refreshOutputDevices() {
@@ -3946,8 +4172,9 @@ function onDocClick(e: MouseEvent) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
+  if (e.defaultPrevented) return;
   const target = e.target as HTMLElement | null;
-  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.closest('select, button, a, [role=switch]') || target.isContentEditable)) {
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.closest('select, button, a, [role=switch], [role=slider]') || target.isContentEditable)) {
     return; // Don't trigger if typing
   }
 
@@ -4173,7 +4400,6 @@ async function loadAppData(reason: 'mount' | 'resume' | 'sync' = 'mount') {
     loadPlaylists(),
     loadSmartPlaylists(),
   ]);
-
 }
 
 async function loadRecent() {
@@ -4416,7 +4642,7 @@ async function saveTrack() {
   }
   if (nowPlaying.value?.id === activeTrack.id) {
     nowPlaying.value = savedTrack;
-    isLiked.value = savedTrack.is_liked;
+
   }
 }
 
@@ -4592,6 +4818,8 @@ onMounted(() => {
   document.addEventListener('click', onDocClick);
   document.addEventListener('keydown', onKeyDown);
   window.addEventListener('focus', onWindowFocus);
+  window.addEventListener('pagehide', savePlaybackContext);
+  playbackRestorePromise = restorePlaybackSession();
   document.addEventListener('visibilitychange', onDocumentVisibilityChange);
   void loadSoulseekStatus();
   invoke<DeviceSettings>('get_device_settings')
@@ -4960,9 +5188,14 @@ onMounted(() => {
   });
 });
 onUnmounted(() => {
+  playbackRestoreDisposed = true;
+  cancelSeekGesture();
   document.documentElement.classList.remove('player-reduced-motion', 'player-no-rarity-motion');
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
+  savePlaybackContext();
+  clearTimeout(playbackContextSaveTimer);
+  window.removeEventListener('pagehide', savePlaybackContext);
   window.removeEventListener('focus', onWindowFocus);
   document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   delete (window as any)._playbackFinished;
@@ -5086,7 +5319,7 @@ onUnmounted(() => {
                   </div>
                 </CoverImage>
                 <div class="card-title">{{ track.title || track.path }}</div>
-                <div class="card-artist">{{ artistLabel(track.artist) }}</div>
+                <div class="card-artist"><ArtistLink :artist="track.artist" @open="openArtist" /></div>
               </div>
             </div>
           </section>
@@ -5161,7 +5394,7 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div class="card-title">{{ item.title }}</div>
-                <div class="card-artist">{{ item.artist }}</div>
+                <div class="card-artist"><ArtistLink :artist="item.artist" @open="openArtist" /></div>
               </div>
             </div>
           </section>
@@ -5564,13 +5797,8 @@ onUnmounted(() => {
             <template v-if="playlistTab === 'regular'">
               <!-- Playlist detail -->
               <template v-if="playlistView">
-                <div class="library-header">
-                  <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="playlistView = null; loadPlaylists()">
-                      <AppIcon name="back" :size="20" /> Playlists
-                    </button>
-                  </div>
-                  <button v-if="playlistView.tracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
+                <div v-if="playlistView.tracks.length" class="library-header" style="justify-content:flex-end;">
+                  <button v-if="playlistView.tracks.length" class="btn-primary playlist-action" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
@@ -5593,7 +5821,7 @@ onUnmounted(() => {
               <!-- Playlist list -->
               <template v-else>
                 <div class="library-header page-toolbar">
-                  <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewPlaylistInput = !showNewPlaylistInput">+ New</button>
+                  <button class="btn-secondary playlist-action" :aria-expanded="showNewPlaylistInput" @click="showNewPlaylistInput = !showNewPlaylistInput"><AppIcon name="add-to-playlist" /> New</button>
                 </div>
                 <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input
@@ -5604,7 +5832,7 @@ onUnmounted(() => {
                     @keydown.enter="createPlaylist"
                     @keydown.esc="showNewPlaylistInput = false"
                   />
-                  <button class="icon-btn" style="padding:6px 14px;" @click="createPlaylist">Create</button>
+                  <button class="btn-primary playlist-action" @click="createPlaylist">Create</button>
                 </div>
                 <div v-if="playlists.length === 0" class="library-empty">No playlists yet.</div>
                 <div v-else class="track-list">
@@ -5629,12 +5857,7 @@ onUnmounted(() => {
             <template v-else>
               <!-- Editing a smart playlist -->
               <template v-if="editingSP">
-                <div class="library-header">
-                  <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="saveSP(); editingSP = null">
-                      <AppIcon name="back" :size="20" /> Flexible Playlists
-                    </button>
-                  </div>
+                <div class="library-header" style="justify-content:flex-end;">
                   <span class="smart-track-count">{{ editingSPTotal }} tracks</span>
                 </div>
 
@@ -5738,15 +5961,10 @@ onUnmounted(() => {
 
               <!-- Viewing a smart playlist (read-only) -->
               <template v-else-if="smartView">
-                <div class="library-header">
-                  <div style="display:flex; align-items:center; gap:12px;">
-                    <button class="icon-btn text-action-btn" style="padding:4px;" @click="smartView = null">
-                      <AppIcon name="back" :size="20" /> Flexible Playlists
-                    </button>
-                  </div>
+                <div class="library-header" style="justify-content:flex-end;">
                   <div style="display:flex;gap:8px;">
-                    <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="editingSP = { ...smartView! }; smartView = null">Edit</button>
-                    <button v-if="smartViewTracks.length" class="icon-btn text-action-btn" style="padding:6px 12px;" @click="playSmartPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
+                    <button class="btn-secondary playlist-action" @click="editingSP = { ...smartView! }; smartView = null"><AppIcon name="edit" /> Edit</button>
+                    <button v-if="smartViewTracks.length" class="btn-primary playlist-action" @click="playSmartPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                   </div>
                 </div>
                 <div v-if="smartViewLoading" class="library-empty">Loading playlist…</div>
@@ -5767,11 +5985,11 @@ onUnmounted(() => {
               <!-- Smart playlist list -->
               <template v-else>
                 <div class="library-header page-toolbar">
-                  <button class="icon-btn text-action-btn" style="padding:6px 12px;" @click="showNewSPInput = !showNewSPInput">+ New</button>
+                  <button class="btn-secondary playlist-action" :aria-expanded="showNewSPInput" @click="showNewSPInput = !showNewSPInput"><AppIcon name="add-to-playlist" /> New</button>
                 </div>
                 <div v-if="showNewSPInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input v-model="newSPName" class="library-search" placeholder="Smart playlist name…" style="flex:1;" @keydown.enter="createSmartPlaylist" @keydown.esc="showNewSPInput = false" />
-                  <button class="icon-btn" style="padding:6px 14px;" @click="createSmartPlaylist">Create</button>
+                  <button class="btn-primary playlist-action" @click="createSmartPlaylist">Create</button>
                 </div>
                 <div v-if="smartPlaylists.length === 0" class="library-empty">No flexible playlists yet.</div>
                 <div v-else class="track-list">
@@ -5867,7 +6085,7 @@ onUnmounted(() => {
                         <span v-else class="dedup-remove-badge">Duplicate</span>
                       </div>
                       <span class="track-album">
-                        {{ artistLabel(track.artist) }}{{ track.album ? ' · ' + track.album : '' }}
+                        <ArtistLink :artist="track.artist" @open="openArtist" /><template v-if="track.album">, {{ track.album }}</template>
                       </span>
                       <span class="dedup-track-meta">
                         <span>{{ track.path }}</span>
@@ -6360,6 +6578,7 @@ onUnmounted(() => {
         @pointermove="mobileSeekHoldMove"
         @pointerup="mobileSeekHoldEnd"
         @pointercancel="mobileSeekHoldEnd"
+        @lostpointercapture="mobileSeekHoldEnd"
       >
         <div class="mobile-seek-track">
           <div class="mobile-seek-fill" :style="`width:${displayProgressPercent}%`">
@@ -6370,7 +6589,9 @@ onUnmounted(() => {
     </div>
     <PlayerBar
       :reduce-motion="reducedMotion"
-      v-model:is-liked="isLiked"
+      :is-liked="nowPlaying?.is_liked ?? false"
+      :like-pending="!!nowPlaying && pendingLikes.has(nowPlaying.id)"
+      @toggle-like="nowPlaying && toggleLike(nowPlaying)"
       v-model:is-shuffled="isShuffled"
       v-model:repeat-mode="repeatMode"
       v-model:show-queue-menu="showQueueMenu"
@@ -6384,6 +6605,7 @@ onUnmounted(() => {
       :show-soulseek-preview-buffer="showSoulseekPreviewBuffer"
       :soulseek-preview-buffer-percent="soulseekPreviewBufferPercent"
       :display-progress-percent="displayProgressPercent"
+      :seeking="mobileSeekActive"
       :queue-source="queueSource"
       :queue="queue"
       :output-devices="outputDevices"
@@ -6397,10 +6619,14 @@ onUnmounted(() => {
       :peer-label="peerLabel"
       :is-remote-output-peer="isRemoteOutputPeer"
       @open-detail="showDetail = true"
+      @open-artist="openPlayerArtist"
       @play-prev="playPrev"
       @play-next="playNext"
       @toggle-play="togglePlay"
       @seek="seek"
+      @seek-start="mobileSeekHoldStart"
+      @seek-move="mobileSeekHoldMove"
+      @seek-end="mobileSeekHoldEnd"
       @toggle-queue-menu="toggleQueueMenu"
       @toggle-device-menu="toggleDeviceMenu"
       @open-playback-settings="openSettings('playback')"
@@ -6408,7 +6634,8 @@ onUnmounted(() => {
       @pick-local-device="pickLocalDevice"
       @pick-local-sample-rate="pickLocalSampleRate"
       @pick-remote-device="pickRemoteDevice"
-      @set-volume="setVolume"
+      @set-volume="applyVolume"
+      @toggle-mute="toggleMute"
     />
   </div>
 
@@ -6473,7 +6700,9 @@ onUnmounted(() => {
                 <span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span>
               </div>
               <div class="detail-track-artist">
-                <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
+                <ArtistLink :artist="nowPlaying.artist" @open="openPlayerArtist">
+                  <span class="marquee-text">{{ currentTrack.artist }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.artist }}</span>
+                </ArtistLink>
               </div>
               <button class="icon-btn" :class="{ green: nowPlaying.is_liked }" @click.stop="toggleLike(nowPlaying!)" style="margin-left:auto;">
                 <AppIcon name="liked" v-if="nowPlaying.is_liked" :size="22" />
@@ -6487,6 +6716,7 @@ onUnmounted(() => {
                 @pointermove="mobileSeekHoldMove"
                 @pointerup="mobileSeekHoldEnd"
                 @pointercancel="mobileSeekHoldEnd"
+                @lostpointercapture="mobileSeekHoldEnd"
               >
                 <div class="detail-bar-track">
                   <div
@@ -6586,7 +6816,6 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #24304a, #11161f);
   color: var(--color-text);
   font-size: 18px;
 }
@@ -7230,6 +7459,13 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   transform: none;
 }
 .text-action-btn { font-size: var(--fs-button); font-weight: 600; }
+.btn-primary.playlist-action,
+.btn-secondary.playlist-action {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 36px; padding: 8px 16px; white-space: nowrap;
+}
+.playlist-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+
 .history-time {
   font-size: var(--fs-body-sm);
   color: var(--color-text-muted);

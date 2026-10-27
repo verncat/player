@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import AppIcon from './AppIcon.vue';
+import ArtistLink from './ArtistLink.vue';
 import AppSelect from './AppSelect.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import ResponsivePopup from "./ResponsivePopup.vue";
 import type { AudioDevice, Track } from "../types";
 import { formatDuration, formatSampleRate, formatTime } from "../utils/format";
-import { artistLabel } from "../utils/artists";
 import { coverUrl, placeholderCoverColors } from "../utils/covers";
 import CoverImage from "./CoverImage.vue";
 
@@ -31,6 +31,7 @@ const props = defineProps<{
   beatScale: number;
   reduceMotion: boolean;
   isLiked: boolean;
+  likePending: boolean;
   isShuffled: boolean;
   isPlaying: boolean;
   repeatMode: number;
@@ -39,6 +40,7 @@ const props = defineProps<{
   showSoulseekPreviewBuffer: boolean;
   soulseekPreviewBufferPercent: number;
   displayProgressPercent: number;
+  seeking: boolean;
   showQueueMenu: boolean;
   queueSource: string;
   queue: Track[];
@@ -57,7 +59,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openDetail: [];
-  "update:isLiked": [value: boolean];
+  openArtist: [name: string];
+  toggleLike: [];
   "update:isShuffled": [value: boolean];
   "update:repeatMode": [value: number];
   "update:showQueueMenu": [value: boolean];
@@ -65,7 +68,10 @@ const emit = defineEmits<{
   playPrev: [];
   playNext: [];
   togglePlay: [];
-  seek: [event: MouseEvent];
+  seek: [position: number];
+  seekStart: [event: PointerEvent];
+  seekMove: [event: PointerEvent];
+  seekEnd: [event: PointerEvent];
   toggleQueueMenu: [];
   toggleDeviceMenu: [];
   openPlaybackSettings: [];
@@ -73,8 +79,23 @@ const emit = defineEmits<{
   pickLocalDevice: [name: string, sampleRate?: number | null, keepOpen?: boolean];
   pickLocalSampleRate: [device: AudioDevice, sampleRate: number | null];
   pickRemoteDevice: [peer: Peer];
-  setVolume: [event: MouseEvent];
+  setVolume: [value: number];
+  toggleMute: [];
 }>();
+
+function seekKeydown(event: KeyboardEvent) {
+  if (!props.nowPlaying || props.duration <= 0) return;
+  const positions: Record<string, number> = {
+    ArrowLeft: props.currentTime - 5, ArrowDown: props.currentTime - 5,
+    ArrowRight: props.currentTime + 5, ArrowUp: props.currentTime + 5,
+    Home: 0, End: props.duration,
+  };
+  const position = positions[event.key];
+  if (position === undefined) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.repeat) emit('seek', Math.max(0, Math.min(props.duration, position)));
+}
 
 const QUEUE_SOURCE_LABELS: Record<string, string> = {
   recent: "Recently played",
@@ -450,9 +471,11 @@ onUnmounted(() => {
       }" />
       <div class="track-meta">
         <div class="track-name"><span class="marquee-text">{{ currentTrack.title }}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{ currentTrack.title }}</span></div>
-        <div class="track-artist">{{ currentTrack.artist }}</div>
+        <div class="track-artist">
+          <ArtistLink :artist="nowPlaying?.artist" @open="emit('openArtist', $event)">{{ currentTrack.artist }}</ArtistLink>
+        </div>
       </div>
-      <button class="icon-btn" :class="{ green: isLiked }" @click.stop="emit('update:isLiked', !isLiked)">
+      <button class="icon-btn" :class="{ green: isLiked }" :disabled="!nowPlaying || nowPlaying.id <= 0 || likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
         <AppIcon :name="isLiked ? 'liked' : 'like'" :size="16" />
       </button>
     </div>
@@ -479,10 +502,13 @@ onUnmounted(() => {
       </div>
       <div class="progress-row">
         <span class="time">{{ formatTime(currentTime) }}</span>
-        <div class="bar" @click="emit('seek', $event)">
-          <div v-if="showSoulseekPreviewBuffer" class="bar-buffer" :style="`width:${soulseekPreviewBufferPercent}%`" />
-          <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
-            <div class="bar-thumb" />
+        <div class="seek-hit" :class="{ dragging: seeking }" role="slider" :tabindex="nowPlaying && duration > 0 ? 0 : -1" aria-label="Playback position" :aria-disabled="!nowPlaying || duration <= 0" :aria-valuemin="0" :aria-valuemax="duration" :aria-valuenow="currentTime" :aria-valuetext="`${formatTime(currentTime)} of ${formatTime(duration)}`"
+          @pointerdown="emit('seekStart', $event)" @pointermove="emit('seekMove', $event)" @pointerup="emit('seekEnd', $event)" @pointercancel="emit('seekEnd', $event)" @lostpointercapture="emit('seekEnd', $event)" @keydown="seekKeydown">
+          <div class="bar">
+            <div v-if="showSoulseekPreviewBuffer" class="bar-buffer" :style="`width:${soulseekPreviewBufferPercent}%`" />
+            <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
+              <div class="bar-thumb" />
+            </div>
           </div>
         </div>
         <span class="time">{{ formatTime(duration) }}</span>
@@ -508,7 +534,7 @@ onUnmounted(() => {
             <CoverImage class="queue-item-cover" :src="coverUrl(nowPlaying.cover_hash, 'small')" :placeholder="placeholderCoverColors(nowPlaying.file_hash)" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ nowPlaying.title || nowPlaying.path }}</span>
-              <span class="queue-item-artist">{{ artistLabel(nowPlaying.artist) }}</span>
+              <span class="queue-item-artist"><ArtistLink :artist="nowPlaying.artist" @open="emit('openArtist', $event)" /></span>
             </div>
             <span class="queue-item-dur">{{ formatDuration(nowPlaying.duration_secs) }}</span>
           </div>
@@ -524,7 +550,7 @@ onUnmounted(() => {
             <CoverImage class="queue-item-cover" :src="coverUrl(track.cover_hash, 'small')" :placeholder="placeholderCoverColors(track.file_hash)" />
             <div class="queue-item-info">
               <span class="queue-item-title">{{ track.title || track.path }}</span>
-              <span class="queue-item-artist">{{ artistLabel(track.artist) }}</span>
+              <span class="queue-item-artist"><ArtistLink :artist="track.artist" @open="emit('openArtist', $event)" /></span>
             </div>
             <span class="queue-item-dur">{{ formatDuration(track.duration_secs) }}</span>
           </div>
@@ -589,10 +615,11 @@ onUnmounted(() => {
       </ResponsivePopup>
 
       <div class="vol-wrap">
-        <button class="icon-btn">
+        <button class="icon-btn" :title="volume > 0 ? 'Mute' : 'Unmute'" :aria-label="volume > 0 ? 'Mute' : 'Unmute'" :aria-pressed="volume === 0" @click.stop="emit('toggleMute')">
           <AppIcon :name="volume > 0 ? 'volume' : 'muted'" :size="16" />
         </button>
-        <div class="bar vol" @click="emit('setVolume', $event)">
+        <div class="bar vol">
+          <input class="volume-input" type="range" min="0" max="100" step="1" :value="volume" aria-label="Volume" :aria-valuetext="`${volume}%`" @input="emit('setVolume', Number(($event.target as HTMLInputElement).value))" />
           <div class="bar-fill" :style="`width:${volume}%`">
             <div class="bar-thumb" />
           </div>
@@ -926,6 +953,12 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--color-text) 94%, var(--color-bg));
 }
 
+.seek-hit { position: relative; display: flex; flex: 1; cursor: pointer; touch-action: none; user-select: none; }
+.seek-hit::before { content: ''; position: absolute; inset: -10px 0; z-index: 1; }
+.seek-hit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 5px; border-radius: 2px; }
+.seek-hit:is(:hover, :focus-visible, .dragging) .bar-fill { background: var(--color-accent); }
+.seek-hit:is(:hover, :focus-visible, .dragging) .bar-thumb { opacity: 1; }
+
 .progress-row {
   display: flex;
   align-items: center;
@@ -992,6 +1025,14 @@ onUnmounted(() => {
   width: 130px;
 }
 .bar.vol { flex: 1; }
+.volume-input {
+  position: absolute; left: 0; top: -10px; z-index: 1;
+  width: 100%; height: 24px; margin: 0; opacity: 0;
+  cursor: pointer; touch-action: none;
+}
+.bar.vol:focus-within { outline: 2px solid var(--color-accent); outline-offset: 5px; }
+.bar.vol:focus-within .bar-fill { background: var(--color-accent); }
+.bar.vol:focus-within .bar-thumb { opacity: 1; }
 
 .dropdown-header {
   padding: 10px 16px 6px;

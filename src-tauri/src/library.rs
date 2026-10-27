@@ -1262,7 +1262,28 @@ pub fn track_source_for_track(
     }
 }
 
-fn get_track_by_id(conn: &Connection, id: i64) -> rusqlite::Result<Track> {
+pub(crate) fn track_for_playback_source(
+    conn: &Connection,
+    data_dir: &Path,
+    path: &Path,
+    segment_start: Option<f64>,
+) -> rusqlite::Result<Option<Track>> {
+    use rusqlite::OptionalExtension;
+    let Ok(relative) = path.strip_prefix(data_dir) else {
+        return Ok(None);
+    };
+    conn.query_row(
+        &format!(
+            "SELECT {TRACK_COLUMNS} FROM library_tracks
+        WHERE COALESCE(NULLIF(source_path,''),path) = ?1 AND segment_start_secs IS ?2 LIMIT 1"
+        ),
+        params![relative.to_string_lossy().replace('\\', "/"), segment_start],
+        row_to_track,
+    )
+    .optional()
+}
+
+pub(crate) fn get_track_by_id(conn: &Connection, id: i64) -> rusqlite::Result<Track> {
     conn.query_row(
         &format!("SELECT {TRACK_COLUMNS} FROM library_tracks WHERE id = ?1"),
         params![id],
@@ -4412,6 +4433,52 @@ pub fn unmark_duplicates(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn playback_lookup_distinguishes_cue_segments_from_the_underlying_file() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tracks(id,path,source_path,segment_start_secs,title,is_liked) VALUES
+                (900,'album.flac','album.flac',NULL,'Full album',0),
+                (901,'album.cue#1','album.flac',0,'First track',0),
+                (902,'album.cue#2','album.flac',75,'Second track',1);",
+        )
+        .unwrap();
+        let root = Path::new("/music");
+        let path = root.join("album.flac");
+        assert_eq!(
+            track_for_playback_source(&conn, root, &path, None)
+                .unwrap()
+                .unwrap()
+                .id,
+            900
+        );
+        assert_eq!(
+            track_for_playback_source(&conn, root, &path, Some(0.))
+                .unwrap()
+                .unwrap()
+                .id,
+            901
+        );
+        let segment = track_for_playback_source(&conn, root, &path, Some(75.))
+            .unwrap()
+            .unwrap();
+        assert_eq!(segment.id, 902);
+        assert!(segment.is_liked);
+        assert_eq!(
+            get_track_by_id(&conn, 902).unwrap().title.as_deref(),
+            Some("Second track")
+        );
+        assert!(track_for_playback_source(&conn, root, &path, Some(100.))
+            .unwrap()
+            .is_none());
+        assert!(
+            track_for_playback_source(&conn, root, Path::new("/other/album.flac"), None)
+                .unwrap()
+                .is_none()
+        );
+    }
 
     fn entries(rules: Vec<SmartPlaylistRule>) -> Vec<SmartPlaylistEntry> {
         rules.into_iter().map(SmartPlaylistEntry::Rule).collect()
