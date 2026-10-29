@@ -1,9 +1,9 @@
 import { h, type Component, type FunctionalComponent } from 'vue';
 import {
   ArrowLeft, ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight,
-  CircleCheck, Download, ExternalLink, FolderOpen, Headphones, Heart, House,
+  CircleCheck, Download, ExternalLink, Fingerprint, FolderOpen, Headphones, Heart, House,
   Info, LibraryBig, List, ListFilter, ListMusic, ListPlus, Menu, Minus,
-  Palette, Pause, Pencil, Pin, Play, Plus, Radio, RefreshCw, Repeat, Repeat1, Search,
+  Palette, Pause, Pencil, Pin, Play, Plus, Radio, RefreshCw, Repeat, Repeat1, Search, SearchX,
   Settings, Shuffle, SkipBack, SkipForward, Speaker, Square, Trash2,
   Volume2, VolumeX, WandSparkles, Wifi, X,
 } from '@lucide/vue';
@@ -66,6 +66,8 @@ export const icons = {
   'add-to-playlist': ListPlus,
   edit: Pencil,
   identify: WandSparkles,
+  'audio-fingerprint': Fingerprint,
+  'identify-not-found': SearchX,
   pin: Pin,
   remove: X,
   delete: Trash2,
