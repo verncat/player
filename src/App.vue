@@ -3522,6 +3522,7 @@ const pluginHost = createPluginHost({
 });
 providePluginHost(pluginHost);
 const pluginPages = pluginHost.contributions('page');
+const pluginMenuPages = computed(() => pluginPages.value.filter(page => page.showInMenu !== false));
 const pluginSearchProviders = pluginHost.contributions('search');
 const pluginTrackActions = pluginHost.contributions('track-action');
 const pluginWidgets = pluginHost.contributions('player-widget');
@@ -3836,7 +3837,7 @@ onUnmounted(() => {
       <div v-if="showMobileNav" class="mobile-nav-overlay" @click="showMobileNav = false" />
     </Transition>
     <AppSidebar
-      :plugin-pages="pluginPages" @navigate-plugin="activeNav = $event"
+      :plugin-pages="pluginMenuPages" @navigate-plugin="activeNav = $event"
       :active-nav="activeNav"
       :playlist-tab="playlistTab"
       :open="showMobileNav"
@@ -4161,7 +4162,7 @@ onUnmounted(() => {
               <!-- Playlist detail -->
               <template v-if="playlistView">
                 <div v-if="playlistView.tracks.length" class="library-header" style="justify-content:flex-end;">
-                  <button v-if="playlistView.tracks.length" class="btn-primary playlist-action" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
+                  <button v-if="playlistView.tracks.length" class="control-button control-button-primary playlist-action" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
                 <div v-else class="track-list">
@@ -4184,7 +4185,7 @@ onUnmounted(() => {
               <!-- Playlist list -->
               <template v-else>
                 <div class="library-header page-toolbar">
-                  <button class="btn-secondary playlist-action" :aria-expanded="showNewPlaylistInput" @click="showNewPlaylistInput = !showNewPlaylistInput"><AppIcon name="add-to-playlist" /> New</button>
+                  <button class="control-button playlist-action" :aria-expanded="showNewPlaylistInput" @click="showNewPlaylistInput = !showNewPlaylistInput"><AppIcon name="add-to-playlist" /> New</button>
                 </div>
                 <div v-if="showNewPlaylistInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input
@@ -4195,7 +4196,7 @@ onUnmounted(() => {
                     @keydown.enter="createPlaylist"
                     @keydown.esc="showNewPlaylistInput = false"
                   />
-                  <button class="btn-primary playlist-action" @click="createPlaylist">Create</button>
+                  <button class="control-button control-button-primary playlist-action" @click="createPlaylist">Create</button>
                 </div>
                 <div v-if="playlists.length === 0" class="library-empty">No playlists yet.</div>
                 <div v-else class="track-list">
@@ -4326,8 +4327,8 @@ onUnmounted(() => {
               <template v-else-if="smartView">
                 <div class="library-header" style="justify-content:flex-end;">
                   <div style="display:flex;gap:8px;">
-                    <button class="btn-secondary playlist-action" @click="editingSP = { ...smartView! }; smartView = null"><AppIcon name="edit" /> Edit</button>
-                    <button v-if="smartViewTracks.length" class="btn-primary playlist-action" @click="playSmartPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
+                    <button class="control-button playlist-action" @click="editingSP = { ...smartView! }; smartView = null"><AppIcon name="edit" /> Edit</button>
+                    <button v-if="smartViewTracks.length" class="control-button control-button-primary playlist-action" @click="playSmartPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                   </div>
                 </div>
                 <div v-if="smartViewLoading" class="library-empty">Loading playlist…</div>
@@ -4348,11 +4349,11 @@ onUnmounted(() => {
               <!-- Smart playlist list -->
               <template v-else>
                 <div class="library-header page-toolbar">
-                  <button class="btn-secondary playlist-action" :aria-expanded="showNewSPInput" @click="showNewSPInput = !showNewSPInput"><AppIcon name="add-to-playlist" /> New</button>
+                  <button class="control-button playlist-action" :aria-expanded="showNewSPInput" @click="showNewSPInput = !showNewSPInput"><AppIcon name="add-to-playlist" /> New</button>
                 </div>
                 <div v-if="showNewSPInput" style="display:flex; gap:8px; padding: 0 0 14px;">
                   <input v-model="newSPName" class="library-search" placeholder="Smart playlist name…" style="flex:1;" @keydown.enter="createSmartPlaylist" @keydown.esc="showNewSPInput = false" />
-                  <button class="btn-primary playlist-action" @click="createSmartPlaylist">Create</button>
+                  <button class="control-button control-button-primary playlist-action" @click="createSmartPlaylist">Create</button>
                 </div>
                 <div v-if="smartPlaylists.length === 0" class="library-empty">No flexible playlists yet.</div>
                 <div v-else class="track-list">
@@ -4393,7 +4394,7 @@ onUnmounted(() => {
                   :class="{ active: dedupFilter === 'unresolved' }"
                   @click="dedupFilter = 'unresolved'"
                 >Unresolved</button>
-                <button class="btn-secondary dedup-rescan-btn" @click="openDedup()" :disabled="dedupLoading">
+                <button class="control-button dedup-rescan-btn" @click="openDedup()" :disabled="dedupLoading" :aria-busy="dedupLoading">
                   <AppIcon name="refresh" :size="14" />
                   Rescan
                 </button>
@@ -4467,13 +4468,13 @@ onUnmounted(() => {
               <div class="dedup-actions">
                 <button
                   v-if="dedupHasPersistedFlags"
-                  class="btn-secondary"
+                  class="control-button"
                   style="margin-right: auto;"
                   @click="invoke('unmark_duplicates', { ids: dedupGroups.flatMap(g => g.tracks.filter(t => t.is_duplicate).map(t => t.id)) }).then(() => openDedup()).then(() => loadLibrary())"
                 >
                   Unmark all
                 </button>
-                <button class="btn-primary" @click="dedupConfirmOpen = true" :disabled="dedupApplying">
+                <button class="control-button control-button-primary" @click="dedupConfirmOpen = true" :disabled="dedupApplying">
                   Mark as duplicates ({{ dedupMarkedTotal }})
                 </button>
               </div>
@@ -4548,6 +4549,7 @@ onUnmounted(() => {
                   class="sync-now-btn discovery-sync-btn"
                   @click="syncPeer(peer)"
                   :disabled="['index','download','reindex','merging'].includes(syncProgress[peer.name]?.phase ?? '')"
+                  :aria-busy="['index','download','reindex','merging'].includes(syncProgress[peer.name]?.phase ?? '')"
                   title="Sync now"
                 >
                   <AppIcon name="sync" :size="16" />
@@ -4702,6 +4704,7 @@ onUnmounted(() => {
       cancel-label="Cancel"
       :save-label="dedupApplying ? 'Marking…' : 'Mark as duplicates'"
       :save-disabled="dedupApplying"
+      :save-busy="dedupApplying"
       @close="dedupConfirmOpen = false"
       @cancel="dedupConfirmOpen = false"
       @save="applyDedup()"
@@ -4792,8 +4795,8 @@ onUnmounted(() => {
             </label>
           </div>
           <div class="modal-footer">
-            <button class="btn-secondary" @click="editingTrack = null">Cancel</button>
-            <button class="btn-primary" @click="saveTrack">Save</button>
+            <button class="control-button" @click="editingTrack = null">Cancel</button>
+            <button class="control-button control-button-primary" @click="saveTrack">Save</button>
           </div>
         </div>
       </div>
@@ -5652,14 +5655,11 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   color: var(--color-text);
   font-weight: 700;
 }
-.btn-primary:disabled { opacity: .72; cursor: default; }
 .text-action-btn { font-size: var(--fs-button); font-weight: 600; }
-.btn-primary.playlist-action,
-.btn-secondary.playlist-action {
+.control-button.playlist-action {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  min-height: 36px; padding: 8px 16px; white-space: nowrap;
+  min-height: 36px; white-space: nowrap;
 }
-.playlist-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 
 .history-time {
   font-size: var(--fs-body-sm);
@@ -5900,18 +5900,6 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   display: flex; justify-content: flex-end; gap: 10px;
   padding: 12px 24px 20px;
 }
-.btn-secondary {
-  background: transparent; border: 1px solid var(--color-border-strong); border-radius: 20px;
-  color: var(--color-text); font-size: var(--fs-button); font-weight: 700;
-  padding: 8px 24px; cursor: pointer;
-}
-.btn-secondary:hover { border-color: var(--color-text); }
-.btn-primary {
-  background: var(--color-accent); border: none; border-radius: 20px;
-  color: var(--color-on-accent); font-size: var(--fs-button); font-weight: 700;
-  padding: 8px 28px; cursor: pointer;
-}
-.btn-primary:hover { background: var(--color-accent-hover); transform: scale(1.02); }
 
 .modal-enter-active, .modal-leave-active { transition: opacity .15s; }
 .modal-enter-from, .modal-leave-to { opacity: 0; }

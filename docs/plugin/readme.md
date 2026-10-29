@@ -89,11 +89,16 @@ GitHub-ссылку в Load from URL. Проверьте автора,
 боковой панели. Для обновления отключите плагин и установите новую версию с тем
 же ID. Настройки сохраняются. Встроенные пакеты обновляются вместе с приложением.
 
+Для внутренней страницы укажите `showInMenu: false` во вкладе `kind: "page"`.
+Она не добавляется в боковое меню и открывается через `ctx.ui.navigate(id, context)`.
+Так Soulseek открывает поиск замены из контекстного меню трека; обычный поиск
+Soulseek остаётся в общем Search. По умолчанию страницы видны в навигации.
+
 Репозиторий должен содержать plugin.json и main.js в выбранной папке.
 Например, `https://github.com/owner/plugin` или
 `https://github.com/owner/repo/tree/main/plugins/my-plugin`. Поддержаны также
 прямые HTTPS-ссылки на package и plugin.json. Коннектор и вход в GitHub не нужны;
-приватные репозитории требуют отдельного решения. Для GitHub показывается
+приватные репозитории требуют отдельного решения. Для GitHub сохраняется
 конкретный загруженный commit. Подробный контракт — в
 [package scope](../plugins/scope/package-scope.md#загрузка-по-ссылке).
 
@@ -101,9 +106,9 @@ GitHub-ссылку в Load from URL. Проверьте автора,
 
 Settings → Plugins содержит каталог расширений из
 [plugins/catalog.json](../../plugins/catalog.json) в репозитории Player. Здесь
-можно искать по названию, автору и тегам и открыть Review plugin. Установка
-использует обычный просмотр пакета и его разрешений. Копия списка доступна
-без сети. Как добавить запись и опубликовать индекс — в
+можно искать по названию, автору и тегам и нажать Install. Установка
+использует обычный просмотр пакета и его разрешений. Список загружается только
+из сети, без встроенной копии и кеша. Как добавить запись и опубликовать индекс — в
 [catalog scope](../plugins/scope/catalog-scope.md).
 
 | Компонент | Исходники |
@@ -111,7 +116,7 @@ Settings → Plugins содержит каталог расширений из
 | Проверка manifest/package | [model.rs](../../src-tauri/src/plugins/model.rs) |
 | Реестр, настройки, поколения и handles | [store.rs](../../src-tauri/src/plugins/store.rs) |
 | Загрузка из репозитория/по URL | [remote.rs](../../src-tauri/src/plugins/remote.rs) |
-| Каталог и его кеш | [catalog.rs](../../src-tauri/src/plugins/catalog.rs), [PluginCatalog.vue](../../src/plugins/components/PluginCatalog.vue) |
+| Каталог из репозитория | [catalog.rs](../../src-tauri/src/plugins/catalog.rs), [PluginCatalog.vue](../../src/plugins/components/PluginCatalog.vue) |
 | Native gateway | [mod.rs](../../src-tauri/src/plugins/mod.rs) |
 | Android APK loader | [android.rs](../../src-tauri/src/plugins/android.rs), [ApkPlugins.kt](../../src-tauri/gen/android/app/src/main/java/dev/verncat/player/ApkPlugins.kt) |
 | Credential providers | [secrets.rs](../../src-tauri/src/plugins/secrets.rs) |

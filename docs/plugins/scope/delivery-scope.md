@@ -61,8 +61,8 @@ Native тесты проверяют packages, permissions, persistence/CAS/gene
 
 ## Границы версии
 
-Полная система API 1 включает установку JavaScript-пакетов, каталог из репозитория
-с offline-копией, общий UI, права/хранилище, медиа API и оба требуемых native-адаптера. Подписи
+Полная система API 1 включает установку JavaScript-пакетов, сетевой каталог из
+репозитория, общий UI, права/хранилище, медиа API и оба требуемых native-адаптера. Подписи
 издателей, automatic update, OS sandbox, desktop native binaries, произвольные
 Vue/HTML, custom codecs/PCM и resumable downloads после app restart — отдельные
 расширения протокола. Эти возможности нельзя заявлять в UI до реализации.

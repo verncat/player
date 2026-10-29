@@ -36,14 +36,14 @@ function openNoteLink(event: MouseEvent) {
 <template>
   <div class="about-panel">
     <p v-if="loading && !info" role="status">Loading app information...</p>
-    <div v-else-if="error && !info" class="error" role="alert">{{ error }} <button @click="emit('retry')">Try again</button></div>
+    <div v-else-if="error && !info" class="error" role="alert">{{ error }} <button class="control-button" @click="emit('retry')">Try again</button></div>
     <template v-else>
       <div class="app-identity">
         <div class="app-summary">
           <img class="app-mark" :src="appIconUrl" alt="" width="64" height="64" />
           <div><h3>Player</h3><p>Local-first music player with native playback, smart playlists, Soulseek search, and LAN sync.</p></div>
         </div>
-        <button v-if="info?.release_repo" class="text-link repository-link" @click="emit('openRepository')">GitHub repository <AppIcon name="external-link" /></button>
+        <button v-if="info?.release_repo" class="control-button text-link repository-link" @click="emit('openRepository')">GitHub repository <AppIcon name="external-link" /></button>
       </div>
       <div class="info-row"><span>Version</span><strong>{{ info?.current_version || 'Unavailable' }}</strong></div>
       <div class="info-row"><span>Platform</span><span>{{ info?.platform || 'Unavailable' }}</span></div>
@@ -53,16 +53,16 @@ function openNoteLink(event: MouseEvent) {
           <p v-else-if="status">{{ status.latest_version ? 'You have the latest release.' : status.message }}</p>
           <p v-else>Check for the latest version of Player.</p>
         </div>
-        <button v-if="status?.has_update" class="primary" :disabled="updating" @click="emit('update')">
+        <button v-if="status?.has_update" class="control-button control-button-primary" :disabled="updating" :aria-busy="updating" @click="emit('update')">
           {{ updating ? (progress !== null ? `Downloading ${progress}%` : 'Downloading...') : desktopReady || status.asset_url ? 'Update now' : 'View release' }}
         </button>
-        <button v-else :disabled="checking" @click="emit('check')">{{ checking ? 'Checking...' : 'Check for updates' }}</button>
+        <button class="control-button" v-else :disabled="checking" :aria-busy="checking" @click="emit('check')">{{ checking ? 'Checking...' : 'Check for updates' }}</button>
         <progress v-if="updating && progress !== null" max="100" :value="progress" aria-label="Update download progress" />
       </div>
       <p v-if="updateError" class="error" role="alert">{{ updateError }}</p>
       <p v-if="updateDone" role="status">{{ updateDone }}</p>
       <div v-if="status?.release_url" class="links">
-        <button class="text-link" @click="emit('openRelease')">Release page <AppIcon name="external-link" /></button>
+        <button class="control-button text-link" @click="emit('openRelease')">Release page <AppIcon name="external-link" /></button>
       </div>
       <div v-if="contributors.length" class="contributors" aria-labelledby="contributors-heading">
         <h3 id="contributors-heading">Contributors</h3>
@@ -90,7 +90,7 @@ function openNoteLink(event: MouseEvent) {
         <p v-else>No changelog is available for this build.</p>
       </div>
       <footer class="about-footer">
-        <button type="button" class="text-link" @click="emit('openExternal', 'https://github.com/' + (info?.release_repo || 'verncat/player') + '/blob/HEAD/public/licenses/third-party.txt')">Licenses <AppIcon name="external-link" :size="14" /></button>
+        <button type="button" class="control-button text-link" @click="emit('openExternal', 'https://github.com/' + (info?.release_repo || 'verncat/player') + '/blob/HEAD/public/licenses/third-party.txt')">Licenses <AppIcon name="external-link" :size="14" /></button>
       </footer>
     </template>
   </div>
@@ -117,13 +117,7 @@ strong { color: var(--color-text); }
 .contributor-link {
   border-radius: 8px;
 }
-button { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); padding: 9px 16px; border-radius: 99px; cursor: pointer; font-size: 13px; font-weight: 600; }
-button:enabled:is(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); border-color: var(--color-text-faint); }
-button:disabled { opacity: .5; cursor: default; }
-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 .contributor-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
-.primary { background: var(--color-accent); color: var(--color-on-accent); border-color: var(--color-accent); }
-.primary:enabled:is(:hover, :active) { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
 .error { color: var(--color-danger-text); overflow-wrap: anywhere; }
 .links { display: flex; flex-wrap: wrap; gap: 12px; }
 .about-footer { display: flex; padding-top: 16px; border-top: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); }

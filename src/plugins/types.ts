@@ -2,6 +2,8 @@ import type { Track } from '../types';
 export interface Contribution {
   id: string; kind: 'page' | 'settings' | 'search' | 'track-action' | 'player-widget';
   label: string; description: string; icon?: string; order: number; slot?: 'player.actions' | 'player.status';
+  /** Pages appear in the sidebar by default; false keeps only their route. */
+  showInMenu?: boolean;
 }
 export interface PluginManifest {
   id: string; name: string; version: string; apiVersion: number; description: string;
@@ -21,7 +23,7 @@ export interface CatalogEntry {
 }
 export interface PluginCatalogListing {
   catalog: { schemaVersion: number; updatedAt: string; plugins: CatalogEntry[] };
-  sourceUrl: string; source: 'remote' | 'cache' | 'bundled'; platform: string; warning?: string | null;
+  platform: string;
 }
 export interface AndroidPluginDiscovery { supported: boolean; plugins: Array<PluginPreview & { content: string }>; warnings: string[] }
 export interface PluginInfo {

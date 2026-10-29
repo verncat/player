@@ -1,13 +1,11 @@
 //! Discovery metadata only. Installation still downloads and reviews a real package.
 use super::model::{Author, Manifest, Package};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, path::Path, sync::Mutex, time::Duration};
+use std::{collections::HashSet, time::Duration};
 
 const DEFAULT_URL: &str =
     "https://raw.githubusercontent.com/verncat/player/main/plugins/catalog.json";
-const EMBEDDED: &str = include_str!("../../../plugins/catalog.json");
 const MAX_BYTES: usize = 512 * 1024;
-static CACHE_WRITE: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -44,17 +42,7 @@ pub struct Entry {
 #[serde(rename_all = "camelCase")]
 pub struct Listing {
     pub catalog: Catalog,
-    pub source_url: String,
-    pub source: &'static str,
     pub platform: &'static str,
-    pub warning: Option<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Cached {
-    source_url: String,
-    catalog: Catalog,
 }
 
 fn valid_date(date: &str) -> bool {
@@ -148,34 +136,13 @@ impl Catalog {
     }
 }
 
-fn saved(root: &Path, source_url: &str) -> (Catalog, &'static str) {
-    for name in ["catalog.json", "catalog.bak"] {
-        let path = root.join(name);
-        if !fs::metadata(&path).is_ok_and(|m| m.len() <= (MAX_BYTES * 2) as u64) {
-            continue;
-        }
-        let cached = fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Cached>(&bytes).ok());
-        if let Some(cached) = cached {
-            if cached.source_url == source_url && cached.catalog.validate().is_ok() {
-                return (cached.catalog, "cache");
-            }
-        }
-    }
-    (
-        Catalog::parse(EMBEDDED.as_bytes()).expect("validated embedded catalog"),
-        "bundled",
-    )
-}
-
 async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let mut response = super::remote::client()?
         .get(super::remote::download_url(url)?)
         .timeout(Duration::from_secs(30))
         .send()
         .await
-        .map_err(|e| format!("Could not refresh plugin catalog: {}", e.without_url()))?;
+        .map_err(|e| format!("Could not load plugin catalog: {}", e.without_url()))?;
     if !response.status().is_success() {
         return Err(format!(
             "Plugin catalog returned HTTP {}",
@@ -202,74 +169,45 @@ async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-async fn load_with<F, Fut>(
-    root: &Path,
-    source_url: &str,
-    refresh: bool,
-    fetch: F,
-) -> Result<Listing, String>
+async fn load_with<F, Fut>(source_url: &str, fetch: F) -> Result<Listing, String>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
     super::remote::download_url(source_url)?;
-    let (mut catalog, mut source) = saved(root, source_url);
-    let mut warning = None;
-    if refresh {
-        match fetch().await.and_then(|bytes| Catalog::parse(&bytes)) {
-            Ok(downloaded) => {
-                catalog = downloaded;
-                source = "remote";
-                let cache = Cached {
-                    source_url: source_url.into(),
-                    catalog: catalog.clone(),
-                };
-                let stored = CACHE_WRITE
-                    .lock()
-                    .map_err(|e| e.to_string())
-                    .and_then(|_lock| {
-                        super::store::write_atomic(
-                            &root.join("catalog.json"),
-                            &serde_json::to_vec(&cache).map_err(|e| e.to_string())?,
-                        )
-                    });
-                if stored.is_err() {
-                    warning =
-                        Some("Catalog refreshed, but could not save it on this device.".into());
-                }
-            }
-            Err(error) => {
-                warning = Some(format!("{error}. Showing the available offline catalog."));
-            }
-        }
-    }
+    let catalog = Catalog::parse(&fetch().await?)?;
     Ok(Listing {
         catalog,
-        source_url: source_url.into(),
-        source,
         platform: super::model::platform(),
-        warning,
     })
 }
 
-pub async fn load(root: &Path, refresh: bool) -> Result<Listing, String> {
+pub async fn load() -> Result<Listing, String> {
     let url = option_env!("PLAYER_PLUGIN_CATALOG_URL").unwrap_or(DEFAULT_URL);
-    load_with(root, url, refresh, || fetch(url)).await
+    load_with(url, || fetch(url)).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     fn fixture() -> serde_json::Value {
-        serde_json::from_str(EMBEDDED).unwrap()
+        serde_json::json!({
+            "schemaVersion": 1,
+            "updatedAt": "2026-10-27",
+            "plugins": [{
+                "id": "example.hello", "name": "Hello Player", "description": "Test entry",
+                "repository": "https://github.com/example/hello",
+                "addedAt": "2026-10-27", "platforms": ["linux"], "tags": []
+            }]
+        })
     }
     fn parse(value: serde_json::Value) -> Result<Catalog, String> {
         Catalog::parse(&serde_json::to_vec(&value).unwrap())
     }
 
     #[test]
-    fn shipped_catalog_and_calendar_dates_are_valid() {
-        let catalog = Catalog::parse(EMBEDDED.as_bytes()).unwrap();
+    fn catalog_and_calendar_dates_are_valid() {
+        let catalog = parse(fixture()).unwrap();
         assert_eq!(catalog.plugins[0].id, "example.hello");
         assert!(valid_date("2024-02-29"));
         assert!(valid_date("2000-02-29"));
@@ -323,54 +261,61 @@ mod tests {
         assert!(parse(value).is_err());
     }
     #[test]
-    fn refresh_persists_valid_catalog_and_keeps_it_when_offline_or_malformed() {
-        let root = std::env::temp_dir().join(format!(
-            "player-catalog-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let url = "https://example.org/catalog.json";
-        let mut next = fixture();
-        next["plugins"][0]["name"] = "Updated listing".into();
-        let bytes = serde_json::to_vec(&next).unwrap();
-        let run = |refresh, result| {
-            tauri::async_runtime::block_on(load_with(&root, url, refresh, || {
-                std::future::ready(result)
+    fn each_load_fetches_a_new_catalog() {
+        let mut calls = 0;
+        for name in ["First response", "New response"] {
+            let mut value = fixture();
+            value["plugins"][0]["name"] = name.into();
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let listing = tauri::async_runtime::block_on(load_with(
+                "https://example.org/catalog.json",
+                || {
+                    calls += 1;
+                    std::future::ready(Ok(bytes))
+                },
+            ))
+            .unwrap();
+            assert_eq!(listing.catalog.plugins[0].name, name);
+            let json = serde_json::to_value(&listing).unwrap();
+            assert_eq!(json.as_object().unwrap().len(), 2);
+            assert!(json.get("catalog").is_some());
+            assert!(json.get("platform").is_some());
+        }
+        assert_eq!(calls, 2);
+    }
+    #[test]
+    fn failed_or_invalid_downloads_return_errors_without_a_fallback() {
+        let run = |response| {
+            tauri::async_runtime::block_on(load_with("https://example.org/catalog.json", || {
+                std::future::ready(response)
             }))
         };
-        let fresh = run(true, Ok(bytes)).unwrap();
-        assert_eq!(fresh.source, "remote");
-        let offline = run(true, Err("offline".into())).unwrap();
-        assert_eq!(offline.source, "cache");
-        assert_eq!(offline.catalog.plugins[0].name, "Updated listing");
-        assert!(offline.warning.is_some());
-        let malformed = run(true, Ok(b"not json".to_vec())).unwrap();
-        assert_eq!(malformed.source, "cache");
-        let cached = run(false, Err("must not fetch".into())).unwrap();
-        assert_eq!(cached.source, "cache");
-        assert!(cached.warning.is_none());
-        let other = tauri::async_runtime::block_on(load_with(
-            &root,
-            "https://other.org/catalog.json",
-            false,
-            || async { panic!("must not fetch") },
+        // A previous successful request must not turn a later failure into a saved list.
+        assert!(run(Ok(serde_json::to_vec(&fixture()).unwrap())).is_ok());
+        for error in ["Network unavailable", "Plugin catalog returned HTTP 404"] {
+            assert_eq!(run(Err(error.into())).unwrap_err(), error);
+        }
+        assert!(run(Ok(b"not json".to_vec()))
+            .unwrap_err()
+            .contains("Invalid plugin catalog"));
+        let mut invalid = fixture();
+        invalid["schemaVersion"] = 2.into();
+        assert!(run(Ok(serde_json::to_vec(&invalid).unwrap())).is_err());
+    }
+    #[test]
+    fn empty_remote_catalog_stays_empty_and_unsafe_urls_are_rejected_before_fetch() {
+        let empty =
+            serde_json::json!({ "schemaVersion": 1, "updatedAt": "2026-10-27", "plugins": [] });
+        let listing = tauri::async_runtime::block_on(load_with(
+            "https://example.org/catalog.json",
+            || async { Ok(serde_json::to_vec(&empty).unwrap()) },
         ))
         .unwrap();
-        assert_eq!(other.source, "bundled");
-        let mut newer = fixture();
-        newer["plugins"][0]["name"] = "Latest listing".into();
-        run(true, Ok(serde_json::to_vec(&newer).unwrap())).unwrap();
-        fs::write(root.join("catalog.json"), "broken").unwrap();
-        let fallback = run(false, Err("must not fetch".into())).unwrap();
-        assert_eq!(fallback.source, "cache");
-        assert_eq!(fallback.catalog.plugins[0].name, "Updated listing");
-        fs::write(root.join("catalog.bak"), "broken").unwrap();
-        let fallback = run(false, Err("must not fetch".into())).unwrap();
-        assert_eq!(fallback.source, "bundled");
-        fs::remove_dir_all(root).unwrap();
+        assert!(listing.catalog.plugins.is_empty());
+        let invalid =
+            tauri::async_runtime::block_on(load_with("file:///tmp/catalog.json", || async {
+                panic!("must not fetch unsafe URLs")
+            }));
+        assert!(invalid.is_err());
     }
 }

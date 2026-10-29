@@ -27,6 +27,19 @@ fn value(v: impl Serialize) -> Result<Value, String> {
     serde_json::to_value(v).map_err(|e| e.to_string())
 }
 
+async fn read_secret(state: &PluginState, id: &str, name: &str) -> Result<Option<String>, String> {
+    let cache = state.secrets.clone();
+    let plugin_id = id.to_owned();
+    let key = name.to_owned();
+    let secret = tauri::async_runtime::spawn_blocking(move || cache.get(&plugin_id, &key))
+        .await
+        .map_err(|e| e.to_string())??;
+    if state.has_secret(id, name)? != secret.is_some() {
+        state.remember_secret(id, name, secret.is_some())?;
+    }
+    Ok(secret)
+}
+
 pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     let root = app
         .path()
@@ -49,13 +62,18 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
             )?;
         }
         if !cfg.soulseek_password.is_empty() {
-            match secrets::get("player.soulseek", "password").and_then(|existing| {
-                if existing.is_some() {
-                    Ok(())
-                } else {
-                    secrets::set("player.soulseek", "password", &cfg.soulseek_password)
-                }
-            }) {
+            match state
+                .secrets
+                .get("player.soulseek", "password")
+                .and_then(|existing| {
+                    if existing.is_some() {
+                        Ok(())
+                    } else {
+                        state
+                            .secrets
+                            .set("player.soulseek", "password", &cfg.soulseek_password)
+                    }
+                }) {
                 Ok(()) => {
                     state.remember_secret("player.soulseek", "password", true)?;
                     app.state::<crate::library::LibraryState>()
@@ -127,11 +145,8 @@ pub async fn plugins_download(
     Ok(preview)
 }
 #[tauri::command]
-pub async fn plugins_catalog(
-    refresh: Option<bool>,
-    state: tauri::State<'_, PluginState>,
-) -> Result<catalog::Listing, String> {
-    catalog::load(&state.root, refresh.unwrap_or(false)).await
+pub async fn plugins_catalog() -> Result<catalog::Listing, String> {
+    catalog::load().await
 }
 #[tauri::command]
 pub fn plugins_install(
@@ -151,7 +166,7 @@ pub fn plugins_uninstall(
         return Err("Disable the plugin before uninstalling it".into());
     }
     for key in state.record(&plugin_id)?.secret_keys {
-        secrets::delete(&plugin_id, &key)?;
+        state.secrets.delete(&plugin_id, &key)?;
     }
     state.uninstall(&plugin_id)
 }
@@ -184,6 +199,7 @@ pub async fn plugins_set_enabled(
     state: tauri::State<'_, PluginState>,
 ) -> Result<PluginInfo, String> {
     // Persist revocation first: a concurrent operation cannot obtain fresh capabilities.
+    let previous_generation = state.record(&plugin_id)?.generation;
     let info = state.enabled(&plugin_id, enabled)?;
     if !enabled {
         state.revoke_sources(&plugin_id);
@@ -212,6 +228,13 @@ pub async fn plugins_set_enabled(
             .await
             .map_err(|e| e.to_string())??;
         }
+    }
+    if previous_generation != info.generation {
+        let cache = state.secrets.clone();
+        let id = plugin_id.clone();
+        tauri::async_runtime::spawn_blocking(move || cache.forget_plugin(&id))
+            .await
+            .map_err(|e| e.to_string())??;
     }
     let _ = app.emit("plugins-changed", ());
     Ok(info)
@@ -277,19 +300,30 @@ pub async fn plugin_call(
             field(&args, "revision")?,
             field(&args, "values")?,
         ),
-        "secrets.has" => {
-            value(secrets::get(&plugin_id, &field::<String>(&args, "key")?)?.is_some())
+        "secrets.has" => value(state.has_secret(&plugin_id, &field::<String>(&args, "key")?)?),
+        "secrets.get" => {
+            value(read_secret(&state, &plugin_id, &field::<String>(&args, "key")?).await?)
         }
-        "secrets.get" => value(secrets::get(&plugin_id, &field::<String>(&args, "key")?)?),
         "secrets.set" => {
             let key: String = field(&args, "key")?;
-            secrets::set(&plugin_id, &key, &field::<String>(&args, "value")?)?;
+            let cache = state.secrets.clone();
+            let id = plugin_id.clone();
+            let name = key.clone();
+            let secret: String = field(&args, "value")?;
+            tauri::async_runtime::spawn_blocking(move || cache.set(&id, &name, &secret))
+                .await
+                .map_err(|e| e.to_string())??;
             state.remember_secret(&plugin_id, &key, true)?;
             Ok(Value::Null)
         }
         "secrets.delete" => {
             let key: String = field(&args, "key")?;
-            secrets::delete(&plugin_id, &key)?;
+            let cache = state.secrets.clone();
+            let id = plugin_id.clone();
+            let name = key.clone();
+            tauri::async_runtime::spawn_blocking(move || cache.delete(&id, &name))
+                .await
+                .map_err(|e| e.to_string())??;
             state.remember_secret(&plugin_id, &key, false)?;
             Ok(Value::Null)
         }
@@ -538,13 +572,23 @@ async fn soulseek_call(
         .as_str()
         .unwrap_or(&cfg.soulseek_username)
         .into();
-    cfg.soulseek_password = secrets::get(id, "password")
-        .ok()
-        .flatten()
-        .unwrap_or(cfg.soulseek_password);
-    state.configure(cfg);
+    if method == "soulseek.status" {
+        return value(state.status(&cfg.soulseek_username, plugins.has_secret(id, "password")?));
+    }
+    if matches!(
+        method,
+        "soulseek.search" | "soulseek.download" | "soulseek.preview" | "soulseek.cover"
+    ) {
+        cfg.soulseek_password = read_secret(&plugins, id, "password")
+            .await?
+            .unwrap_or_default();
+        plugins.authorize(id, generation, "native.soulseek")?;
+        if cfg.soulseek_password.is_empty() {
+            return Err("Save your Soulseek password in plugin settings first".into());
+        }
+        state.configure(cfg);
+    }
     match method {
-        "soulseek.status" => value(soulseek::soulseek_get_status(state, library)?),
         "soulseek.search" => value(
             soulseek::soulseek_search(
                 field(&args, "query")?,

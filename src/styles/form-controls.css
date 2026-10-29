@@ -1,0 +1,24 @@
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+  font-size: var(--fs-body-md);
+  font-weight: 600;
+}
+
+.form-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--fs-field-input);
+}
+
+.form-input:disabled { opacity: .5; }
+.form-input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }

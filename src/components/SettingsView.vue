@@ -19,6 +19,9 @@ import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 import { usePluginHost } from '../plugins/host';
 import PluginManager from '../plugins/components/PluginManager.vue';
 import PluginPanel from '../plugins/components/PluginPanel.vue';
+import PluginImage from '../plugins/components/PluginImage.vue';
+import type { PluginManifest } from '../plugins/types';
+import type { AppIconName } from '../icons';
 
 const props = defineProps<{
   section: SettingsSection | null;
@@ -68,7 +71,11 @@ const emit = defineEmits<{
 const selected = computed(() => props.section ?? 'library');
 const pluginHost = usePluginHost();
 const pluginSettings = pluginHost.contributions('settings');
-const sections = computed(() => [...SETTINGS_SECTIONS, ...pluginSettings.value.map(c => ({ id: `plugin:${c.key}` as SettingsSection, label: c.label, description: c.description, icon: 'settings' as const }))]);
+interface SettingsNavItem { id: SettingsSection; label: string; description: string; icon: AppIconName; manifest?: PluginManifest }
+const sections = computed<SettingsNavItem[]>(() => [...SETTINGS_SECTIONS, ...pluginSettings.value.map(c => ({
+  id: `plugin:${c.key}` as SettingsSection, label: c.label, description: c.description, icon: 'settings' as const,
+  manifest: pluginHost.plugins.value.find(plugin => plugin.manifest.id === c.pluginId)?.manifest,
+}))]);
 const sectionInfo = computed(() => sections.value.find(section => section.id === selected.value) ?? { label: 'Settings' });
 const activePluginSettings = computed(() => pluginSettings.value.find(c => selected.value === `plugin:${c.key}`));
 const panel = ref<HTMLElement | null>(null);
@@ -150,12 +157,16 @@ onMounted(() => { void loadConfig(); });
     <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="back" :size="18" /> Settings</button>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
-        <button v-for="item in sections" :key="item.id" :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
-          <AppIcon :name="item.icon" />
-          <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
-          <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
-          <AppIcon class="nav-chevron" name="disclosure" :size="20" />
-        </button>
+        <template v-for="(item, index) in sections" :key="item.id">
+          <hr v-if="index === SETTINGS_SECTIONS.length" class="settings-nav-divider" aria-label="Plugin settings" />
+          <button :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
+            <PluginImage v-if="item.manifest" :manifest="item.manifest" monochrome />
+            <AppIcon v-else class="settings-nav-icon" :name="item.icon" />
+            <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
+            <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
+            <AppIcon class="nav-chevron" name="disclosure" :size="20" />
+          </button>
+        </template>
         <p class="local-note">Preferences stay on this device.</p>
       </nav>
       <div ref="panel" class="settings-panel" role="region" :aria-label="sectionInfo.label" tabindex="-1">
@@ -163,16 +174,16 @@ onMounted(() => { void loadConfig(); });
           <div class="settings-group">
             <h3>Music folder</h3>
             <p>Your files are the source of your library.</p>
-            <div class="folder-card"><AppIcon name="folder" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button></div>
+            <div class="folder-card"><AppIcon name="folder" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="control-button icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button></div>
           </div>
           <div class="settings-group">
             <h3>Library maintenance</h3>
             <div class="setting-row"><div><h4>Show duplicates</h4><p>Include tracks marked as duplicates in your library and playlists.</p></div><SettingsToggle :model-value="showDuplicateTracks" label="Show duplicates" @update:model-value="emit('update:showDuplicateTracks', $event)" /></div>
-            <div class="setting-row"><div><h4>Reindex library</h4><p>Scan your music folder for new or changed files.</p></div><button :disabled="indexBusy" @click="emit('reindex')">{{ indexBusy ? 'Scanning...' : 'Reindex' }}</button></div>
+            <div class="setting-row"><div><h4>Reindex library</h4><p>Scan your music folder for new or changed files.</p></div><button class="control-button" :aria-busy="indexBusy" :disabled="indexBusy" @click="emit('reindex')">{{ indexBusy ? 'Scanning...' : 'Reindex' }}</button></div>
             <div v-if="indexBusy" class="scan-progress" role="status"><progress :value="indexTotal ? indexCurrent : undefined" :max="indexTotal || 1" aria-label="Library scanning progress" /><p>{{ indexTotal ? `${indexCurrent} of ${indexTotal} files scanned` : 'Looking for music files...' }}</p></div>
             <p v-else-if="indexDone" class="success" role="status">Scan complete. {{ indexAdded }} files added or updated.</p>
-            <div class="setting-row"><div><h4>Duplicates</h4><p>Review matching tracks and choose which ones to keep visible.</p></div><button @click="emit('duplicates')">Review duplicates</button></div>
-            <div class="setting-row"><div><h4>Identify tracks</h4><p>Look up missing metadata using audio fingerprints. Requires an internet connection.</p></div><button :disabled="identifyBusy" @click="emit('identify')">{{ identifyBusy ? 'Identifying...' : 'Identify tracks' }}</button></div>
+            <div class="setting-row"><div><h4>Duplicates</h4><p>Review matching tracks and choose which ones to keep visible.</p></div><button class="control-button" @click="emit('duplicates')">Review duplicates</button></div>
+            <div class="setting-row"><div><h4>Identify tracks</h4><p>Look up missing metadata using audio fingerprints. Requires an internet connection.</p></div><button class="control-button" :aria-busy="identifyBusy" :disabled="identifyBusy" @click="emit('identify')">{{ identifyBusy ? 'Identifying...' : 'Identify tracks' }}</button></div>
             <p v-if="actionError" class="error" role="alert">{{ actionError }}</p><p v-if="actionMessage" class="help" role="status">{{ actionMessage }}</p>
           </div>
         </template>
@@ -180,8 +191,8 @@ onMounted(() => { void loadConfig(); });
         <template v-else-if="selected === 'playback'">
           <div v-if="remoteOutputLabel" class="notice"><strong>Playing on {{ remoteOutputLabel }}</strong><p>Choosing a local output transfers playback to this device.</p></div>
           <div class="settings-group">
-            <div class="setting-row"><div><h3>Audio output</h3><p>Choose where Player sends audio on this device.</p></div><button :disabled="audioLoading || audioBusy" @click="emit('refreshAudio')">{{ audioLoading ? 'Refreshing...' : 'Refresh' }}</button></div>
-            <label class="field">
+            <div class="setting-row"><div><h3>Audio output</h3><p>Choose where Player sends audio on this device.</p></div><button class="control-button" :aria-busy="audioLoading" :disabled="audioLoading || audioBusy" @click="emit('refreshAudio')">{{ audioLoading ? 'Refreshing...' : 'Refresh' }}</button></div>
+            <label class="field form-field">
               <span>Output device</span>
               <AppSelect :model-value="selectedDevice ?? ''" :disabled="audioLoading || audioBusy" @update:model-value="emit('selectOutput', $event)">
                 <option value="">System default</option>
@@ -189,7 +200,7 @@ onMounted(() => { void loadConfig(); });
                 <option v-for="device in outputDevices" :key="device.name" :value="device.name">{{ device.name }}</option>
               </AppSelect>
             </label>
-            <label class="field">
+            <label class="field form-field">
               <span>Sample rate</span>
               <AppSelect :model-value="currentSampleRate ?? null" :disabled="audioLoading || audioBusy || !outputDevices.length" @update:model-value="emit('selectSampleRate', $event)">
                 <option :value="null">Auto</option>
@@ -205,18 +216,18 @@ onMounted(() => { void loadConfig(); });
 
         <template v-else-if="selected === 'devices'">
           <p v-if="configLoading" role="status">Loading device settings...</p>
-          <div v-else-if="configError" class="notice"><p class="error" role="alert">{{ configError }}</p><button @click="loadConfig">Try again</button></div>
+          <div v-else-if="configError" class="notice"><p class="error" role="alert">{{ configError }}</p><button class="control-button" @click="loadConfig">Try again</button></div>
           <template v-else-if="config">
 
               <form class="settings-group" @submit.prevent="saveIdentity">
                 <h3>Device identity</h3><p>This is how this Player appears to other devices.</p>
                 <div class="device-preview"><span class="device-emoji">{{ emoji }}</span><div><strong>{{ deviceName.trim() || 'My Player' }}</strong><p>This device</p></div></div>
-                <label class="field"><span>Device name</span><input v-model="deviceName" placeholder="My Player" autocomplete="off" maxlength="100" :disabled="identitySaving" /></label>
-                <fieldset :disabled="identitySaving"><legend>Device emoji</legend><div class="emoji-picker"><button v-for="item in emojiOptions" :key="item" type="button" :class="{ chosen: emoji === item }" :aria-pressed="emoji === item" :aria-label="`Use ${item} as device emoji`" @click="emoji = item">{{ item }}</button></div></fieldset>
+                <label class="field form-field"><span>Device name</span><input v-model="deviceName" class="form-input" placeholder="My Player" autocomplete="off" maxlength="100" :disabled="identitySaving" /></label>
+                <fieldset :disabled="identitySaving"><legend>Device emoji</legend><div class="emoji-picker"><button class="control-button" v-for="item in emojiOptions" :key="item" type="button" :class="{ chosen: emoji === item }" :aria-pressed="emoji === item" :aria-label="`Use ${item} as device emoji`" @click="emoji = item">{{ item }}</button></div></fieldset>
                 <p v-if="identityError" class="error" role="alert">{{ identityError }}</p><p v-if="identitySaved && !identityDirty" class="success" role="status">Device identity saved.</p>
-                <div class="form-actions"><button type="button" :disabled="!identityDirty || identitySaving" @click="resetIdentity">Cancel</button><button class="primary" :disabled="!identityDirty || identitySaving" type="submit">{{ identitySaving ? 'Saving...' : 'Save' }}</button></div>
+                <div class="form-actions"><button class="control-button" type="button" :disabled="!identityDirty || identitySaving" @click="resetIdentity">Cancel</button><button class="control-button control-button-primary" :aria-busy="identitySaving" :disabled="!identityDirty || identitySaving" type="submit">{{ identitySaving ? 'Saving...' : 'Save' }}</button></div>
               </form>
-              <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="icon-label" @click="emit('devices')">Open devices <AppIcon name="go" /></button></div></div>
+              <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :aria-busy="syncBusy" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="control-button icon-label" @click="emit('devices')">Open devices <AppIcon name="go" /></button></div></div>
           </template>
         </template>
 
@@ -252,10 +263,12 @@ onMounted(() => { void loadConfig(); });
 p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 0; }
 .settings-layout { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 44px; align-items: start; }
 .settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: var(--settings-page-top); }
+.settings-nav-divider { border: 0; border-top: 1px solid var(--color-border); margin: 8px 12px; }
 .settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
 .settings-nav > button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
 .settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
+.settings-nav-icon { color: var(--color-accent-text); }
 .nav-copy { flex: 1; }
 .nav-description, .nav-chevron { display: none; }
 .local-note { font-size: 11px; padding: 20px 12px 0; }
@@ -268,21 +281,13 @@ h4 { font-size: 14px; margin: 0 0 5px; font-weight: 500; }
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 21px 0; border-bottom: 1px solid var(--color-border); }
 .setting-row > div { min-width: 0; }
 .setting-row p { max-width: 390px; }
-button, input { font: inherit; }
-.settings-panel button:where(:not(.settings-switch)), .mobile-back { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); border-radius: 99px; padding: 9px 16px; font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
 .settings-panel .icon-label { display: inline-flex; align-items: center; gap: 6px; }
-.settings-panel button:where(:not(.settings-switch):enabled):is(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); border-color: var(--color-text-faint); }
-.settings-panel button:not(.settings-switch):disabled { opacity: .45; cursor: default; }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 .settings-panel :deep(.settings-switch) { padding: 3px; border-radius: 99px; }
-.settings-panel .primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); padding-inline: 24px; }
-.settings-panel .primary:enabled:is(:hover, :active) { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
 .folder-card { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 18px; padding: 18px; border-radius: 8px; }
 .folder-card svg { width: 24px; height: 24px; color: var(--color-text-muted); flex-shrink: 0; }
 .folder-card > span { flex: 1; min-width: 120px; overflow-wrap: anywhere; font-size: 13px; color: var(--color-text); }
-.field { display: flex; flex-direction: column; gap: 9px; margin-top: 22px; font-size: 13px; font-weight: 600; }
-.field input { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); border-radius: 5px; padding: 12px; width: 100%; min-height: 44px; font-size: 14px; }
-.field input:disabled { opacity: .5; }
+.field { margin-top: 22px; }
 .field .app-select { min-height: 44px; }
 .help { font-size: 12px; margin-top: 12px; }
 .notice { border-radius: 8px; padding: 16px; margin-bottom: 24px; }
@@ -345,9 +350,11 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .appearance-preview { grid-template-columns: minmax(0, 1fr); }
   .settings-layout { display: block; }
   .settings-nav { position: static; gap: 0; }
+  .settings-nav-divider { margin: 12px 4px; }
   .settings-nav > button { padding: 18px 4px; border-bottom: 1px solid var(--color-border); border-radius: 0; gap: 16px; min-height: 76px; }
   .settings-nav > button.selected { background: transparent; color: var(--color-text-muted); }
   .settings-nav svg { width: 22px; height: 22px; }
+  .settings-nav { --plugin-icon-size: 22px; }
   .nav-label { color: var(--color-text); font-size: 15px; }
   .nav-description { display: block; color: var(--color-text-muted); font-size: 12px; font-weight: 400; margin-top: 6px; }
   .nav-chevron { display: block; color: var(--color-text-faint); }

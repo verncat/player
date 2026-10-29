@@ -61,15 +61,32 @@ impl SoulseekState {
     pub fn configure(&self, settings: DeviceSettings) {
         *self.config.lock().unwrap() = Some(settings);
     }
+    /// Metadata-only status for the authorized plugin. Never loads credentials or creates a client.
+    pub fn status(&self, username: &str, password_saved: bool) -> SoulseekStatus {
+        let username = username.trim();
+        let inner = self.inner.lock().unwrap();
+        SoulseekStatus {
+            enabled: true,
+            configured: !username.is_empty() && password_saved,
+            username: (!username.is_empty()).then(|| username.to_owned()),
+            active_session: inner.client.is_some()
+                && inner
+                    .config
+                    .as_ref()
+                    .is_some_and(|c| c.username == username),
+        }
+    }
     pub fn deactivate(&self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
         for (_, cancel) in self.preview_cancellers.lock().unwrap().drain() {
             cancel.cancel();
         }
-        self.inner.lock().unwrap().client = None;
-        if let Some(config) = self.config.lock().unwrap().as_mut() {
-            config.soulseek_enabled = false;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.client = None;
+            inner.config = None;
         }
+        *self.config.lock().unwrap() = None;
     }
     fn settings(&self, library: &LibraryState) -> Result<DeviceSettings, String> {
         if let Some(config) = self.config.lock().unwrap().clone() {
@@ -325,28 +342,6 @@ struct SoulseekDownloadEvent {
     queue_position: Option<u32>,
     local_path: Option<String>,
     error: Option<String>,
-}
-
-#[tauri::command]
-pub fn soulseek_get_status(
-    state: tauri::State<'_, SoulseekState>,
-    library: tauri::State<'_, LibraryState>,
-) -> Result<SoulseekStatus, String> {
-    let settings = state.settings(&library)?;
-    let configured = SoulseekState::desired_config(&settings).is_some();
-    let active_session = state.maybe_client_for_settings(&settings).is_some();
-    let username = if settings.soulseek_username.trim().is_empty() {
-        None
-    } else {
-        Some(settings.soulseek_username.trim().to_string())
-    };
-
-    Ok(SoulseekStatus {
-        enabled: settings.soulseek_enabled,
-        configured,
-        username,
-        active_session,
-    })
 }
 
 #[tauri::command]
@@ -1539,6 +1534,34 @@ async fn monitor_download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn status_does_not_load_credentials_or_create_a_client_and_disable_drops_config() {
+        let state = SoulseekState::new(PathBuf::from("unused-test-staging"));
+        assert!(state.status(" listener ", true).configured);
+        assert_eq!(
+            state.status(" listener ", true).username.as_deref(),
+            Some("listener")
+        );
+        assert!(!state.status("listener", false).configured);
+        assert!(!state.status(" ", true).configured);
+        assert!(state.config.lock().unwrap().is_none());
+        assert!(state.inner.lock().unwrap().client.is_none());
+        state.configure(DeviceSettings {
+            emoji: "🎵".into(),
+            device_name: "Test".into(),
+            sync_enabled: false,
+            soulseek_enabled: true,
+            soulseek_username: "listener".into(),
+            soulseek_password: "test-only".into(),
+        });
+        state.inner.lock().unwrap().config = Some(SoulseekConfig {
+            username: "listener".into(),
+            password: "test-only".into(),
+        });
+        state.deactivate();
+        assert!(state.config.lock().unwrap().is_none());
+        assert!(state.inner.lock().unwrap().config.is_none());
+    }
     #[test]
     fn remote_basenames_cannot_escape_staging() {
         assert!(validate_remote_filename("Artist\\Album\\song.flac").is_ok());

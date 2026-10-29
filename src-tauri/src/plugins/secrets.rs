@@ -1,4 +1,61 @@
 //! Credential values never enter the plugin registry or logs.
+use std::{collections::BTreeMap, sync::Mutex};
+
+/// Successful reads, missing values and refusals are shared within a plugin activation.
+/// Holding the lock across provider access coalesces concurrent reads into one OS request.
+#[derive(Default)]
+pub struct SecretCache {
+    values: Mutex<BTreeMap<String, Result<Option<String>, String>>>,
+}
+impl SecretCache {
+    fn get_with(
+        &self,
+        key: String,
+        read: impl FnOnce() -> Result<Option<String>, String>,
+    ) -> Result<Option<String>, String> {
+        let mut values = self
+            .values
+            .lock()
+            .map_err(|_| "Credential cache is unavailable")?;
+        values.entry(key).or_insert_with(read).clone()
+    }
+    fn update_with(
+        &self,
+        key: String,
+        value: Option<String>,
+        write: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut values = self
+            .values
+            .lock()
+            .map_err(|_| "Credential cache is unavailable")?;
+        write()?;
+        values.insert(key, Ok(value));
+        Ok(())
+    }
+    pub fn get(&self, id: &str, name: &str) -> Result<Option<String>, String> {
+        self.get_with(key(id, name)?, || read(id, name))
+    }
+    pub fn set(&self, id: &str, name: &str, value: &str) -> Result<(), String> {
+        if value.len() > 16384 {
+            return Err("Secret too large".into());
+        }
+        self.update_with(key(id, name)?, Some(value.into()), || {
+            write(id, name, value)
+        })
+    }
+    pub fn delete(&self, id: &str, name: &str) -> Result<(), String> {
+        self.update_with(key(id, name)?, None, || remove(id, name))
+    }
+    pub fn forget_plugin(&self, id: &str) -> Result<(), String> {
+        let prefix = format!("{id}/");
+        self.values
+            .lock()
+            .map_err(|_| "Credential cache is unavailable")?
+            .retain(|key, _| !key.starts_with(&prefix));
+        Ok(())
+    }
+}
 #[cfg(target_os = "linux")]
 use std::io::Write;
 #[cfg(target_os = "linux")]
@@ -16,7 +73,7 @@ fn wide(key: &str) -> Vec<u16> {
         .chain(Some(0))
         .collect()
 }
-pub fn set(id: &str, name: &str, value: &str) -> Result<(), String> {
+fn write(id: &str, name: &str, value: &str) -> Result<(), String> {
     let key = key(id, name)?;
     if value.len() > 16384 {
         return Err("Secret too large".into());
@@ -96,7 +153,7 @@ pub fn set(id: &str, name: &str, value: &str) -> Result<(), String> {
         Err("Secure credential provider is unavailable on this platform".into())
     }
 }
-pub fn get(id: &str, name: &str) -> Result<Option<String>, String> {
+fn read(id: &str, name: &str) -> Result<Option<String>, String> {
     let key = key(id, name)?;
     #[cfg(target_os = "macos")]
     {
@@ -165,7 +222,7 @@ pub fn get(id: &str, name: &str) -> Result<Option<String>, String> {
         Err("Secure credential provider is unavailable on this platform".into())
     }
 }
-pub fn delete(id: &str, name: &str) -> Result<(), String> {
+fn remove(id: &str, name: &str) -> Result<(), String> {
     let key = key(id, name)?;
     #[cfg(target_os = "macos")]
     {
@@ -238,4 +295,120 @@ pub fn mobile_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             Ok(())
         })
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier,
+    };
+
+    #[test]
+    fn concurrent_reads_only_open_the_credential_provider_once() {
+        let cache = Arc::new(SecretCache::default());
+        let count = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let cache = cache.clone();
+                let count = count.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    cache
+                        .get_with("example.one/password".into(), || {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            Ok(Some("test-only".into()))
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+        for worker in workers {
+            assert_eq!(worker.join().unwrap().as_deref(), Some("test-only"));
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn refusal_is_not_retried_automatically_and_reset_is_scoped_to_plugin() {
+        let cache = SecretCache::default();
+        let count = AtomicUsize::new(0);
+        for _ in 0..5 {
+            assert!(cache
+                .get_with("example.one/password".into(), || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Err("Access declined".into())
+                })
+                .is_err());
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        cache
+            .get_with("example.two/password".into(), || Ok(Some("other".into())))
+            .unwrap();
+        cache.forget_plugin("example.one").unwrap();
+        assert_eq!(
+            cache
+                .get_with("example.one/password".into(), || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(Some("retry".into()))
+                })
+                .unwrap()
+                .as_deref(),
+            Some("retry")
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            cache
+                .get_with("example.two/password".into(), || panic!(
+                    "unrelated cache was cleared"
+                ))
+                .unwrap()
+                .as_deref(),
+            Some("other")
+        );
+    }
+
+    #[test]
+    fn writes_and_deletes_update_cache_only_after_success() {
+        let cache = SecretCache::default();
+        assert!(cache
+            .set("example.one", "password", &"a".repeat(16385))
+            .is_err());
+        let key = "example.one/password".to_string();
+        cache
+            .get_with(key.clone(), || Err("Access declined".into()))
+            .unwrap_err();
+        cache
+            .update_with(key.clone(), Some("saved".into()), || Ok(()))
+            .unwrap();
+        assert_eq!(
+            cache
+                .get_with(key.clone(), || panic!("save should update cache"))
+                .unwrap()
+                .as_deref(),
+            Some("saved")
+        );
+        assert!(cache
+            .update_with(key.clone(), Some("failed".into()), || Err(
+                "write failed".into()
+            ))
+            .is_err());
+        assert_eq!(
+            cache
+                .get_with(key.clone(), || panic!("failed write should keep old value"))
+                .unwrap()
+                .as_deref(),
+            Some("saved")
+        );
+        cache.update_with(key.clone(), None, || Ok(())).unwrap();
+        assert_eq!(
+            cache
+                .get_with(key, || panic!("delete should cache absence"))
+                .unwrap(),
+            None
+        );
+    }
 }

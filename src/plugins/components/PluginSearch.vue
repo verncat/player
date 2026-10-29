@@ -3,13 +3,15 @@ import { onUnmounted, ref, watch } from 'vue';
 import { usePluginHost, validateUiNode } from '../host';
 import type { SearchItem, UiContribution } from '../types';
 import PluginTree from './PluginTree.vue';
-import '../controls.css';
 const props = defineProps<{ contribution: UiContribution; query: string }>();
 const host = usePluginHost(); const items = ref<SearchItem[]>([]); const error = ref(''); const loading = ref(false); const submitted = ref('');
+const loadingDirection = ref<'new' | 'next' | 'previous'>('new');
+const actionBusy = ref(false); const pendingButton = ref<string>();
 let sequence = 0; let disposed = false;
 const currentCursor = ref<string | null>(null); const nextCursor = ref<string | null>(null); const previousCursors = ref<Array<string | null>>([]);
 async function search(cursor: string | null = null, direction: 'new' | 'next' | 'previous' = 'new') {
-  const query = props.query.trim(); if (!query || loading.value) return;
+  const query = props.query.trim(); if (!query || loading.value || actionBusy.value) return;
+  loadingDirection.value = direction;
   const seq = ++sequence; loading.value = true; error.value = ''; submitted.value = query;
   try {
     const result = await host.call(props.contribution.pluginId, 'search', { providerId: props.contribution.id, query, cursor, limit: 120 }) as { items: SearchItem[]; nextCursor: string | null };
@@ -23,9 +25,12 @@ async function search(cursor: string | null = null, direction: 'new' | 'next' | 
   } catch (e) { if (seq === sequence) error.value = String(e); }
   finally { if (seq === sequence) loading.value = false; }
 }
-async function action(action: string, payload = {}) {
+async function action(action: string, payload = {}, button?: string) {
+  if (loading.value || actionBusy.value) return;
+  actionBusy.value = true; pendingButton.value = button;
   try { error.value = ''; await host.call(props.contribution.pluginId, 'action', { action, payload }); }
   catch (e) { error.value = String(e); }
+  finally { actionBusy.value = false; pendingButton.value = undefined; }
 }
 watch(() => props.query, () => { sequence++; items.value = []; error.value = ''; submitted.value = ''; loading.value = false; currentCursor.value = null; nextCursor.value = null; previousCursors.value = []; });
 watch(host.revision, async () => {
@@ -35,5 +40,20 @@ watch(host.revision, async () => {
 });
 onUnmounted(() => { disposed = true; sequence++; });
 </script>
-<template><section class="plugin-search"><div class="section-head"><h2>{{ contribution.label }}</h2><button class="plugin-button btn-secondary" :disabled="loading || !query.trim()" @click="search()">{{ loading ? 'Searching…' : 'Search' }}</button></div><p v-if="error" role="alert">{{ error }}</p><p v-else-if="!submitted">Press Search to query {{ contribution.label }}.</p><p v-else-if="!loading && !items.length">No matches for “{{ submitted }}”.</p><PluginTree :node="{ type: 'results', items }" :fields="{}" :busy="false" @action="action" /><div v-if="previousCursors.length || nextCursor" class="plugin-search-pages"><button class="plugin-button btn-secondary" :disabled="loading || !previousCursors.length" @click="search(previousCursors[previousCursors.length - 1] ?? null, 'previous')">Previous</button><button class="plugin-button btn-secondary" :disabled="loading || !nextCursor" @click="search(nextCursor, 'next')">Next</button></div></section></template>
+<template>
+  <section class="plugin-search">
+    <div class="section-head">
+      <h2>{{ contribution.label }}</h2>
+      <button class="control-button" :disabled="loading || actionBusy || !query.trim()" :aria-busy="loading && loadingDirection === 'new'" @click="search()">{{ loading && loadingDirection === 'new' ? 'Searching…' : 'Search' }}</button>
+    </div>
+    <p v-if="error" role="alert">{{ error }}</p>
+    <p v-else-if="!submitted">Press Search to query {{ contribution.label }}.</p>
+    <p v-else-if="!loading && !items.length">No matches for “{{ submitted }}”.</p>
+    <PluginTree :node="{ type: 'results', items }" :fields="{}" :busy="loading || actionBusy" :pending-button="pendingButton" @action="action" />
+    <div v-if="previousCursors.length || nextCursor" class="plugin-search-pages">
+      <button class="control-button" :disabled="loading || actionBusy || !previousCursors.length" :aria-busy="loading && loadingDirection === 'previous'" @click="search(previousCursors[previousCursors.length - 1] ?? null, 'previous')">Previous</button>
+      <button class="control-button" :disabled="loading || actionBusy || !nextCursor" :aria-busy="loading && loadingDirection === 'next'" @click="search(nextCursor, 'next')">Next</button>
+    </div>
+  </section>
+</template>
 <style scoped>.plugin-search { margin-top: 24px; }.plugin-search .section-head { display: flex; justify-content: space-between; gap: 16px; }.plugin-search-pages { display: flex; justify-content: flex-end; gap: 12px; margin-top: 12px; }.plugin-search > p { color: var(--color-text-muted); }</style>

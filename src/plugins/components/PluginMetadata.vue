@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import type { InstallSource, PluginManifest } from '../types';
-const props = defineProps<{ manifest: PluginManifest; source?: InstallSource | null }>();
+import type { PluginManifest } from '../types';
+const props = defineProps<{ manifest: PluginManifest }>();
 const error = ref('');
 const author = computed(() => typeof props.manifest.author === 'string'
   ? { name: props.manifest.author, url: undefined } : props.manifest.author);
@@ -23,12 +23,13 @@ async function open(url: string) {
       <a v-if="webLink(manifest.repository)" :href="webLink(manifest.repository)" @click.prevent="open(webLink(manifest.repository)!)">Repository</a>
       <a v-if="webLink(manifest.homepage) && manifest.homepage !== manifest.repository" :href="webLink(manifest.homepage)" @click.prevent="open(webLink(manifest.homepage)!)">Website</a>
     </span>
-    <span v-if="source && webLink(source.url)" class="plugin-origin">Source: <a :href="webLink(source.url)" @click.prevent="open(webLink(source.url)!)">{{ source.url }}</a><span v-if="source.revision"> · commit {{ source.revision.slice(0, 12) }}</span></span>
-    <span v-if="error" role="alert">{{ error }}</span>
+    <slot />
+    <span v-if="error" class="plugin-link-error" role="alert">{{ error }}</span>
   </div>
 </template>
 <style scoped>
-.plugin-metadata { display: grid; gap: 6px; color: var(--color-text-muted); font-size: 12px; overflow-wrap: anywhere; }
-.plugin-links { display: flex; gap: 14px; flex-wrap: wrap; }.plugin-links:empty { display: none; }
+.plugin-metadata { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; color: var(--color-text-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.plugin-links { display: flex; gap: 12px; flex-wrap: wrap; }.plugin-links:empty { display: none; }
 .plugin-metadata a { color: var(--color-text-muted); text-decoration: underline; text-underline-offset: 3px; }.plugin-metadata a:hover { color: var(--color-text); }
+.plugin-link-error { flex-basis: 100%; }
 </style>

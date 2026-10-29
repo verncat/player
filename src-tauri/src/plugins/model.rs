@@ -150,6 +150,8 @@ pub struct Contribution {
     pub order: i32,
     #[serde(default)]
     pub slot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_in_menu: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -346,6 +348,9 @@ impl Package {
             {
                 return Err("Invalid player slot".into());
             }
+            if c.show_in_menu.is_some() && c.kind != "page" {
+                return Err("showInMenu is only valid for page contributions".into());
+            }
         }
         if !m.contributions.is_empty() && !m.permissions.iter().any(|p| p == "ui") {
             return Err("UI contributions require ui permission".into());
@@ -490,6 +495,49 @@ mod tests {
         assert!(p.validate(false).is_err());
     }
     #[test]
+    fn page_menu_visibility_is_optional_and_roundtrips() {
+        let mut p = package();
+        p.manifest.permissions.push("ui".into());
+        p.manifest.contributions = vec![serde_json::from_value(serde_json::json!({
+            "id": "details", "kind": "page", "label": "Details"
+        }))
+        .unwrap()];
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json["manifest"]["contributions"][0]
+            .get("showInMenu")
+            .is_none());
+        let legacy = Package::parse(&serde_json::to_string(&p).unwrap(), false).unwrap();
+        assert_eq!(p.fingerprint(), legacy.fingerprint());
+        let legacy_fingerprint = p.fingerprint();
+        for visible in [false, true] {
+            p.manifest.contributions[0].show_in_menu = Some(visible);
+            let json = serde_json::to_value(&p).unwrap();
+            assert_eq!(json["manifest"]["contributions"][0]["showInMenu"], visible);
+            let parsed = Package::parse(&serde_json::to_string(&p).unwrap(), false).unwrap();
+            assert_eq!(parsed.manifest.contributions[0].show_in_menu, Some(visible));
+            assert_eq!(p.fingerprint(), parsed.fingerprint());
+            assert_ne!(p.fingerprint(), legacy_fingerprint);
+        }
+    }
+    #[test]
+    fn rejects_menu_visibility_on_other_contributions_and_non_booleans() {
+        let mut p = package();
+        p.manifest.permissions.push("ui".into());
+        p.manifest.contributions = vec![serde_json::from_value(serde_json::json!({
+            "id": "details", "kind": "page", "label": "Details", "showInMenu": false
+        }))
+        .unwrap()];
+        for kind in ["settings", "search", "track-action", "player-widget"] {
+            p.manifest.contributions[0].kind = kind.into();
+            p.manifest.contributions[0].slot = Some("player.status".into());
+            assert!(p.validate(false).unwrap_err().contains("showInMenu"));
+        }
+        let mut json = serde_json::to_value(&p).unwrap();
+        json["manifest"]["contributions"][0]["kind"] = "page".into();
+        json["manifest"]["contributions"][0]["showInMenu"] = "false".into();
+        assert!(Package::parse(&json.to_string(), false).is_err());
+    }
+    #[test]
     fn rejects_path_ids_incompatible_api_and_duplicates() {
         assert!(!valid_id("../escape"));
         let mut p = package();
@@ -505,6 +553,7 @@ mod tests {
             icon: None,
             order: 0,
             slot: None,
+            show_in_menu: None,
         };
         p.manifest.contributions = vec![c.clone(), c];
         assert!(p.validate(false).is_err());

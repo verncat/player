@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import ts from 'typescript';
-import { reactive } from 'vue';
+import { computed, reactive, ref } from 'vue';
 const prelude = readFileSync(new URL('../src/plugins/worker.js', import.meta.url), 'utf8');
 const source = (name) => readFileSync(new URL(`../plugins/${name}/main.js`, import.meta.url), 'utf8');
 const plain = (v) => JSON.parse(JSON.stringify(v));
@@ -31,10 +31,115 @@ function runtime(script, handler = async () => null) {
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('internal plugin pages stay routable while only visible pages reach the sidebar', () => {
+  const script = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
+  const parsed = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true);
+  const declarations = parsed.statements.filter(s => ts.isVariableStatement(s) && s.declarationList.declarations.some(d => ['pluginMenuPages', 'activePluginPage'].includes(d.name.getText(parsed))));
+  assert.equal(declarations.length, 2);
+  const code = ts.transpileModule(declarations.map(d => d.getText(parsed)).join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const pluginPages = ref([
+    { id: 'home', pluginId: 'example.hello' },
+    { id: 'public', pluginId: 'example.other', showInMenu: true },
+    { id: 'replacement', pluginId: 'player.soulseek', showInMenu: false },
+  ]);
+  const activeNav = ref('plugins/player.soulseek/replacement');
+  const { pluginMenuPages, activePluginPage } = new Function('computed', 'pluginPages', 'activeNav', `${code}\nreturn { pluginMenuPages, activePluginPage };`)(computed, pluginPages, activeNav);
+  assert.deepEqual(pluginMenuPages.value.map(p => p.id), ['home', 'public']);
+  assert.equal(activePluginPage.value.id, 'replacement');
+  activeNav.value = 'plugins/example.hello/home';
+  assert.equal(activePluginPage.value.id, 'home');
+  activeNav.value = 'plugins/player.soulseek/replacement';
+  assert.equal(activePluginPage.value.id, 'replacement');
+  pluginPages.value = [];
+  assert.equal(activePluginPage.value, undefined);
+  assert.deepEqual(pluginMenuPages.value, []);
+});
+
+test('Soulseek opens its internal replacement page from a track action and keeps its search provider', async () => {
+  const manifest = JSON.parse(readFileSync(new URL('../plugins/soulseek/plugin.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.contributions.find(c => c.id === 'replacement').showInMenu, false);
+  assert.ok(manifest.contributions.some(c => c.kind === 'search'));
+  const track = { id: 42, artist: 'Artist', title: 'Song' };
+  const r = runtime(source('soulseek'), async (method) => {
+    if (method === 'settings.get') return { revision: 0, values: {} };
+    if (method === 'secrets.has') return false;
+    if (method === 'soulseek.status') return { configured: false };
+    if (method === 'host.navigate') return null;
+    throw new Error(`Unexpected call ${method}`);
+  });
+  await r.request('activate', { pluginId: manifest.id });
+  await r.request('action', { action: 'find-replacement', payload: { track } });
+  assert.deepEqual(r.calls.find(c => c.method === 'host.navigate').args, { pageId: 'replacement', context: { track } });
+  const view = await r.request('render', { viewId: 'replacement', context: { track } });
+  assert.equal(view.title, 'Replace Song');
+  assert.equal(view.children.find(n => n.key === 'query').value, 'Artist Song');
+  await r.request('deactivate');
+});
+
+for (const component of ['PluginPanel', 'PluginSearch']) {
+  test(`${component} keeps the clicked button busy, blocks duplicate actions and resets after errors`, async () => {
+    const script = readFileSync(new URL(`../src/plugins/components/${component}.vue`, import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
+    const parsed = ts.createSourceFile(`${component}.ts`, script, ts.ScriptTarget.Latest, true);
+    const fn = parsed.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === 'action');
+    const code = ts.transpileModule(`export ${fn.getText(parsed)}`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText;
+    const helpers = {}, busy = { value: false }, pendingButton = { value: undefined }, error = { value: '' };
+    let calls = 0, finish, fail;
+    const host = { call: () => { calls++; return new Promise((resolve, reject) => { finish = resolve; fail = reject; }); } };
+    new Function('exports', 'host', 'props', 'busy', 'actionBusy', 'loading', 'pendingButton', 'error', 'fields', 'render', code)(
+      helpers, host, { pluginId: 'example.test', contribution: { pluginId: 'example.test' } }, busy, busy, { value: false }, pendingButton, error, { value: {} }, async () => {},
+    );
+    const first = helpers.action('save', {}, '/0/button');
+    assert.equal(busy.value, true); assert.equal(pendingButton.value, '/0/button');
+    await helpers.action('save', {}, '/1/button');
+    assert.equal(calls, 1); assert.equal(pendingButton.value, '/0/button');
+    finish(); await first;
+    assert.equal(busy.value, false); assert.equal(pendingButton.value, undefined);
+    const second = helpers.action('save', {}, '/1/button');
+    fail(new Error('Request failed')); await second;
+    assert.equal(busy.value, false); assert.equal(pendingButton.value, undefined);
+    assert.match(error.value, /Request failed/);
+  });
+}
+
 const catalogHelpers = {};
 new Function('exports', ts.transpileModule(readFileSync(new URL('../src/plugins/catalog.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText)(catalogHelpers);
+
+test('catalog requests the remote list once, clears old entries and only toasts on failure', async () => {
+  const script = readFileSync(new URL('../src/plugins/components/PluginCatalog.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
+  const parsed = ts.createSourceFile('PluginCatalog.ts', script, ts.ScriptTarget.Latest, true);
+  const fn = parsed.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === 'load');
+  const code = ts.transpileModule(`export ${fn.getText(parsed)}`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const helpers = {}, loading = { value: false }, listing = { value: { catalog: { plugins: ['old'] } } };
+  const calls = [], notices = [];
+  let finish, fail;
+  new Function('exports', 'invoke', 'loading', 'listing', 'emit', 'disposed', code)(helpers,
+    (...args) => { calls.push(args); return new Promise((resolve, reject) => { finish = resolve; fail = reject; }); },
+    loading, listing, (...args) => notices.push(args), false);
+  const first = helpers.load();
+  assert.equal(listing.value, undefined); assert.equal(loading.value, true);
+  await helpers.load();
+  assert.deepEqual(calls, [['plugins_catalog']]);
+  const fresh = { catalog: { plugins: ['remote'] }, platform: 'linux' };
+  finish(fresh); await first;
+  assert.equal(listing.value, fresh); assert.equal(loading.value, false);
+  const second = helpers.load();
+  assert.equal(listing.value, undefined);
+  fail(new Error('Plugin catalog returned HTTP 404')); await second;
+  assert.equal(listing.value, undefined); assert.equal(loading.value, false);
+  assert.deepEqual(notices, [['notify', 'Error: Plugin catalog returned HTTP 404']]);
+  const retry = helpers.load();
+  const empty = { catalog: { plugins: [] }, platform: 'linux' };
+  finish(empty); await retry;
+  assert.equal(listing.value, empty); assert.equal(calls.length, 3);
+});
 
 test('catalog searches author and tags, sorts newest first and leaves source order intact', () => {
   const template = JSON.parse(readFileSync(new URL('../plugins/catalog.json', import.meta.url), 'utf8')).plugins[0];

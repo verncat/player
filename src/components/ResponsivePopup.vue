@@ -9,6 +9,7 @@ const props = defineProps<{
   cancelLabel?: string;
   saveLabel?: string;
   saveDisabled?: boolean;
+  saveBusy?: boolean;
   anchorX?: number | null;
   anchorY?: number | null;
   centered?: boolean;
@@ -119,10 +120,10 @@ onUnmounted(() => {
           <slot />
         </div>
         <div v-if="showActions" class="responsive-popup-actions">
-          <button class="responsive-popup-cancel" @click="emit('cancel')">
+          <button class="control-button" @click="emit('cancel')">
             {{ cancelLabel ?? 'Cancel' }}
           </button>
-          <button class="responsive-popup-save" :disabled="saveDisabled" @click="emit('save')">
+          <button class="control-button control-button-primary" :disabled="saveDisabled || saveBusy" :aria-busy="saveBusy || false" @click="emit('save')">
             {{ saveLabel ?? 'Save' }}
           </button>
         </div>
@@ -146,10 +147,10 @@ onUnmounted(() => {
             <slot />
           </div>
           <div v-if="showActions" class="responsive-popup-actions">
-            <button class="responsive-popup-cancel" @click="emit('cancel')">
+            <button class="control-button" @click="emit('cancel')">
               {{ cancelLabel ?? 'Cancel' }}
             </button>
-            <button class="responsive-popup-save" :disabled="saveDisabled" @click="emit('save')">
+            <button class="control-button control-button-primary" :disabled="saveDisabled || saveBusy" :aria-busy="saveBusy || false" @click="emit('save')">
               {{ saveLabel ?? 'Save' }}
             </button>
           </div>
@@ -248,40 +249,6 @@ onUnmounted(() => {
   flex-shrink: 0;
   background: var(--color-surface);
   border-top: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
-}
-
-.responsive-popup-cancel,
-.responsive-popup-save {
-  border-radius: 20px;
-  font-size: var(--fs-button);
-  font-weight: 700;
-  padding: 8px 22px;
-  cursor: pointer;
-}
-
-.responsive-popup-cancel {
-  background: transparent;
-  border: 1px solid var(--color-border-strong);
-  color: var(--color-text);
-}
-
-.responsive-popup-cancel:hover {
-  border-color: var(--color-text);
-}
-
-.responsive-popup-save {
-  background: var(--color-accent);
-  border: none;
-  color: var(--color-on-accent);
-}
-
-.responsive-popup-save:hover:not(:disabled) {
-  background: var(--color-accent-hover);
-}
-
-.responsive-popup-save:disabled {
-  opacity: 0.55;
-  cursor: default;
 }
 
 @media (max-width: 900px) {

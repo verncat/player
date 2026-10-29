@@ -7,7 +7,7 @@ import SettingsToggle from '../../components/SettingsToggle.vue';
 import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
 import PluginCatalog from './PluginCatalog.vue';
-import '../controls.css';
+import AppToast from '../../components/AppToast.vue';
 
 const host = usePluginHost();
 const error = ref('');
@@ -61,7 +61,7 @@ async function loadUrl() {
 }
 async function loadCatalogPlugin(entry: CatalogEntry) {
   if (busy.value) return;
-  busy.value = 'download'; error.value = ''; resetPreview();
+  busy.value = `catalog:${entry.id}`; error.value = ''; resetPreview();
   try {
     const downloaded = await invoke<PluginDownload>('plugins_download', {
       url: entry.installUrl || entry.repository, expectedId: entry.id,
@@ -80,17 +80,26 @@ async function install() {
   finally { busy.value = ''; }
 }
 async function toggle(id: string, enabled: boolean) {
+  if (busy.value) return;
   try { busy.value = id; error.value = ''; await host.setEnabled(id, enabled); }
   catch (e) { error.value = String(e); }
   finally { busy.value = ''; }
 }
 async function clearCache(id: string) {
-  try { busy.value = id; error.value = ''; await invoke('plugins_clear_cache', { pluginId: id }); }
+  if (busy.value) return;
+  try { busy.value = `cache:${id}`; error.value = ''; await invoke('plugins_clear_cache', { pluginId: id }); }
   catch (e) { error.value = String(e); }
   finally { busy.value = ''; }
 }
 async function uninstall(id: string) {
-  try { busy.value = id; error.value = ''; await host.uninstall(id); }
+  if (busy.value) return;
+  try { busy.value = `uninstall:${id}`; error.value = ''; await host.uninstall(id); }
+  catch (e) { error.value = String(e); }
+  finally { busy.value = ''; }
+}
+async function retry(id: string) {
+  if (busy.value) return;
+  try { busy.value = `retry:${id}`; error.value = ''; await host.retry(id); }
   catch (e) { error.value = String(e); }
   finally { busy.value = ''; }
 }
@@ -99,51 +108,53 @@ async function uninstall(id: string) {
 <template>
   <section class="plugin-manager">
     <h3>Plugins</h3>
-    <p>Add features to Player. Preferences and plugin data stay on this device.</p>
-    <p v-if="error || host.errors.value.host" class="error" role="alert">{{ error || host.errors.value.host }}</p>
+    <AppToast :message="error" @dismiss="error = ''" />
+    <p v-if="host.errors.value.host" class="error" role="alert">{{ host.errors.value.host }}</p>
     <p v-if="host.loading.value" role="status">Loading plugins…</p>
     <article v-for="plugin in host.plugins.value" :key="plugin.manifest.id" class="plugin-card">
       <div class="plugin-heading">
         <PluginImage :manifest="plugin.manifest" />
         <div><h4>{{ plugin.manifest.name }} <small>{{ plugin.manifest.version }}</small></h4><p>{{ plugin.manifest.description }}</p></div>
-        <SettingsToggle :model-value="plugin.enabled" :label="plugin.manifest.name" :disabled="!plugin.supported || Boolean(busy)" @update:model-value="toggle(plugin.manifest.id, $event)" />
+        <SettingsToggle :model-value="plugin.enabled" :label="plugin.manifest.name" :disabled="!plugin.supported || Boolean(busy)" :aria-busy="busy === plugin.manifest.id" @update:model-value="toggle(plugin.manifest.id, $event)" />
       </div>
-      <PluginMetadata :manifest="plugin.manifest" :source="plugin.installSource" />
+      <PluginMetadata :manifest="plugin.manifest" />
       <p v-if="plugin.manifest.androidNative">Android APK · {{ plugin.manifest.androidNative.packageName }}</p>
       <p v-if="!plugin.supported">Unavailable on this platform.</p>
       <p v-else-if="plugin.enabled && !host.running.value.includes(plugin.manifest.id)">Not running</p>
       <p v-if="host.errors.value[plugin.manifest.id]" class="error" role="alert">{{ host.errors.value[plugin.manifest.id] }}</p>
-      <button v-if="(plugin.enabled || host.errors.value[plugin.manifest.id]) && plugin.supported && !host.running.value.includes(plugin.manifest.id)" class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="host.retry(plugin.manifest.id)">Retry</button>
-      <button v-if="!plugin.builtin && !plugin.enabled" class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="uninstall(plugin.manifest.id)">Uninstall</button>
-      <button v-if="!plugin.enabled" class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="clearCache(plugin.manifest.id)">Clear cache</button>
+      <div class="plugin-actions">
+        <button v-if="(plugin.enabled || host.errors.value[plugin.manifest.id]) && plugin.supported && !host.running.value.includes(plugin.manifest.id)" class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === `retry:${plugin.manifest.id}`" @click="retry(plugin.manifest.id)">Retry</button>
+        <button v-if="!plugin.enabled" class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === `cache:${plugin.manifest.id}`" @click="clearCache(plugin.manifest.id)">Clear cache</button>
+        <button v-if="!plugin.builtin && !plugin.enabled" class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === `uninstall:${plugin.manifest.id}`" @click="uninstall(plugin.manifest.id)">Uninstall</button>
+      </div>
       <small v-if="!plugin.builtin">{{ plugin.manifest.id }}</small>
     </article>
-    <PluginCatalog :busy="Boolean(busy)" @review="loadCatalogPlugin" />
+    <PluginCatalog :busy="Boolean(busy)" :pending-id="busy.startsWith('catalog:') ? busy.slice(8) : undefined" @review="loadCatalogPlugin" @notify="error = $event" />
     <div class="plugin-install">
       <h4>Install a plugin</h4>
       <template v-if="android">
         <p>Install the extension APK on Android, then find it here.</p>
-        <button class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="scanApks">{{ busy === 'scan' ? 'Scanning…' : 'Find APK plugins' }}</button>
+        <button class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === 'scan'" @click="scanApks">{{ busy === 'scan' ? 'Scanning…' : 'Find APK plugins' }}</button>
         <p v-for="warning in apkWarnings" :key="warning" class="error" role="alert">{{ warning }}</p>
         <div v-for="plugin in apkPlugins" :key="plugin.manifest.id" class="plugin-card">
           <div class="plugin-heading">
             <PluginImage :manifest="plugin.manifest" />
             <div><h4>{{ plugin.manifest.name }} <small>{{ plugin.manifest.version }}</small></h4><p>{{ plugin.manifest.description }}</p></div>
           </div>
-          <button class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="previewApk(plugin)">Review connection</button>
+          <button class="control-button" :disabled="Boolean(busy)" @click="previewApk(plugin)">Review connection</button>
         </div>
       </template>
       <form class="plugin-url" @submit.prevent="loadUrl">
         <label for="plugin-url">Public GitHub repository, plugin folder or package URL</label>
-        <div class="plugin-url-row"><input id="plugin-url" v-model="url" type="url" placeholder="https://github.com/author/plugin" autocomplete="off" :disabled="Boolean(busy)" /><button class="plugin-button btn-secondary" :disabled="Boolean(busy) || !url.trim()">{{ busy === 'download' ? 'Loading…' : 'Load from URL' }}</button></div>
+        <div class="plugin-url-row"><input id="plugin-url" v-model="url" class="form-input" type="url" placeholder="https://github.com/author/plugin" autocomplete="off" :disabled="Boolean(busy)" /><button class="control-button" :disabled="Boolean(busy) || !url.trim()" :aria-busy="busy === 'download'">{{ busy === 'download' ? 'Loading…' : 'Load from URL' }}</button></div>
       </form>
-      <label>Or choose a .player-plugin package<input class="plugin-file" type="file" accept=".player-plugin,.json" :disabled="Boolean(busy)" @change="load" /></label>
+      <label>Or choose a .player-plugin package<input class="form-file" type="file" accept=".player-plugin,.json" :disabled="Boolean(busy)" :aria-busy="busy === 'preview'" @change="load" /></label>
       <div v-if="preview" ref="previewCard" class="plugin-card">
         <div class="plugin-heading">
           <PluginImage :manifest="preview.manifest" />
           <div><h4>{{ preview.manifest.name }} <small>{{ preview.manifest.version }}</small></h4><p>{{ preview.manifest.description }}</p></div>
         </div>
-        <PluginMetadata :manifest="preview.manifest" :source="preview.source" />
+        <PluginMetadata :manifest="preview.manifest" />
         <p>Only install code from authors you trust. Plugins run JavaScript and can use their granted Player APIs.</p>
         <p>Permissions: {{ preview.manifest.permissions.join(', ') || 'none' }}</p>
         <template v-if="preview.manifest.androidNative">
@@ -152,8 +163,10 @@ async function uninstall(id: string) {
           <small class="fingerprint">APK SHA-256: {{ preview.manifest.androidNative.apkSha256 }}</small>
         </template>
         <small class="fingerprint">BLAKE3: {{ preview.fingerprint }}</small>
-        <button class="plugin-button btn-primary" :disabled="Boolean(busy)" @click="install">Install and grant these permissions</button>
-        <button class="plugin-button btn-secondary" :disabled="Boolean(busy)" @click="resetPreview">Cancel</button>
+        <div class="plugin-actions plugin-install-actions">
+          <button class="control-button control-button-primary" :disabled="Boolean(busy)" :aria-busy="busy === 'install'" @click="install">Install and grant these permissions</button>
+          <button class="control-button" :disabled="Boolean(busy)" @click="resetPreview">Cancel</button>
+        </div>
       </div>
     </div>
   </section>
@@ -163,13 +176,17 @@ async function uninstall(id: string) {
 .plugin-manager { display: grid; gap: 16px; color: var(--color-text-muted); font-size: 14px; }.plugin-manager h3,.plugin-manager h4,.plugin-manager p { margin: 0; }
 .plugin-manager p { color: var(--color-text-muted); line-height: 1.6; }
 .plugin-card { display: grid; gap: 20px; }
+.plugin-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.plugin-actions:empty { display: none; }
+.plugin-install-actions { flex-wrap: nowrap; align-items: center; }
+.plugin-install-actions > .control-button-primary { flex-shrink: 1; min-width: 0; }
 .plugin-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .plugin-heading > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .plugin-heading h4 { margin-bottom: 8px; color: var(--color-text); font-size: 16px; }
 .plugin-card > strong { color: var(--color-text); font-size: 16px; }
 .plugin-card small { color: var(--color-text-muted); }.plugin-card button { justify-self: start; }
 .plugin-install { display: grid; gap: 12px; margin-top: 16px; }.plugin-install label,.plugin-url { display: grid; gap: 12px; }
-.plugin-url-row { display: flex; gap: 10px; }.plugin-url-row input { min-width: 0; flex: 1; padding: 10px; color: var(--color-text); background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: 6px; }
+.plugin-url-row { display: flex; gap: 10px; }.plugin-url-row input { flex: 1; }
 .fingerprint { overflow-wrap: anywhere; }.error { color: var(--color-danger-text) !important; }
 @media(max-width: 600px) { .plugin-url-row { flex-direction: column; } }
 </style>

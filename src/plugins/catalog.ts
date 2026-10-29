@@ -4,7 +4,7 @@ export function filterCatalog(entries: CatalogEntry[], query: string): CatalogEn
   const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
   return entries.filter(entry => {
     const author = typeof entry.author === 'string' ? entry.author : entry.author?.name || '';
-    const text = [entry.id, entry.name, entry.description, author, ...entry.tags].join(' ').toLocaleLowerCase();
+    const text = [entry.id, entry.name, entry.description, author, ...entry.platforms, ...entry.tags].join(' ').toLocaleLowerCase();
     return terms.every(term => text.includes(term));
   }).sort((a, b) => b.addedAt.localeCompare(a.addedAt) || a.name.localeCompare(b.name));
 }

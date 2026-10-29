@@ -473,7 +473,7 @@ onUnmounted(() => {
           <ArtistLink :artist="nowPlaying?.artist" @open="emit('openArtist', $event)">{{ currentTrack.artist }}</ArtistLink>
         </div>
       </div>
-      <button class="icon-btn" :class="{ green: isLiked }" :disabled="!nowPlaying || nowPlaying.id <= 0 || likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
+      <button class="icon-btn" :class="{ green: isLiked }" :disabled="!nowPlaying || nowPlaying.id <= 0 || likePending" :aria-busy="likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
         <AppIcon :name="isLiked ? 'liked' : 'like'" :size="16" />
       </button>
     </div>

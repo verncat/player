@@ -25,6 +25,7 @@ pub struct SourceGrant {
 pub struct PluginState {
     pub root: PathBuf,
     pub warnings: Vec<String>,
+    pub(super) secrets: std::sync::Arc<super::secrets::SecretCache>,
     inner: Mutex<Registry>,
     builtins: BTreeMap<String, Package>,
     sources: Mutex<BTreeMap<String, SourceGrant>>,
@@ -144,6 +145,7 @@ impl PluginState {
         Ok(Self {
             root,
             warnings,
+            secrets: std::sync::Arc::new(super::secrets::SecretCache::default()),
             inner: Mutex::new(inner),
             builtins,
             sources: Mutex::new(BTreeMap::new()),
@@ -319,7 +321,17 @@ impl PluginState {
             Ok(())
         })
     }
+    pub fn has_secret(&self, id: &str, key: &str) -> Result<bool, String> {
+        if !valid_local_id(key) {
+            return Err("Invalid secret key".into());
+        }
+        Ok(self.record(id)?.secret_keys.iter().any(|k| k == key))
+    }
     pub fn remember_secret(&self, id: &str, key: &str, present: bool) -> Result<(), String> {
+        if !valid_local_id(key) {
+            return Err("Invalid secret key".into());
+        }
+        self.package(id)?;
         self.change(|r| {
             let record = r.records.entry(id.into()).or_default();
             record.secret_keys.retain(|k| k != key);
@@ -470,6 +482,17 @@ mod tests {
             )
             .unwrap();
         let info = state.enabled("example.test", true).unwrap();
+        assert!(!state.has_secret("example.test", "password").unwrap());
+        state
+            .remember_secret("example.test", "password", true)
+            .unwrap();
+        assert!(state.has_secret("example.test", "password").unwrap());
+        assert!(!state.has_secret("example.test", "another").unwrap());
+        assert!(state.has_secret("example.test", "../invalid").is_err());
+        state
+            .remember_secret("example.test", "password", false)
+            .unwrap();
+        assert!(!state.has_secret("example.test", "password").unwrap());
         assert!(state
             .authorize("example.test", info.generation, "settings")
             .is_ok());

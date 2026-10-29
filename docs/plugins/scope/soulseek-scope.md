@@ -11,7 +11,7 @@ Feature `soulseek`. Зависимость native-кода — vendored
 | --- | --- | --- |
 | connection | settings | Username, смена пароля, ошибки сохранения |
 | search | search | Явный сетевой поиск, качество/размер/пользователь, preview/save |
-| replacement | page | Поиск и выбор замены для переданного Track |
+| replacement | page | Внутренняя страница выбора замены для переданного Track; `showInMenu: false` |
 | find-replacement | track-action | Открывает replacement с выбранным Track |
 | buffer | player-widget | Количество текущих native-передач |
 

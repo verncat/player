@@ -36,7 +36,8 @@
     {
       "id": "replacement",
       "kind": "page",
-      "label": "Search and replace",
+      "label": "Find another version",
+      "showInMenu": false,
       "icon": "search"
     },
     {

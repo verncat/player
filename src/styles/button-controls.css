@@ -1,0 +1,53 @@
+.control-button,
+.form-file::file-selector-button {
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text);
+  padding: 9px 16px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: var(--fs-button);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.control-button:enabled:is(:hover, :active),
+.form-file:enabled:is(:hover, :active)::file-selector-button {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  border-color: var(--color-text-faint);
+}
+
+.control-button:disabled,
+.form-file:disabled::file-selector-button {
+  opacity: .5;
+  cursor: default;
+}
+
+.control-button:focus-visible,
+.form-file:focus-visible::file-selector-button {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.control-button.control-button-primary {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  border-color: var(--color-accent);
+}
+
+.control-button.control-button-primary:enabled:is(:hover, :active) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.control-button-compact { padding: 7px 14px; }
+.form-file { max-width: 100%; min-width: 0; color: var(--color-text-muted); font-size: var(--fs-button); cursor: pointer; }
+.form-file::file-selector-button { margin-inline-end: 12px; }
+.form-file:disabled { cursor: default; }
+.form-file:focus-visible { outline: none; }
+
+@media (max-width: 768px) {
+  .control-button, .form-file::file-selector-button { min-height: 40px; }
+}

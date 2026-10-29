@@ -48,14 +48,26 @@ Manifest декларативно регистрирует вклады. Общ�
 
 | kind | Встраивание и обработчик |
 | --- | --- |
-| `page` | Навигация, маршрут `plugins/<pluginId>/<id>`, render(viewId=id) |
+| `page` | Маршрут `plugins/<pluginId>/<id>`, render(viewId=id); пункт навигации, если `showInMenu` не равен false |
 | `settings` | Раздел настроек `settings/plugin:<pluginId>/<id>`, render |
 | `search` | Отдельный блок общего поиска, явная кнопка Search, search |
 | `track-action` | Меню библиотечного трека, action=id, payload.track |
 | `player-widget` | render в `player.actions` или `player.status` |
 
+Для `page` доступно необязательное boolean-поле `showInMenu` (по умолчанию true).
+`false` скрывает страницу из бокового меню на desktop и mobile, сохраняя маршрут,
+`ctx.ui.navigate(pageId,context)` и историю переходов. Это настройка навигации,
+а не контроль доступа: права и проверка регистрации страницы остаются общими.
+Для остальных kind поле запрещено. Например, Soulseek регистрирует внутреннюю
+страницу `replacement` с `showInMenu: false`: она открывается из действия
+`Find another version` в меню трека, а обычный поиск встроен в общий Search.
+
 Переданный context — данные маршрута/действия; не ссылка на refs оболочки.
 UI должен работать с клавиатурой, мобильной шириной и общей темой Player.
+Поля и кнопки используют общие `form-field` / `form-input` / `control-button`
+стили плеера; toggle выводится через общий SettingsToggle. Отдельные стили
+элементов управления для плагинов не вводятся. Ожидание action отображается
+общими полосами на инициировавшей кнопке по правилу DESIGN.md §5.10.
 Для подключения вклада разработчик не меняет `App.vue` или `SETTINGS_SECTIONS`.
 
 ## Дерево UI

@@ -5,6 +5,9 @@ import "./styles/appearance.css";
 import "./styles/base.css";
 import "./styles/glass.css";
 import "./styles/rarity.css";
+import "./styles/button-controls.css";
+import "./styles/button-loading.css";
+import "./styles/form-controls.css";
 import "./styles/tokens.css";
 
 const horizontalScroll: Directive = {

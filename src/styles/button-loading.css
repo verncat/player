@@ -1,0 +1,24 @@
+/* One tile per cycle keeps the diagonal stripes seamless. */
+button[aria-busy="true"],
+input[aria-busy="true"]::file-selector-button {
+  background-image: linear-gradient(135deg,
+    color-mix(in srgb, currentColor 14%, transparent) 25%,
+    transparent 25%, transparent 50%,
+    color-mix(in srgb, currentColor 14%, transparent) 50%,
+    color-mix(in srgb, currentColor 14%, transparent) 75%, transparent 75%) !important;
+  background-size: 32px 32px !important;
+  background-repeat: repeat !important;
+  animation: button-loading-stripes 1s linear infinite;
+  opacity: 1 !important;
+  cursor: progress !important;
+}
+
+@keyframes button-loading-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 32px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button[aria-busy="true"],
+  input[aria-busy="true"]::file-selector-button { animation: none; }
+}

@@ -246,6 +246,10 @@ The current visual system combines music metadata with generated decoration:
 - Beat events animate player controls and art using a decaying pulse model.
 - Mobile typography, footer sizing, drawer navigation, and long-press menus were added to keep the same UI viable on phones.
 
+Text and password fields in settings and declarative plugin views share `.form-field` and `.form-input` from [src/styles/form-controls.css](src/styles/form-controls.css). Use these classes for the same transparent background, strong border, spacing, typography, focus ring, and disabled state as Device name. Plugin fields are styled by the host rather than by individual plugins.
+
+Plugin controls must reuse Player's shared styles and components. Standard action buttons in playlists, track editing, settings, About, confirmation popups, and plugin views use `.control-button` from [src/styles/button-controls.css](src/styles/button-controls.css), with `.control-button-primary` for accent actions and `.control-button-compact` for compact layouts. File pickers use `.form-file`; plugin toggles use [SettingsToggle](src/components/SettingsToggle.vue). Sizes use the common responsive tokens. Feature styles define layout, not separate copies of control appearance; this also applies to plugin catalog search and installation fields.
+
 ### 5.8 WebGL now-playing component
 
 [src/components/WebGLAlbumRenderer.vue](src/components/WebGLAlbumRenderer.vue) isolates the 3D portion of the now-playing detail card. It receives:
@@ -283,6 +287,41 @@ This keeps the rendering code separate while the rest of the visual chrome remai
 - About uses [src/components/AboutPanel.vue](src/components/AboutPanel.vue) for version information, the existing updater flow, release notes, and contributor profiles. Each frontend build runs [scripts/sync-contributors.mjs](scripts/sync-contributors.mjs) to refresh GitHub contributors and download their avatars into bundled assets. A checked-in snapshot keeps development and offline builds usable. The application makes no network requests to display these credits.
 
 Device identity and Soulseek credentials keep their existing SQLite persistence. Appearance preferences are separate from music metadata and are not synced. Long-running actions report progress, and setting failures remain visible next to the affected controls.
+
+### 5.10 Buttons that wait for an operation
+
+**Required for all existing and new buttons that start an asynchronous operation:** show the shared loading state on the initiating button for the entire wait. This applies throughout Player and plugin UI, including requests, searches, saving, installation, retries, scanning, and sync.
+
+- Bind `:aria-busy="pending"` and `:disabled="pending || otherDisabledConditions"` to the button. Guard the handler against duplicate calls before its first `await`.
+- Use the global [src/styles/button-loading.css](src/styles/button-loading.css), already imported in [src/main.ts](src/main.ts). `button[aria-busy="true"]` automatically gets seamless looping diagonal stripes, full opacity, and a progress cursor. Keep the button's normal shape, colors, and readable label; a short label such as “Saving…” is optional. Reuse this style rather than adding a separate spinner or a custom loading animation.
+- Set pending immediately when the operation starts and clear it on success or failure in `finally`. If a command only starts background work, keep pending until the completion or failure event for that operation arrives.
+- Track the initiating action and item separately: only its button shows stripes. Other buttons may be disabled when they conflict with the operation, without appearing busy. A button disabled because an action is unavailable is not busy.
+- Reduced motion, from either the system or Player's setting, leaves the stripes static. Use the existing global styles; do not override this behavior locally.
+- File selectors use `input[aria-busy="true"]::file-selector-button` for the same feedback. For confirmation dialogs, pass `:save-busy="pending"` to [ResponsivePopup](src/components/ResponsivePopup.vue); it also disables the Save button. Declarative plugin buttons receive their pending state from the host, without plugin-specific loading markup.
+
+Typical Vue usage (the operation and error display belong to the feature):
+
+```vue
+<script setup lang="ts">
+import { ref } from 'vue';
+
+const pending = ref(false);
+const error = ref('');
+async function save() {
+  if (pending.value) return;
+  pending.value = true;
+  error.value = '';
+  try { await persistSettings(); }
+  catch (cause) { error.value = String(cause); }
+  finally { pending.value = false; }
+}
+</script>
+
+<template>
+  <button :aria-busy="pending" :disabled="pending" @click="save">Save</button>
+  <p v-if="error" role="alert">{{ error }}</p>
+</template>
+```
 
 ## 6. Backend Design
 
