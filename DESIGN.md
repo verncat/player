@@ -282,6 +282,29 @@ This keeps the rendering code separate while the rest of the visual chrome remai
 
 Device identity and Soulseek credentials keep their existing SQLite persistence. Appearance preferences are separate from music metadata and are not synced. Long-running actions report progress, and setting failures remain visible next to the affected controls.
 
+### 5.10 Reusable segmented progress
+
+[SegmentedProgressBar](src/components/SegmentedProgressBar.vue) is the shared progress component for sequential batches of equal-sized work items. Use it when completed items should remain solid while the current item shows moving diagonal stripes. It has no knowledge of tracks, AcoustID, requests, or stage names; the caller owns the workflow and supplies:
+
+- `total` and `completed`: integer item counts. Advance `completed` only when an item reaches its final result, including an error.
+- `failed`: optional array of zero-based indices of failed completed items. Their shares remain gray in their original positions. Keep these indices until the batch is reset.
+- `processing`: whether the next item's share is being processed (default `false`). This shows stripes without advancing `completed`. Only the animated marker has a minimum visual width of 5% of the bar; near the right edge it shifts left to remain fully visible. Completed and failed shares always keep their actual proportional widths.
+- `processingColor`: any CSS color, preferably a theme variable (default `var(--color-accent)`). Change it as the current task moves through stages.
+- `label`: required accessible name; `valueText`: optional accessible description overriding the generated counts/error summary.
+
+```vue
+<SegmentedProgressBar
+  :total="tasks.length"
+  :completed="completedCount"
+  :failed="failedIndices"
+  :processing="running"
+  :processing-color="phaseColor"
+  label="Import progress"
+/>
+```
+
+Completed shares use the theme accent; failed shares use the muted neutral token. Counts are clamped and adjacent failed shares are merged by [progressSegments](src/utils/progressSegments.ts). The component includes progressbar semantics and respects system/app reduced motion. It adds no external margins; the caller owns spacing. Override `--progress-height` to change its default 6px height. Feature adapters should map domain stages to `processing` and `processingColor`, keeping animation and segment rendering in the shared component.
+
 ## 6. Backend Design
 
 ### 6.1 Tauri bootstrap
@@ -550,13 +573,21 @@ The protocol has no authentication, like the rest of the peer server.
 
 Pipeline:
 
-- Decode audio to PCM.
-- Generate Chromaprint fingerprint.
-- Query AcoustID.
+- Stream decoded audio through Chromaprint, keeping only one PCM block at a time.
+- Fingerprint at most the first 120 seconds of the track, matching [fpcalc's default](https://github.com/acoustid/chromaprint/blob/master/src/cmd/fpcalc.cpp). File size is not limited; large lossless files are not skipped.
+- Query AcoustID with the compressed fingerprint in URL-safe Base64 without padding and the whole track's duration, as required by the [lookup API](https://acoustid.org/webservice). The form is gzip-compressed; audio data and file paths are not uploaded.
 - Write matched metadata back into the local library.
 - Emit `identify-progress` to drive the frontend progress UI.
 
-It decodes with Symphonia's default codecs, not the playback registry in `audio_codecs.rs`, so it can't fingerprint Opus files.
+Identification uses the playback registry in `audio_codecs.rs`, including bundled Opus. Symphonia converts supported PCM sample formats to interleaved i16. CUE tracks resolve to their underlying audio file and fingerprint only the selected segment. Full duration comes from segment boundaries, library metadata, or the container; if absent, the demuxer scans packet timestamps beyond the fingerprint window without decoding additional PCM.
+
+Lookup metadata flags are space-separated before form encoding (`recordings releasegroups compress`); literal plus signs would request the wrong metadata. The result parser checks all reliable candidates and recordings, and distinguishes an unknown fingerprint, low-confidence matches, and matched audio without linked MusicBrainz metadata. Progress counts completed tracks: fingerprinting and lookup keep the previous count; a saved match, an unmatched result, or an error advances it. The identification log uses the shared Lucide icon registry.
+
+Matched metadata is committed to SQLite before a final result is emitted. The result includes the complete saved Track with derived library fields; the frontend immediately replaces matching entries in loaded lists, the queue, now playing, and unchanged editor fields. Existing editor drafts are preserved. Intermediate stages appear right-aligned beside the completed/total count below the progress bar. The log contains one final result per track; stage transitions and the batch completion marker do not add log rows.
+
+[IdentifyProgressBar](src/components/IdentifyProgressBar.vue) adapts the shared `SegmentedProgressBar` (section 5.10) to identification stages, giving each track an equal share of the bar. Completed tracks keep a solid accent fill; the active track's share uses seamless moving diagonal stripes. Stage colors use theme tokens: info for fingerprinting, warning for lookup, epic rarity for artwork, and accent for saving. Failed track shares remain gray throughout the batch, including after completion; an unmatched fingerprint is a completed lookup rather than an error. Reduced motion keeps the stripes still. Segment positions are derived from completed counts and terminal-result indices, without increasing the completed counter during processing.
+
+For a track without artwork, the selected album's MusicBrainz release-group ID is used to fetch its `front-500` image from the [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API). Existing covers are preserved. Downloads use HTTPS, a 15-second timeout, and a 5 MiB limit; successful images enter the shared cover store. Each album is requested at most once per identification batch, including missing/failed artwork. A missing cover does not prevent metadata from being applied. `tracks.identified_cover_hash` keeps the downloaded image as an indexing fallback, and cover maintenance retains it even while embedded or sidecar artwork takes precedence.
 
 This subsystem is intentionally asynchronous and event-driven because identification can be slow and network-bound.
 

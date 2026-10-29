@@ -981,6 +981,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN album_artist TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN disc_number INTEGER");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_hash TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN identified_cover_hash TEXT");
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_cover_hash ON tracks(cover_hash)")?;
     // Recreated on every start so changes to its definition take effect.
     conn.execute_batch(&format!(
@@ -1083,8 +1084,8 @@ fn persist_track_cover(
     conn.execute(
         "UPDATE tracks
             SET cover_data = NULL,
-                cover_hash = ?1,
-                cover_mime = CASE WHEN ?1 IS NULL THEN NULL ELSE cover_mime END
+                cover_hash = COALESCE(?1, identified_cover_hash),
+                cover_mime = CASE WHEN ?1 IS NULL AND identified_cover_hash IS NULL THEN NULL ELSE cover_mime END
           WHERE id = ?2",
         params![cover_hash, track_id],
     )?;
@@ -2788,7 +2789,8 @@ fn read_legacy_cover(data_dir: &Path, track_id: i64) -> Option<Vec<u8>> {
 
 fn referenced_cover_hashes(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     let mut stmt =
-        conn.prepare("SELECT DISTINCT cover_hash FROM tracks WHERE cover_hash IS NOT NULL")?;
+        conn.prepare("SELECT cover_hash FROM tracks WHERE cover_hash IS NOT NULL
+            UNION SELECT identified_cover_hash FROM tracks WHERE identified_cover_hash IS NOT NULL")?;
     let hashes = stmt.query_map([], |row| row.get(0))?.collect();
     hashes
 }
@@ -3206,6 +3208,35 @@ pub fn index_track_by_path(
 pub fn reindex(app: tauri::AppHandle, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
     state.reindex(&app);
     Ok(())
+}
+
+/// Commit recognized metadata and return the complete saved library record.
+pub(crate) fn apply_identified_metadata(
+    conn: &Connection,
+    id: i64,
+    title: Option<&str>,
+    artist: Option<&str>,
+    album: Option<&str>,
+    cover_hash: Option<&str>,
+) -> Result<Track, String> {
+    let transaction = conn
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let updated = transaction
+        .execute(
+            "UPDATE tracks SET title = COALESCE(?1, title), artist = COALESCE(?2, artist),
+            album = COALESCE(?3, album), manually_edited = 1,
+            identified_cover_hash = CASE WHEN NULLIF(cover_hash, '') IS NULL THEN COALESCE(?5, identified_cover_hash) ELSE identified_cover_hash END,
+            cover_hash = COALESCE(NULLIF(cover_hash, ''), ?5) WHERE id = ?4",
+            params![title, artist, album, id, cover_hash],
+        )
+        .map_err(|error| format!("Could not save identified metadata: {error}"))?;
+    if updated != 1 {
+        return Err("Track no longer exists in the library.".into());
+    }
+    let track = get_track_by_id(&transaction, id).map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(track)
 }
 
 /// Returns the track as saved, so the caller sees values the library
@@ -4433,6 +4464,64 @@ pub fn unmark_duplicates(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn identified_metadata_is_committed_and_returned_with_derived_fields() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute("INSERT INTO tracks(id,path,title,album_artist,is_liked,play_count) VALUES (1,'song.mp3','Old title','',1,7)", []).unwrap();
+        let saved = apply_identified_metadata(
+            &conn,
+            1,
+            Some("Круги на воде"),
+            Some("Слот"),
+            Some("Septima"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(saved.title.as_deref(), Some("Круги на воде"));
+        assert_eq!(saved.artist.as_deref(), Some("Слот"));
+        assert_eq!(saved.album.as_deref(), Some("Septima"));
+        assert_eq!(saved.album_artist_or_artist.as_deref(), Some("Слот"));
+        assert!(saved.manually_edited);
+        assert!(saved.is_liked);
+        assert_eq!(saved.play_count, 7);
+        assert_eq!(get_track_by_id(&conn, 1).unwrap().artist, saved.artist);
+    }
+
+    #[test]
+    fn identification_preserves_unknown_fields_and_rejects_missing_tracks() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute("INSERT INTO tracks(id,path,title,artist,album,album_artist) VALUES (1,'song.mp3','Title','Artist','Album','Album artist')", []).unwrap();
+        let saved = apply_identified_metadata(&conn, 1, Some("New title"), None, None, None).unwrap();
+        assert_eq!(saved.title.as_deref(), Some("New title"));
+        assert_eq!(saved.artist.as_deref(), Some("Artist"));
+        assert_eq!(saved.album.as_deref(), Some("Album"));
+        assert_eq!(
+            saved.album_artist_or_artist.as_deref(),
+            Some("Album artist")
+        );
+        assert!(apply_identified_metadata(&conn, 99, Some("Missing"), None, None, None).is_err());
+        assert_eq!(get_track_by_id(&conn, 1).unwrap().title, saved.title);
+    }
+
+    #[test]
+    fn identified_covers_survive_rescans_and_do_not_replace_existing_artwork() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch("INSERT INTO tracks(id,path,cover_hash) VALUES (1,'empty.mp3',NULL),(2,'with-cover.mp3','existing-cover')").unwrap();
+        let saved = apply_identified_metadata(&conn, 1, Some("Song"), None, None, Some("downloaded-cover")).unwrap();
+        assert_eq!(saved.cover_hash.as_deref(), Some("downloaded-cover"));
+        persist_track_cover(&conn, Path::new("/unused"), 1, None).unwrap();
+        assert_eq!(get_track_by_id(&conn, 1).unwrap().cover_hash.as_deref(), Some("downloaded-cover"));
+        let preserved = apply_identified_metadata(&conn, 2, None, Some("Artist"), None, Some("different-cover")).unwrap();
+        assert_eq!(preserved.cover_hash.as_deref(), Some("existing-cover"));
+        conn.execute("UPDATE tracks SET cover_hash='local-cover' WHERE id=1", []).unwrap();
+        assert!(referenced_cover_hashes(&conn).unwrap().contains("downloaded-cover"));
+        persist_track_cover(&conn, Path::new("/unused"), 1, None).unwrap();
+        assert_eq!(get_track_by_id(&conn, 1).unwrap().cover_hash.as_deref(), Some("downloaded-cover"));
+    }
 
     #[test]
     fn playback_lookup_distinguishes_cue_segments_from_the_underlying_file() {

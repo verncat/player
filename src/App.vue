@@ -37,6 +37,8 @@ import { highlightedRarity, rarityClass, rarityColorName, rarityVars } from "./u
 import { activeThemeColors, translucent } from "./theme";
 import AppSidebar from "./components/AppSidebar.vue";
 import AppIcon from "./components/AppIcon.vue";
+import IdentifyProgressBar from "./components/IdentifyProgressBar.vue";
+import type { AppIconName } from "./icons";
 import AppSelect from "./components/AppSelect.vue";
 import PlaylistArtwork from "./components/PlaylistArtwork.vue";
 import AppTopbar from "./components/AppTopbar.vue";
@@ -253,8 +255,12 @@ const identifyMinimized = ref(false);
 const identifyCurrent = ref(0);
 const identifyTotal = ref(0);
 const identifyDone = ref(false);
-interface IdentifyItem { track_id: number; track_name: string | null; status: string; message: string | null }
+const identifyPhase = ref('Preparing…');
+const identifyStage = ref('preparing');
+interface IdentifyItem { track_id: number; track_name: string | null; status: string; message: string | null; segmentIndex?: number }
+interface IdentifyProgress extends IdentifyItem { current: number; total: number; track?: Track }
 const identifyResults = ref<IdentifyItem[]>([]);
+const identifyFailedSegments = computed(() => identifyResults.value.filter(item => item.status === 'error' && item.segmentIndex !== undefined).map(item => item.segmentIndex!));
 const identifyLogRef = ref<HTMLElement | null>(null);
 const contentRef = ref<HTMLElement | null>(null);
 
@@ -4734,10 +4740,14 @@ async function startIdentify() {
   identifyRunning.value = true;
   identifyMinimized.value = false;
   identifyDone.value = false;
+  identifyPhase.value = 'Preparing…';
+  identifyStage.value = 'preparing';
   try {
     await invoke('identify_tracks', { ids });
   } catch (e: any) {
     identifyDone.value = true;
+    identifyPhase.value = 'Could not start';
+    identifyStage.value = 'error';
     identifyResults.value.push({
       track_id: 0,
       track_name: null,
@@ -4748,16 +4758,21 @@ async function startIdentify() {
 }
 
 async function identifySingle(track: Track) {
+  if (identifyPreparing.value || (identifyRunning.value && !identifyDone.value)) return;
   identifyResults.value = [];
   identifyCurrent.value = 0;
   identifyTotal.value = 1;
   identifyRunning.value = true;
   identifyMinimized.value = false;
   identifyDone.value = false;
+  identifyPhase.value = 'Preparing…';
+  identifyStage.value = 'preparing';
   try {
     await invoke('identify_tracks', { ids: [track.id] });
   } catch (e: any) {
     identifyDone.value = true;
+    identifyPhase.value = 'Could not start';
+    identifyStage.value = 'error';
     identifyResults.value.push({
       track_id: track.id,
       track_name: track.title || track.path,
@@ -4767,14 +4782,54 @@ async function identifySingle(track: Track) {
   }
 }
 
-function identifyStatusIcon(status: string) {
-  if (status === 'found') return '\u2714';
-  if (status === 'not_found') return '\u2013';
-  if (status === 'error') return '\u2716';
-  if (status === 'fingerprinting') return '\u266B';
-  if (status === 'looking_up') return '\u21BB';
-  if (status === 'done') return '\u2605';
-  return '\u00B7';
+function applyIdentifiedTrack(track: Track) {
+  const patch = (item: Track): Track => item.id === track.id ? { ...item, ...track } : item;
+  for (const list of [libraryTracks, recentTracks, localSearchTracks, queue, queueLibraryTracks, queuePlaylistTracks, queueSoulseekTracks, smartViewTracks]) {
+    list.value = list.value.map(patch);
+  }
+  if (playlistView.value) playlistView.value = { ...playlistView.value, tracks: playlistView.value.tracks.map(patch) };
+  homePinnedRegularTracks.value = Object.fromEntries(Object.entries(homePinnedRegularTracks.value).map(([id, tracks]) => [id, tracks.map(patch)]));
+  historyEntries.value = historyEntries.value.map(entry => ({ ...entry, track: patch(entry.track) }));
+  if (trackContextMenu.value) trackContextMenu.value = { ...trackContextMenu.value, track: patch(trackContextMenu.value.track) };
+  if (editingTrack.value?.id === track.id) {
+    for (const field of ['title', 'artist', 'album'] as const) {
+      if (editForm.value[field] === (editingTrack.value[field] || '')) editForm.value[field] = track[field] || '';
+    }
+    editingTrack.value = patch(editingTrack.value);
+  }
+  if (nowPlaying.value?.id === track.id) {
+    nowPlaying.value = patch(nowPlaying.value);
+    syncAndroid();
+  }
+}
+
+function handleIdentifyProgress(progress: IdentifyProgress) {
+  identifyCurrent.value = progress.current;
+  identifyTotal.value = progress.total;
+  identifyStage.value = progress.status;
+  const phases: Record<string, string> = {
+    fingerprinting: 'Analyzing audio…', looking_up: 'Searching AcoustID…', fetching_cover: 'Fetching artwork…', saving: 'Applying metadata…',
+    found: 'Metadata applied', not_found: 'No match', error: 'Failed', done: 'Completed',
+  };
+  identifyPhase.value = phases[progress.status] || 'Processing…';
+  if (progress.status === 'done') { identifyDone.value = true; return; }
+  if (!['found', 'not_found', 'error'].includes(progress.status)) return;
+  if (progress.status === 'found' && progress.track) applyIdentifiedTrack(progress.track);
+  const result: IdentifyItem = { track_id: progress.track_id, track_name: progress.track_name, status: progress.status, message: progress.message, segmentIndex: progress.current > 0 ? progress.current - 1 : undefined };
+  const index = identifyResults.value.findIndex(item => item.track_id === result.track_id);
+  if (index < 0) identifyResults.value.push(result);
+  else identifyResults.value[index] = result;
+  void nextTick(() => { if (identifyLogRef.value) identifyLogRef.value.scrollTop = identifyLogRef.value.scrollHeight; });
+}
+
+function identifyStatusIcon(status: string): AppIconName {
+  if (status === 'found') return 'success';
+  if (status === 'not_found') return 'identify-not-found';
+  if (status === 'error') return 'error';
+  if (status === 'fingerprinting') return 'audio-fingerprint';
+  if (status === 'looking_up') return 'search';
+  if (status === 'done') return 'done';
+  return 'info';
 }
 
 watch(activeNav, (nav) => {
@@ -5171,21 +5226,7 @@ onMounted(() => {
     }
     nextTick(() => { if (indexLogRef.value) indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight; });
   });
-  listen<{current: number; total: number; track_id: number; track_name: string | null; status: string; message: string | null}>('identify-progress', (e) => {
-    const p = e.payload;
-    identifyCurrent.value = p.current;
-    identifyTotal.value = p.total;
-    if (p.status === 'done') {
-      identifyDone.value = true;
-      identifyResults.value.push({ track_id: 0, track_name: null, status: 'done', message: `Finished: ${p.total} tracks processed` });
-      loadLibrary();
-    } else {
-      identifyResults.value.push({ track_id: p.track_id, track_name: p.track_name, status: p.status, message: p.message });
-    }
-    nextTick(() => {
-      if (identifyLogRef.value) identifyLogRef.value.scrollTop = identifyLogRef.value.scrollHeight;
-    });
-  });
+  listen<IdentifyProgress>('identify-progress', event => handleIdentifyProgress(event.payload));
 });
 onUnmounted(() => {
   playbackRestoreDisposed = true;
@@ -6490,18 +6531,14 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="modal-body">
-            <div class="identify-bar-wrap">
-              <div class="identify-bar-fill" :style="`width:${identifyTotal > 0 ? (identifyCurrent / identifyTotal * 100) : 0}%`" />
-            </div>
-            <div class="identify-status">{{ identifyCurrent }} / {{ identifyTotal }}{{ identifyDone ? ' — Done' : '' }}</div>
-            <div class="identify-results" ref="identifyLogRef">
+            <IdentifyProgressBar class="identify-progress" :total="identifyTotal" :completed="identifyCurrent" :failed="identifyFailedSegments" :stage="identifyStage" />
+            <div class="identify-status"><span class="identify-count">{{ identifyCurrent }} / {{ identifyTotal }}</span><span class="identify-phase" role="status">{{ identifyPhase }}</span></div>
+            <div v-if="identifyResults.length" class="identify-results" ref="identifyLogRef" role="log" aria-label="Identification results">
               <div v-for="(item, idx) in identifyResults" :key="idx"
                 class="identify-result-item" :class="'ir-' + item.status">
-                <span class="ir-icon">{{ identifyStatusIcon(item.status) }}</span>
-                <span class="ir-name" v-if="item.track_name">{{ item.track_name }}</span>
-                <span class="ir-text">{{ item.message || item.status.replace('_', ' ') }}</span>
+                <span class="ir-icon"><AppIcon :name="identifyStatusIcon(item.status)" :size="16" /></span>
+                <div class="ir-copy"><span class="ir-name" v-if="item.track_name">{{ item.track_name }}</span><span class="ir-text">{{ item.message || item.status.replace('_', ' ') }}</span></div>
               </div>
-              <div v-if="!identifyResults.length && !identifyDone" class="identify-empty">Processing…</div>
             </div>
           </div>
         </div>
@@ -7795,24 +7832,17 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .powered-by { font-size: var(--fs-powered-by); font-weight: 400; color: var(--color-text-faint); margin-left: 6px; }
 .powered-by a { color: var(--color-accent); text-decoration: none; }
 .powered-by a:hover { text-decoration: underline; }
-.identify-bar-wrap {
-  height: 4px;
-  background: var(--color-border-strong);
-  border-radius: 2px;
-  overflow: hidden;
-  margin-bottom: 8px;
-}
-.identify-bar-fill {
-  height: 100%;
-  background: var(--color-accent);
-  border-radius: 2px;
-  transition: width .3s;
-}
+.identify-progress { margin-bottom: 8px; }
 .identify-status {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
   font-size: var(--fs-body-sm);
   color: var(--color-text-muted);
   margin-bottom: 12px;
 }
+.identify-count { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.identify-phase { min-width: 0; margin-inline-start: auto; text-align: right; overflow-wrap: anywhere; }
 .identify-results {
   max-height: 260px;
   overflow-y: auto;
@@ -7832,34 +7862,22 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   font-size: var(--fs-body-md);
   min-width: 0;
 }
-.ir-icon { width: 16px; text-align: center; flex-shrink: 0; }
+.ir-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; min-height: 1.4em; flex-shrink: 0; }
+.ir-copy { display: grid; gap: 3px; flex: 1; min-width: 0; }
 .ir-name {
   color: var(--color-text-muted);
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 140px;
-  flex-shrink: 0;
+  overflow-wrap: anywhere;
 }
 .ir-text {
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   min-width: 0;
   flex: 1;
 }
 .ir-found { color: var(--color-accent); }
 .ir-not_found { color: var(--color-text-muted); }
 .ir-error { color: var(--color-danger); }
-.ir-fingerprinting { color: var(--color-info); }
-.ir-looking_up { color: var(--color-warning); }
-.ir-done { color: var(--color-accent); font-weight: 600; }
-.identify-empty {
-  color: var(--color-text-muted);
-  font-size: var(--fs-body-md);
-  padding: 12px 0;
-  text-align: center;
-}
 
 /* ── Index & Sync log ── */
 .index-results {
