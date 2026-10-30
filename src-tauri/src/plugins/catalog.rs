@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
 
 const DEFAULT_URL: &str =
-    "https://raw.githubusercontent.com/verncat/player/main/plugins/catalog.json";
+    "https://raw.githubusercontent.com/verncat/player-plugins/main/catalog.json";
 const MAX_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -223,6 +223,11 @@ mod tests {
         ] {
             assert!(!valid_date(d), "accepted {d}");
         }
+    }
+    #[test]
+    fn published_catalog_from_pinned_plugin_repository_is_valid() {
+        let catalog = Catalog::parse(include_bytes!("../../../plugins/catalog.json")).unwrap();
+        assert!(!catalog.plugins.is_empty());
     }
     #[test]
     fn rejects_untrusted_or_ambiguous_catalog_metadata() {

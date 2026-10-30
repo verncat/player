@@ -258,7 +258,11 @@ For a deeper architecture write-up, see [DESIGN.md](./DESIGN.md).
 
 ### Install
 
+Plugin sources come from [player-plugins](https://github.com/verncat/player-plugins),
+pinned as the `plugins/` git submodule. Initialize it before building or running tests:
+
 ```bash
+git submodule update --init -- plugins
 pnpm install
 ```
 

@@ -36,6 +36,13 @@ Discord RPC и Soulseek поставляются как встроенные п�
 
 ## Быстрый старт разработчика
 
+Исходники пакетов, SDK и инструменты живут в отдельном репозитории
+[player-plugins](https://github.com/verncat/player-plugins). В Player папка
+`plugins/` — git submodule, закреплённый на конкретном коммите. Перед сборкой
+или тестами выполните `git submodule update --init -- plugins`. Полный
+[самостоятельный старт](https://github.com/verncat/player-plugins#разработка)
+доступен без checkout плеера; команды ниже выполняются из корня Player.
+
 Рабочий пример: [plugins/examples/hello](../../plugins/examples/hello).
 Самостоятельные типы для редактора: [plugins/sdk.d.ts](../../plugins/sdk.d.ts).
 Создайте два файла: `plugin.json` и `main.js`. Весь JavaScript и зависимости
@@ -105,7 +112,7 @@ Soulseek остаётся в общем Search. По умолчанию стра
 ## Карта реализации
 
 Settings → Plugins содержит каталог расширений из
-[plugins/catalog.json](../../plugins/catalog.json) в репозитории Player. Здесь
+[catalog.json](https://github.com/verncat/player-plugins/blob/main/catalog.json) в репозитории player-plugins. Здесь
 можно искать по названию, автору и тегам и нажать Install. Установка
 использует обычный просмотр пакета и его разрешений. Список загружается только
 из сети, без встроенной копии и кеша. Как добавить запись и опубликовать индекс — в

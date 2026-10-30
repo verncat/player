@@ -1,3 +1,6 @@
 [submodule "soulseek-rs-repo"]
 	path = soulseek-rs-repo
 	url = https://github.com/michel/soulseek-rs.git
+[submodule "plugins"]
+	path = plugins
+	url = https://github.com/verncat/player-plugins.git

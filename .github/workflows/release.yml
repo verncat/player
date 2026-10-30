@@ -48,12 +48,16 @@ jobs:
             pnpm-lock.yaml
             index.html
             public
+            plugins
             scripts
             src
             src-tauri
             tsconfig.json
             tsconfig.node.json
             vite.config.ts
+
+      - name: Fetch bundled plugin sources
+        run: git submodule update --init --depth 1 -- plugins
 
       - name: Install Linux system dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -154,12 +158,16 @@ jobs:
             pnpm-lock.yaml
             index.html
             public
+            plugins
             scripts
             src
             src-tauri
             tsconfig.json
             tsconfig.node.json
             vite.config.ts
+
+      - name: Fetch bundled plugin sources
+        run: git submodule update --init --depth 1 -- plugins
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v5

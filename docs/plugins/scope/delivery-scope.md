@@ -72,3 +72,13 @@ Vue/HTML, custom codecs/PCM и resumable downloads после app restart — о
 [сборка и запуск примера](../../../plugins/examples/android-native/README.md).
 Он поддерживает уже установленные монолитные APK и требует доверия native-коду.
 Установка APK по URL, private APK loading и перенос Soulseek остаются вне прототипа.
+
+## Отдельный репозиторий пакетов
+
+Пакеты, SDK и инструменты перенесены в [player-plugins](https://github.com/verncat/player-plugins).
+Player хранит только gitlink `plugins/`, фиксирующий проверенный коммит пакетов.
+Перед сборкой: `git submodule update --init -- plugins`. Release workflow
+загружает именно этот submodule; upstream Soulseek workbench для сборки не нужен.
+Для обновления встроенных пакетов обновите checkout `plugins/` до выбранного
+коммита и закоммитьте gitlink в Player. Каталог загружается независимо из
+`player-plugins/main/catalog.json`, без изменения закреплённого кода.

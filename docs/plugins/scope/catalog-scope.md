@@ -1,13 +1,13 @@
 # Catalog scope: репозиторий плагинов
 
 Точка входа: [readme](../../plugin/readme.md). Реализация: `catalog.rs`,
-`PluginCatalog.vue`, `catalog.ts`. JSON каталога хранится в репозитории Player:
-[plugins/catalog.json](../../../plugins/catalog.json).
+`PluginCatalog.vue`, `catalog.ts`. JSON каталога хранится в отдельном репозитории player-plugins:
+[catalog.json](https://github.com/verncat/player-plugins/blob/main/catalog.json).
 
 ## Получение списка
 
 Основной адрес:
-`https://raw.githubusercontent.com/verncat/player/main/plugins/catalog.json`.
+`https://raw.githubusercontent.com/verncat/player-plugins/main/catalog.json`.
 Коннектор, Git-клиент и GitHub OAuth не нужны. Поддержаны desktop и Android.
 
 Settings → Plugins показывает каталог с поиском по названию, ID, описанию,
@@ -18,7 +18,7 @@ Settings → Plugins показывает каталог с поиском по 
 
 `plugins_catalog()` всегда выполняет HTTPS-запрос к репозиторию. При открытии
 раздела UI делает один запрос; кнопка Refresh catalog повторяет его. Встроенного
-списка, дискового кеша, backup и offline-fallback нет. Файл `plugins/catalog.json`
+списка, дискового кеша, backup и offline-fallback нет. Файл `catalog.json` в player-plugins
 служит для публикации в репозитории и не включается в исполняемую сборку.
 
 Перед запросом прежний список очищается. Ошибка сети, 404 или невалидный ответ
@@ -88,18 +88,18 @@ Find APK plugins, а не через этот каталог JSON-пакетов
 
 ## Публикация и разработка
 
-Чтобы добавить плагин, добавьте запись в `plugins/catalog.json` и обновите
+Чтобы добавить плагин, добавьте запись в `catalog.json` репозитория player-plugins и обновите
 глобальную дату. Добавляйте только существующий пакет с соответствующим ID.
 Новые записи в удалённом JSON появляются при обновлении каталога без новой
 сборки приложения; смена схемы требует поддержки нового schemaVersion.
 
-Текущий пример Hello Player ссылается на папку ветки `feat/plugins`, где он
-уже опубликован. После переноса примера в main можно поменять installUrl в JSON.
-Сам индекс по основному адресу появится после публикации файла в main. До этого
-основной адрес вернёт ошибку; для проверки удалённого индекса ветки:
+Hello Player устанавливается из
+`https://github.com/verncat/player-plugins/tree/main/examples/hello`.
+Для публикации достаточно push в `main` репозитория player-plugins. Для теста
+другой ветки можно задать отдельный источник при сборке:
 
 ```sh
-PLAYER_PLUGIN_CATALOG_URL="https://raw.githubusercontent.com/verncat/player/feat/plugins/plugins/catalog.json" pnpm tauri dev
+PLAYER_PLUGIN_CATALOG_URL="https://raw.githubusercontent.com/verncat/player-plugins/my-branch/catalog.json" pnpm tauri dev
 ```
 
 Переменная задаётся при сборке Rust; UI не меняет источник каталога произвольно.
