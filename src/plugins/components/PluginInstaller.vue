@@ -4,7 +4,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { usePluginHost } from '../host';
 import type { AndroidPluginDiscovery, CatalogEntry, PluginDownload, PluginPreview } from '../types';
-import AppIcon from '../../components/AppIcon.vue';
 import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
 import PluginCatalog from './PluginCatalog.vue';
@@ -103,10 +102,6 @@ async function uninstall(id: string) {
 
 <template>
   <section class="plugin-manager">
-    <div class="plugin-manager-header">
-      <h3>Add plugin</h3>
-      <button type="button" class="control-button plugin-back" :disabled="Boolean(busy)" @click="emit('done')"><AppIcon name="back" :size="16" /> Plugins</button>
-    </div>
     <AppToast :message="error" @dismiss="error = ''" />
     <PluginCatalog :busy="Boolean(busy)" :pending-id="catalogPendingId" @review="loadCatalogPlugin" @uninstall="uninstall" @notify="error = $event" />
     <div class="plugin-install">

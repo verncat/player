@@ -7,7 +7,6 @@ import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
 import AppToast from '../../components/AppToast.vue';
 
-const emit = defineEmits<{ add: [] }>();
 const host = usePluginHost();
 const error = ref('');
 const busy = ref('');
@@ -43,10 +42,6 @@ async function retry(id: string) {
 
 <template>
   <section class="plugin-manager">
-    <div class="plugin-manager-header">
-      <h3>Plugins</h3>
-      <button type="button" class="control-button control-button-primary" :disabled="Boolean(busy)" @click="emit('add')">Add plugin</button>
-    </div>
     <AppToast :message="error" @dismiss="error = ''" />
     <p v-if="host.errors.value.host" class="error" role="alert">{{ host.errors.value.host }}</p>
     <p v-if="host.loading.value" role="status">Loading plugins…</p>

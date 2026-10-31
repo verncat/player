@@ -329,6 +329,10 @@ async function save() {
 </template>
 ```
 
+### 5.11 Settings subtabs
+
+Use [SettingsTabs](src/components/SettingsTabs.vue) for secondary navigation within a settings section. It provides an accent underline, tab/panel associations, and Arrow/Home/End keyboard navigation. Keep the parent settings section selected while switching tabs. Plugins uses Installed and Add plugins; catalog search and manual installation belong to Add plugins.
+
 ## 6. Backend Design
 
 ### 6.1 Tauri bootstrap

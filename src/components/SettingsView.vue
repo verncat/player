@@ -14,6 +14,7 @@ import RangeSlider from './RangeSlider.vue';
 import { THEME_MODE_OPTIONS, useTheme } from '../composables/useTheme';
 import CustomColorSwatch from './CustomColorSwatch.vue';
 import SegmentedControl from './SegmentedControl.vue';
+import SettingsTabs from './SettingsTabs.vue';
 import SwatchPicker from './SwatchPicker.vue';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 import { usePluginHost } from '../plugins/host';
@@ -78,10 +79,17 @@ const sections = computed<SettingsNavItem[]>(() => [...SETTINGS_SECTIONS, ...plu
   manifest: pluginHost.plugins.value.find(plugin => plugin.manifest.id === c.pluginId)?.manifest,
 }))]);
 const selectedNav = computed(() => selected.value === 'plugins/add' ? 'plugins' : selected.value);
-const sectionInfo = computed(() => selected.value === 'plugins/add' ? { label: 'Add plugin' } : sections.value.find(section => section.id === selected.value) ?? { label: 'Settings' });
+const sectionInfo = computed(() => sections.value.find(section => section.id === selectedNav.value) ?? { label: 'Settings' });
+const pluginTabs = [
+  { value: 'plugins', label: 'Installed' },
+  { value: 'plugins/add', label: 'Add plugins' },
+] as const;
 const activePluginSettings = computed(() => pluginSettings.value.find(c => selected.value === `plugin:${c.key}`));
 const panel = ref<HTMLElement | null>(null);
-watch(() => props.section, async () => { await nextTick(); panel.value?.focus({ preventScroll: true }); });
+watch(() => props.section, async (section, previous) => {
+  if (section?.startsWith('plugins') && previous?.startsWith('plugins')) return;
+  await nextTick(); panel.value?.focus({ preventScroll: true });
+});
 const currentOutput = computed(() => props.outputDevices.find((device) => device.name === props.currentDevice));
 const sampleRates = computed(() => {
   const rates = [...(currentOutput.value?.sample_rates ?? [])];
@@ -156,7 +164,7 @@ onMounted(() => { void loadConfig(); });
 
 <template>
   <section class="settings-page" :class="{ 'has-section': section !== null }">
-    <button v-if="section" class="mobile-back" @click="emit('navigate', selected === 'plugins/add' ? 'plugins' : null)"><AppIcon name="back" :size="18" /> {{ selected === 'plugins/add' ? 'Plugins' : 'Settings' }}</button>
+    <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="back" :size="18" /> Settings</button>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
         <template v-for="(item, index) in sections" :key="item.id">
@@ -233,8 +241,13 @@ onMounted(() => { void loadConfig(); });
           </template>
         </template>
 
-        <PluginManager v-else-if="selected === 'plugins'" @add="emit('navigate', 'plugins/add')" />
-        <PluginInstaller v-else-if="selected === 'plugins/add'" @done="emit('navigate', 'plugins')" />
+        <div v-else-if="selectedNav === 'plugins'" class="settings-group">
+          <h3>Plugins</h3>
+          <SettingsTabs :model-value="selected" :options="pluginTabs" label="Plugin settings" @update:model-value="emit('navigate', $event)">
+            <PluginManager v-if="selected === 'plugins'" />
+            <PluginInstaller v-else @done="emit('navigate', 'plugins')" />
+          </SettingsTabs>
+        </div>
         <PluginPanel v-else-if="activePluginSettings" :key="activePluginSettings.key" :plugin-id="activePluginSettings.pluginId" :view-id="activePluginSettings.id" />
 
         <template v-else-if="selected === 'appearance'">

@@ -15,6 +15,3 @@
 .plugin-url-row { display: flex; gap: 10px; }.plugin-url-row input { flex: 1; }
 .fingerprint { overflow-wrap: anywhere; }.error { color: var(--color-danger-text) !important; }
 @media(max-width: 600px) { .plugin-url-row { flex-direction: column; } }
-.plugin-manager-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.plugin-back { display: inline-flex; align-items: center; gap: 6px; }
-@media(max-width: 768px) { .plugin-back { display: none; } }
