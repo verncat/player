@@ -294,7 +294,7 @@ p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 
 .settings-nav button.settings-subnav { padding: 9px 12px; padding-inline-start: calc(12px + 19px + 12px); border-radius: 6px; font-size: 12px; }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
 .settings-nav-icon-wrap { position: relative; display: grid; place-items: center; width: var(--plugin-icon-size, 19px); height: var(--plugin-icon-size, 19px); flex: 0 0 var(--plugin-icon-size, 19px); }
-.settings-nav .settings-subsections-arrow { position: absolute; right: -5px; bottom: -4px; width: 10px; height: 10px; color: var(--color-accent-text); background: var(--color-surface); border-radius: 50%; transform: rotate(0deg); transition: transform 180ms ease; }
+.settings-nav .settings-subsections-arrow { position: absolute; right: -5px; bottom: -4px; width: 10px; height: 10px; color: var(--color-accent-text); background: var(--color-surface); border-radius: 50%; transform: rotate(45deg); transition: transform 180ms ease; }
 .settings-nav button[aria-expanded="true"] .settings-subsections-arrow { transform: rotate(90deg); }
 .settings-subsections { display: grid; grid-template-rows: 1fr; opacity: 1; margin-block-start: 0; }
 .settings-subsections-inner { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow: hidden; }
