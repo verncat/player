@@ -8,12 +8,18 @@ import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
 import PluginCatalog from './PluginCatalog.vue';
 import AppToast from '../../components/AppToast.vue';
+import AppIcon from '../../components/AppIcon.vue';
 
 const emit = defineEmits<{ done: [] }>();
 const host = usePluginHost();
 const error = ref('');
 const busy = ref('');
 const catalogPendingId = computed(() => busy.value.match(/^(?:catalog|uninstall):(.+)$/)?.[1]);
+const submissionUrl = 'https://github.com/verncat/player-plugins/blob/main/docs/catalog.md#publish';
+async function openSubmission() {
+  try { await openUrl(submissionUrl); }
+  catch (e) { error.value = String(e); }
+}
 const url = ref('');
 const preview = ref<PluginPreview>();
 const previewCard = ref<HTMLElement>();
@@ -122,6 +128,9 @@ async function uninstall(id: string) {
       </div>
     </div>
     <PluginCatalog :busy="Boolean(busy)" :pending-id="catalogPendingId" @review="loadCatalogPlugin" @uninstall="uninstall" @notify="error = $event" />
+    <div class="plugin-catalog-submission">
+      <a :href="submissionUrl" @click.prevent="openSubmission">Add your plugin <AppIcon name="external-link" :size="14" /></a>
+    </div>
     <div class="plugin-install">
       <h4>Manual installation</h4>
       <template v-if="android">
