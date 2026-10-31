@@ -248,8 +248,11 @@ onMounted(() => { void loadConfig(); });
         </template>
 
         <div v-else-if="selected === 'plugins'" class="settings-group">
-          <h3>Plugins</h3>
-          <PluginManager />
+          <div class="settings-section-heading">
+            <h3>Plugins</h3>
+            <button type="button" class="control-button control-button-primary" @click="emit('navigate', 'plugins/add')">Add plugins</button>
+          </div>
+          <PluginManager @settings="emit('navigate', `plugin:${$event}`)" />
         </div>
         <div v-else-if="selected === 'plugins/add'" class="settings-group">
           <h3>Add plugins</h3>
@@ -314,6 +317,8 @@ p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 
 h3 { font-size: 15px; margin: 0 0 7px; font-weight: 700; }
 h4 { font-size: 14px; margin: 0 0 5px; font-weight: 500; }
 .settings-group { margin-bottom: 32px; }
+.settings-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.settings-section-heading h3 { margin: 0; }
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 21px 0; border-bottom: 1px solid var(--color-border); }
 .setting-row > div { min-width: 0; }
 .setting-row p { max-width: 390px; }

@@ -7,7 +7,10 @@ import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
 import AppToast from '../../components/AppToast.vue';
 
+const emit = defineEmits<{ settings: [key: string] }>();
 const host = usePluginHost();
+const settings = host.contributions('settings');
+const settingsFor = (id: string) => settings.value.find(entry => entry.pluginId === id);
 const error = ref('');
 const busy = ref('');
 async function toggle(id: string, enabled: boolean) {
@@ -49,7 +52,15 @@ async function retry(id: string) {
     <article v-for="plugin in host.plugins.value" :key="plugin.manifest.id" class="plugin-card">
       <div class="plugin-heading">
         <PluginImage :manifest="plugin.manifest" />
-        <div><h4>{{ plugin.manifest.name }} <small>{{ plugin.manifest.version }}</small></h4><p>{{ plugin.manifest.description }}</p></div>
+        <div>
+          <h4>
+            <button v-if="settingsFor(plugin.manifest.id)" type="button" class="plugin-title-link" :disabled="Boolean(busy)"
+              :aria-label="`Open ${plugin.manifest.name} settings`" @click="emit('settings', settingsFor(plugin.manifest.id)!.key)">{{ plugin.manifest.name }}</button>
+            <template v-else>{{ plugin.manifest.name }}</template>
+            <small>{{ plugin.manifest.version }}</small>
+          </h4>
+          <p>{{ plugin.manifest.description }}</p>
+        </div>
         <SettingsToggle :model-value="plugin.enabled" :label="plugin.manifest.name" :disabled="!plugin.supported || Boolean(busy)" :aria-busy="busy === plugin.manifest.id" @update:model-value="toggle(plugin.manifest.id, $event)" />
       </div>
       <PluginMetadata :manifest="plugin.manifest" />

@@ -9,6 +9,10 @@
 .plugin-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .plugin-heading > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .plugin-heading h4 { margin-bottom: 8px; color: var(--color-text); font-size: 16px; }
+.plugin-title-link { padding: 0; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+.plugin-title-link:hover { color: var(--color-accent-text); text-decoration: underline; text-underline-offset: 3px; }
+.plugin-title-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.plugin-heading h4 small { margin-inline-start: 4px; }
 .plugin-card > strong { color: var(--color-text); font-size: 16px; }
 .plugin-card small { color: var(--color-text-muted); }.plugin-card button { justify-self: start; }
 .plugin-install { display: grid; gap: 12px; margin-top: 16px; }.plugin-install label,.plugin-url { display: grid; gap: 12px; }
