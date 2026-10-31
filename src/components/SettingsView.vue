@@ -78,6 +78,7 @@ const sections = computed<SettingsNavItem[]>(() => [...SETTINGS_SECTIONS.map(sec
   manifest: pluginHost.plugins.value.find(plugin => plugin.manifest.id === c.pluginId)?.manifest,
 }))]);
 const sectionInfo = computed(() => sections.value.flatMap(section => [section, ...(section.children ?? [])]).find(section => section.id === selected.value) ?? { label: 'Settings' });
+const activeSubsectionGroup = computed(() => sections.value.find(item => item.children?.length && (selected.value === item.id || item.children.some(child => child.id === selected.value))));
 const activePluginSettings = computed(() => pluginSettings.value.find(c => selected.value === `plugin:${c.key}`));
 const panel = ref<HTMLElement | null>(null);
 watch(() => props.section, async () => { await nextTick(); panel.value?.focus({ preventScroll: true }); });
@@ -154,24 +155,26 @@ onMounted(() => { void loadConfig(); });
 </script>
 
 <template>
-  <section class="settings-page" :class="{ 'has-section': section !== null }">
+  <section class="settings-page" :class="{ 'has-section': section !== null, 'has-subsections': section !== null && Boolean(activeSubsectionGroup) }">
     <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="back" :size="18" /> Settings</button>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
         <template v-for="(item, index) in sections" :key="item.id">
           <hr v-if="index === SETTINGS_SECTIONS.length" class="settings-nav-divider" aria-label="Plugin settings" />
-          <button :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
+          <button :class="{ selected: selected === item.id, 'active-settings-group': activeSubsectionGroup?.id === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
             <PluginImage v-if="item.manifest" :manifest="item.manifest" monochrome />
             <AppIcon v-else class="settings-nav-icon" :name="item.icon" />
             <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
             <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
             <AppIcon class="nav-chevron" name="disclosure" :size="20" />
           </button>
-          <button v-for="child in item.children" :key="child.id" class="settings-subnav" :class="{ selected: selected === child.id }"
-            :aria-current="section === child.id ? 'page' : undefined" @click="emit('navigate', child.id)">
-            <span class="nav-copy"><span class="nav-label">{{ child.label }}</span><span class="nav-description">{{ child.description }}</span></span>
-            <AppIcon class="nav-chevron" name="disclosure" :size="20" />
-          </button>
+          <template v-if="selected === item.id || item.children?.some(child => child.id === selected)">
+            <button v-for="child in item.children" :key="child.id" class="settings-subnav active-settings-group" :class="{ selected: selected === child.id }"
+              :aria-current="section === child.id ? 'page' : undefined" @click="emit('navigate', child.id)">
+              <span class="nav-copy"><span class="nav-label">{{ child.label }}</span><span class="nav-description">{{ child.description }}</span></span>
+              <AppIcon class="nav-chevron" name="disclosure" :size="20" />
+            </button>
+          </template>
         </template>
         <p class="local-note">Preferences stay on this device.</p>
       </nav>
@@ -376,6 +379,9 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .local-note { padding: 24px 4px; }
   .settings-panel { display: none; }
   .has-section .settings-nav { display: none; }
+  .has-section.has-subsections .settings-nav { display: flex; margin-bottom: 20px; }
+  .has-section.has-subsections .settings-nav > :not(.active-settings-group) { display: none; }
+  .has-section.has-subsections .settings-nav > button.active-settings-group { min-height: 44px; padding-block: 10px; }
   .has-section .settings-panel { display: block; }
   .mobile-back { display: flex; gap: 10px; align-items: center; padding: 8px 0; margin-bottom: 10px; border: 0; border-radius: 3px; color: var(--color-text-muted); font-size: 14px; }
   .setting-row { align-items: flex-start; flex-wrap: wrap; gap: 14px; }
