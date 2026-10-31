@@ -156,7 +156,6 @@ onMounted(() => { void loadConfig(); });
 
 <template>
   <section class="settings-page" :class="{ 'has-section': section !== null, 'has-subsections': section !== null && Boolean(activeSubsectionGroup) }">
-    <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="back" :size="18" /> Settings</button>
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
         <template v-for="(item, index) in sections" :key="item.id">
@@ -358,7 +357,6 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
 .preview-art { position: relative; justify-self: start; width: 100%; max-width: 208px; aspect-ratio: 1; }
 .preview-art :deep(.webgl-album-renderer) { top: 0; }
 .flat-art { position: absolute; inset: 16%; border-radius: 4px; background-size: cover; background-position: center; }
-.mobile-back { display: none; }
 @media (max-width: 1080px) { .settings-layout { grid-template-columns: 160px minmax(0, 1fr); gap: 24px; } .setting-row { gap: 16px; } .appearance-preview { gap: 16px; padding: 16px 0; } }
 @container appearance-preview (max-width: 360px) {
   .preview-track :deep(.track-num), .preview-track :deep(.track-dur) { display: none; }
@@ -384,7 +382,6 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .has-section.has-subsections .settings-nav > :not(.active-settings-group) { display: none; }
   .has-section.has-subsections .settings-nav > button.active-settings-group { min-height: 44px; padding-block: 10px; }
   .has-section .settings-panel { display: block; }
-  .mobile-back { display: flex; gap: 10px; align-items: center; padding: 8px 0; margin-bottom: 10px; border: 0; border-radius: 3px; color: var(--color-text-muted); font-size: 14px; }
   .setting-row { align-items: flex-start; flex-wrap: wrap; gap: 14px; }
   .setting-row > div:first-child { flex: 1; min-width: 180px; }
   .setting-row :deep(.settings-switch) { margin-top: 2px; }
