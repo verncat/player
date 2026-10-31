@@ -283,7 +283,7 @@ p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 
 .settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
 .settings-nav > button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
 .settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
-.settings-nav > button.settings-subnav { padding: 9px 12px; border-inline-start: 1px solid var(--color-border); border-radius: 0 6px 6px 0; font-size: 12px; }
+.settings-nav > button.settings-subnav { padding: 9px 12px; border-radius: 6px; font-size: 12px; }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
 .settings-nav-icon { color: var(--color-accent-text); }
 .nav-copy { flex: 1; }
