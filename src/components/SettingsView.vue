@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { AudioDevice } from '../types';
-import { SETTINGS_SECTIONS, type DeviceSettings, type SettingsSection } from '../types/settings';
+import { SETTINGS_SECTIONS, SETTINGS_SUBSECTIONS, type DeviceSettings, type SettingsSection, type SettingsSubsection } from '../types/settings';
 import { useAppearance } from '../composables/useAppearance';
 import { formatSampleRate } from '../utils/format';
 import SettingsToggle from './SettingsToggle.vue';
@@ -14,7 +14,6 @@ import RangeSlider from './RangeSlider.vue';
 import { THEME_MODE_OPTIONS, useTheme } from '../composables/useTheme';
 import CustomColorSwatch from './CustomColorSwatch.vue';
 import SegmentedControl from './SegmentedControl.vue';
-import SettingsTabs from './SettingsTabs.vue';
 import SwatchPicker from './SwatchPicker.vue';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
 import { usePluginHost } from '../plugins/host';
@@ -73,23 +72,15 @@ const emit = defineEmits<{
 const selected = computed(() => props.section ?? 'library');
 const pluginHost = usePluginHost();
 const pluginSettings = pluginHost.contributions('settings');
-interface SettingsNavItem { id: SettingsSection; label: string; description: string; icon: AppIconName; manifest?: PluginManifest }
-const sections = computed<SettingsNavItem[]>(() => [...SETTINGS_SECTIONS, ...pluginSettings.value.map(c => ({
+interface SettingsNavItem { id: SettingsSection; label: string; description: string; icon: AppIconName; manifest?: PluginManifest; children?: readonly SettingsSubsection[] }
+const sections = computed<SettingsNavItem[]>(() => [...SETTINGS_SECTIONS.map(section => ({ ...section, children: SETTINGS_SUBSECTIONS[section.id] })), ...pluginSettings.value.map(c => ({
   id: `plugin:${c.key}` as SettingsSection, label: c.label, description: c.description, icon: 'settings' as const,
   manifest: pluginHost.plugins.value.find(plugin => plugin.manifest.id === c.pluginId)?.manifest,
 }))]);
-const selectedNav = computed(() => selected.value === 'plugins/add' ? 'plugins' : selected.value);
-const sectionInfo = computed(() => sections.value.find(section => section.id === selectedNav.value) ?? { label: 'Settings' });
-const pluginTabs = [
-  { value: 'plugins', label: 'Installed' },
-  { value: 'plugins/add', label: 'Add plugins' },
-] as const;
+const sectionInfo = computed(() => sections.value.flatMap(section => [section, ...(section.children ?? [])]).find(section => section.id === selected.value) ?? { label: 'Settings' });
 const activePluginSettings = computed(() => pluginSettings.value.find(c => selected.value === `plugin:${c.key}`));
 const panel = ref<HTMLElement | null>(null);
-watch(() => props.section, async (section, previous) => {
-  if (section?.startsWith('plugins') && previous?.startsWith('plugins')) return;
-  await nextTick(); panel.value?.focus({ preventScroll: true });
-});
+watch(() => props.section, async () => { await nextTick(); panel.value?.focus({ preventScroll: true }); });
 const currentOutput = computed(() => props.outputDevices.find((device) => device.name === props.currentDevice));
 const sampleRates = computed(() => {
   const rates = [...(currentOutput.value?.sample_rates ?? [])];
@@ -169,11 +160,16 @@ onMounted(() => { void loadConfig(); });
       <nav class="settings-nav" aria-label="Settings sections">
         <template v-for="(item, index) in sections" :key="item.id">
           <hr v-if="index === SETTINGS_SECTIONS.length" class="settings-nav-divider" aria-label="Plugin settings" />
-          <button :class="{ selected: selectedNav === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
+          <button :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
             <PluginImage v-if="item.manifest" :manifest="item.manifest" monochrome />
             <AppIcon v-else class="settings-nav-icon" :name="item.icon" />
             <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
             <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
+            <AppIcon class="nav-chevron" name="disclosure" :size="20" />
+          </button>
+          <button v-for="child in item.children" :key="child.id" class="settings-subnav" :class="{ selected: selected === child.id }"
+            :aria-current="section === child.id ? 'page' : undefined" @click="emit('navigate', child.id)">
+            <span class="nav-copy"><span class="nav-label">{{ child.label }}</span><span class="nav-description">{{ child.description }}</span></span>
             <AppIcon class="nav-chevron" name="disclosure" :size="20" />
           </button>
         </template>
@@ -241,12 +237,13 @@ onMounted(() => { void loadConfig(); });
           </template>
         </template>
 
-        <div v-else-if="selectedNav === 'plugins'" class="settings-group">
+        <div v-else-if="selected === 'plugins'" class="settings-group">
           <h3>Plugins</h3>
-          <SettingsTabs :model-value="selected" :options="pluginTabs" label="Plugin settings" @update:model-value="emit('navigate', $event)">
-            <PluginManager v-if="selected === 'plugins'" />
-            <PluginInstaller v-else @done="emit('navigate', 'plugins')" />
-          </SettingsTabs>
+          <PluginManager />
+        </div>
+        <div v-else-if="selected === 'plugins/add'" class="settings-group">
+          <h3>Add plugins</h3>
+          <PluginInstaller @done="emit('navigate', 'plugins')" />
         </div>
         <PluginPanel v-else-if="activePluginSettings" :key="activePluginSettings.key" :plugin-id="activePluginSettings.pluginId" :view-id="activePluginSettings.id" />
 
@@ -283,6 +280,7 @@ p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 
 .settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
 .settings-nav > button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
 .settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
+.settings-nav > button.settings-subnav { margin-inline-start: 40px; padding: 9px 12px; border-inline-start: 1px solid var(--color-border); border-radius: 0 6px 6px 0; font-size: 12px; }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
 .settings-nav-icon { color: var(--color-accent-text); }
 .nav-copy { flex: 1; }
@@ -369,6 +367,7 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .settings-nav-divider { margin: 12px 4px; }
   .settings-nav > button { padding: 18px 4px; border-bottom: 1px solid var(--color-border); border-radius: 0; gap: 16px; min-height: 76px; }
   .settings-nav > button.selected { background: transparent; color: var(--color-text-muted); }
+  .settings-nav > button.settings-subnav { margin-inline-start: 38px; padding: 12px; min-height: 52px; }
   .settings-nav svg { width: 22px; height: 22px; }
   .settings-nav { --plugin-icon-size: 22px; }
   .nav-label { color: var(--color-text); font-size: 15px; }

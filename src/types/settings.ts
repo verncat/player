@@ -11,6 +11,11 @@ export const SETTINGS_SECTIONS = [
 
 export type SettingsSection = typeof SETTINGS_SECTIONS[number]['id'] | 'plugins/add' | `plugin:${string}`;
 
+export interface SettingsSubsection { id: SettingsSection; label: string; description: string }
+export const SETTINGS_SUBSECTIONS: Partial<Record<typeof SETTINGS_SECTIONS[number]['id'], readonly SettingsSubsection[]>> = {
+  plugins: [{ id: 'plugins/add', label: 'Add plugins', description: 'Browse and install extensions' }],
+};
+
 export interface Contributor {
   login: string;
   profileUrl: string;

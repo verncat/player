@@ -331,7 +331,7 @@ async function save() {
 
 ### 5.11 Settings subtabs
 
-Use [SettingsTabs](src/components/SettingsTabs.vue) for secondary navigation within a settings section. It provides an accent underline, tab/panel associations, and Arrow/Home/End keyboard navigation. Keep the parent settings section selected while switching tabs. Plugins uses Installed and Add plugins; catalog search and manual installation belong to Add plugins.
+Declare nested settings entries in SETTINGS_SUBSECTIONS in [settings.ts](src/types/settings.ts). Render them directly below their parent in the settings navigation list, with indentation and their own selected state. Add plugins is a child of Plugins and opens catalog search and manual installation. The same navigation hierarchy is available on mobile.
 
 ## 6. Backend Design
 

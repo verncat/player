@@ -46,7 +46,7 @@ import PluginSearch from './plugins/components/PluginSearch.vue';
 import SettingsView from "./components/SettingsView.vue";
 import AboutPanel from "./components/AboutPanel.vue";
 import { useAppearance } from "./composables/useAppearance";
-import { SETTINGS_SECTIONS, type SettingsSection, type DeviceSettings, type AboutInfo, type AboutUpdateStatus } from "./types/settings";
+import { SETTINGS_SECTIONS, SETTINGS_SUBSECTIONS, type SettingsSection, type DeviceSettings, type AboutInfo, type AboutUpdateStatus } from "./types/settings";
 import ArtistView from "./components/ArtistView.vue";
 import AlbumView from "./components/AlbumView.vue";
 import TrackRow from "./components/TrackRow.vue";
@@ -106,7 +106,7 @@ const pluginPageContext = ref<Record<string, unknown>>({});
 const isSettingsNav = computed(() => activeNav.value === 'settings' || activeNav.value.startsWith('settings/'));
 const settingsSection = computed<SettingsSection | null>(() => {
   const section = activeNav.value.slice('settings/'.length);
-  return SETTINGS_SECTIONS.some(item => item.id === section) || section === 'plugins/add' || section.startsWith('plugin:') ? section as SettingsSection : null;
+  return SETTINGS_SECTIONS.some(item => item.id === section) || Object.values(SETTINGS_SUBSECTIONS).some(children => children?.some(item => item.id === section)) || section.startsWith('plugin:') ? section as SettingsSection : null;
 });
 function openSettings(section: SettingsSection | null = null) {
   activeNav.value = section ? `settings/${section}` : 'settings';
