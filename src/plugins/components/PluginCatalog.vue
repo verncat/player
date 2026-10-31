@@ -50,12 +50,12 @@ onUnmounted(() => { disposed = true; });
         <PluginMetadata :manifest="catalogManifest(entry)">
           <span class="catalog-dates">Added <time :datetime="entry.addedAt">{{ entry.addedAt }}</time><span v-if="entry.updatedAt && entry.updatedAt !== entry.addedAt"> · Updated <time :datetime="entry.updatedAt">{{ entry.updatedAt }}</time></span></span>
         </PluginMetadata>
-        <p v-if="installed(entry.id)" class="catalog-status">Installed{{ installed(entry.id)?.enabled && !installed(entry.id)?.builtin ? ' — disable it before updating.' : '' }}</p>
+        <p v-if="installed(entry.id)" class="catalog-status">Installed{{ installed(entry.id)?.enabled ? ' — disable it before updating.' : '' }}</p>
         <p v-if="!supported(entry)" class="catalog-status">Unavailable on this platform.</p>
       </div>
       <div class="catalog-footer">
         <ul class="catalog-tags" aria-label="Tags"><li v-for="tag in tags(entry)" :key="tag">{{ tag }}</li></ul>
-        <button type="button" class="control-button control-button-compact" :disabled="busy || !supported(entry) || installed(entry.id)?.enabled || installed(entry.id)?.builtin" :aria-busy="pendingId === entry.id" @click="emit('review', entry)">Install</button>
+        <button type="button" class="control-button control-button-compact" :disabled="busy || !supported(entry) || installed(entry.id)?.enabled" :aria-busy="pendingId === entry.id" @click="emit('review', entry)">{{ listing?.platform === 'android' && entry.androidApkUrl ? 'Download APK' : 'Install' }}</button>
       </div>
     </article>
   </section>

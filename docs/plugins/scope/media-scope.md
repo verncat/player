@@ -5,7 +5,10 @@ Implementation: `plugin_sources.rs`, playback coordinator, native gateway, impor
 A plugin-owned resource has pluginId/resourceId, title/artist/album, optional duration
 and cover hash. It is independent of a library track ID. The host issues an opaque
 source token after authorizing the current activation. Plugins do not choose arbitrary
-local filesystem paths through the media gateway.
+local filesystem paths outside their own canonical staging directory.
+With storage, storage.staging returns that directory. With media.source,
+media.register issues a source token, media.state updates transfer state, and
+media.cover stores an image and returns its hash. Symlink escapes are rejected.
 
 `host.play` uses the main playback coordinator, queue/output selection and media state.
 `host.transport` validates playback control; `host.adopt` refreshes loaded playback and

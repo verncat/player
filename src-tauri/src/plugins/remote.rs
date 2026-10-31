@@ -168,7 +168,7 @@ where
         let json: Value = serde_json::from_str(&text)
             .map_err(|_| "Link did not return a JSON plugin package or manifest")?;
         if json.get("manifest").is_some() {
-            return Package::parse(&text, false);
+            return Package::parse(&text);
         }
         if !url.path().ends_with("/plugin.json") {
             return Err(
@@ -309,7 +309,7 @@ where
     let package = resolver.package_at(package_url).await?;
     let content = serde_json::to_string(&package).map_err(|e| e.to_string())?;
     // Validate the complete package before showing its native-code approval.
-    let package = Package::parse(&content, false)?;
+    let package = Package::parse(&content)?;
     source.validate()?;
     Ok(DownloadPreview {
         fingerprint: package.fingerprint(),

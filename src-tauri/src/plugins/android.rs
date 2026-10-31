@@ -33,7 +33,7 @@ pub async fn plugins_android_discover() -> Result<Value, String> {
         let mut warnings = found["warnings"].as_array().cloned().unwrap_or_default();
         for candidate in found["packages"].as_array().into_iter().flatten() {
             let content = candidate.as_str().ok_or("Invalid APK discovery response")?;
-            match Package::parse(content, false) {
+            match Package::parse(content) {
                 Ok(package) if package.manifest.android_native.is_some() => plugins.push(json!({
                     "content":content,"manifest":package.manifest,"fingerprint":package.fingerprint()
                 })),

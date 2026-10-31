@@ -27,7 +27,6 @@ pub struct PluginState {
     pub warnings: Vec<String>,
     pub(super) secrets: std::sync::Arc<super::secrets::SecretCache>,
     inner: Mutex<Registry>,
-    builtins: BTreeMap<String, Package>,
     sources: Mutex<BTreeMap<String, SourceGrant>>,
     events: Mutex<BTreeMap<String, Value>>,
     sequence: std::sync::atomic::AtomicU64,
@@ -117,39 +116,17 @@ impl PluginState {
                 }
             }
         }
-        let mut builtins = BTreeMap::new();
-        #[cfg(feature = "discord-rpc")]
-        {
-            let p = Package {
-                manifest: serde_json::from_str(include_str!(
-                    "../../../plugins/discord-rpc/plugin.json"
-                ))
-                .map_err(|e| e.to_string())?,
-                native: NativePackage::Builtin,
-            };
-            p.validate(true)?;
-            builtins.insert(p.manifest.id.clone(), p);
-        }
-        #[cfg(feature = "soulseek")]
-        {
-            let p = Package {
-                manifest: serde_json::from_str(include_str!(
-                    "../../../plugins/soulseek/plugin.json"
-                ))
-                .map_err(|e| e.to_string())?,
-                native: NativePackage::Builtin,
-            };
-            p.validate(true)?;
-            builtins.insert(p.manifest.id.clone(), p);
-        }
         inner.packages.retain(|id, p| {
-            let valid = p.validate(false).is_ok() && id == &p.manifest.id;
+            let valid = p.validate().is_ok() && id == &p.manifest.id;
             if !valid {
                 warnings.push(format!("Ignored invalid installed package {id}"));
             }
             valid
         });
-        for record in inner.records.values_mut() {
+        for (id, record) in inner.records.iter_mut() {
+            if !inner.packages.contains_key(id) {
+                record.enabled = false;
+            }
             if record.enabled {
                 record.generation = record.generation.wrapping_add(1);
             }
@@ -159,7 +136,6 @@ impl PluginState {
             warnings,
             secrets: std::sync::Arc::new(super::secrets::SecretCache::default()),
             inner: Mutex::new(inner),
-            builtins,
             sources: Mutex::new(BTreeMap::new()),
             events: Mutex::new(BTreeMap::new()),
             sequence: std::sync::atomic::AtomicU64::new(1),
@@ -178,16 +154,15 @@ impl PluginState {
         Ok(result)
     }
     pub fn package(&self, id: &str) -> Result<Package, String> {
-        self.builtins
+        self.inner
+            .lock()
+            .map_err(|e| e.to_string())?
+            .packages
             .get(id)
             .cloned()
-            .or_else(|| self.inner.lock().ok()?.packages.get(id).cloned())
             .ok_or_else(|| "Plugin not found".into())
     }
     pub fn manifest(&self, id: &str) -> Result<Manifest, String> {
-        if let Some(package) = self.builtins.get(id) {
-            return Ok(package.manifest.clone());
-        }
         self.inner
             .lock()
             .map_err(|e| e.to_string())?
@@ -198,7 +173,7 @@ impl PluginState {
     }
     pub fn record(&self, id: &str) -> Result<Record, String> {
         let registry = self.inner.lock().map_err(|e| e.to_string())?;
-        if !self.builtins.contains_key(id) && !registry.packages.contains_key(id) {
+        if !registry.packages.contains_key(id) {
             return Err("Plugin not found".into());
         }
         Ok(registry.records.get(id).cloned().unwrap_or_default())
@@ -213,14 +188,11 @@ impl PluginState {
                         artifacts.contains_key(&native_target())
                     }
                     NativePackage::AndroidApk => cfg!(target_os = "android"),
-                    NativePackage::Builtin => true,
                 },
             fingerprint: p.fingerprint(),
             manifest: p.manifest,
-            builtin: self.builtins.contains_key(id),
             enabled: record.enabled,
             generation: record.generation,
-            migrated: record.migrated,
             install_source: record.install_source,
         })
     }
@@ -233,7 +205,6 @@ impl PluginState {
             .keys()
             .cloned()
             .collect();
-        ids.extend(self.builtins.keys().cloned());
         ids.sort();
         ids.dedup();
         ids.iter().map(|id| self.info(id)).collect()
@@ -248,25 +219,10 @@ impl PluginState {
         self.change(|r| {
             let e = r.records.entry(id.into()).or_default();
             e.enabled = enabled;
-            e.migrated = true;
             e.generation = e.generation.wrapping_add(1);
             Ok(())
         })?;
         self.info(id)
-    }
-    pub fn migrate_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
-        if self.package(id).is_err() {
-            return Ok(());
-        }
-        self.change(|r| {
-            let e = r.records.entry(id.into()).or_default();
-            if !e.migrated {
-                e.enabled = enabled;
-                e.migrated = true;
-                e.generation += 1;
-            }
-            Ok(())
-        })
     }
     pub fn authorize(&self, id: &str, generation: u64, permission: &str) -> Result<(), String> {
         let manifest = self.manifest(id)?;
@@ -318,7 +274,7 @@ impl PluginState {
         if let Some(source) = &source {
             source.validate()?;
         }
-        let p = Package::parse(content, false)?;
+        let p = Package::parse(content)?;
         if p.fingerprint() != fingerprint {
             return Err("Package fingerprint changed".into());
         }
@@ -337,9 +293,6 @@ impl PluginState {
         self.info(&id)
     }
     pub fn uninstall(&self, id: &str) -> Result<(), String> {
-        if self.builtins.contains_key(id) {
-            return Err("Built-in plugins can be disabled, not uninstalled".into());
-        }
         self.change(|r| {
             if r.records.get(id).is_some_and(|r| r.enabled) {
                 return Err("Disable the plugin before uninstalling it".into());
@@ -470,6 +423,13 @@ impl PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fresh_player_contains_no_preinstalled_provider_packages() {
+        let root = std::env::temp_dir().join(format!("player-no-bundled-{}", std::process::id()));
+        let state = PluginState::new(root.clone()).unwrap();
+        assert!(state.list().unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn corrupt_primary_registry_preserves_backup_and_does_not_prevent_startup() {
         let root =

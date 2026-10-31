@@ -9,7 +9,7 @@ There is no bundled catalog, disk cache, backup, or offline fallback.
 
 Required top-level fields: `schemaVersion: 2`, calendar `updatedAt`, `plugins`.
 Entries require `id`, `name`, `description`, `repository`, `addedAt`, `platforms`;
-optional fields are installUrl, version, author, image, updatedAt and tags.
+optional fields are installUrl, version, author, image, updatedAt, androidApkUrl and tags.
 At most 256 unique entries, 12 tags of up to 40 bytes, and 512 KiB total. Unknown
 fields, invalid dates/URLs or a bad entry reject the whole response.
 
@@ -20,7 +20,8 @@ authors, descriptions, platforms and tags. New entries sort first, then by name.
 Install downloads a real native `.player-plugin` and checks its ID before preview.
 Metadata grants no permissions and does not authenticate the publisher. GitHub folder
 URLs must contain `plugin.player-plugin`; source-only folders are not installable.
-Bundled reserved IDs are excluded. APKs use system installation plus discovery.
+Official IDs are ordinary installable packages. Android entries with androidApkUrl
+show Download APK, then use system installation plus Find APK plugins.
 
 `PLAYER_PLUGIN_CATALOG_URL` can override the endpoint at Rust build time. Catalog
-updates do not alter pinned bundled code or automatically replace installed libraries.
+updates do not automatically replace installed libraries.

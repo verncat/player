@@ -13,7 +13,8 @@ remain in Player.
 
 Sources, Rust SDK, tooling, examples, and the public catalog live in
 [verncat/player-plugins](https://github.com/verncat/player-plugins), pinned locally
-as `plugins/`. Initialize it before building:
+as `plugins/` for the generic SDK only. Discord and Soulseek ship independently;
+a fresh Player installation has no preinstalled providers. Initialize it before building:
 
 ```sh
 git submodule update --init -- plugins

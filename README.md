@@ -215,11 +215,11 @@ pnpm tauri build
 - File watching: notify.
 - LAN discovery: mdns-sd.
 - Sync transport: tiny_http + reqwest.
-- Soulseek: soulseek-rs (vendored).
+- Optional Soulseek plugin: own vendored soulseek-rs client in player-plugins.
 - Audio identification: rusty-chromaprint + AcoustID.
 - 3D visuals: Three.js.
 - Icons: Lucide.
-- Discord Rich Presence: discord-rich-presence.
+- Optional Discord plugin: owns its discord-rich-presence dependency in player-plugins.
 - Logging and profiling: tracing, optional Tracy.
 
 ## Architecture at a glance
@@ -241,7 +241,7 @@ Main source files:
 - `src-tauri/src/audio_codecs.rs`: the codecs playback decodes with, including Opus through libopus.
 - `src-tauri/src/discovery.rs`: peer discovery.
 - `src-tauri/src/sync.rs`: sync protocol, peer HTTP server, remote playback.
-- `src-tauri/src/plugins/soulseek.rs`: Soulseek integration.
+- `src-tauri/src/plugins/`: generic native plugin host; Soulseek and Discord are separate installable packages.
 
 For a deeper architecture write-up, see [DESIGN.md](./DESIGN.md).
 
@@ -333,7 +333,7 @@ pnpm android:build-deploy
 ## Repository notes
 
 - `soulseek-rs-repo/` contains an upstream/workbench copy of the Soulseek project.
-- `src-tauri/vendor/soulseek-rs-lib/` contains the vendored library currently used by the app.
+- `plugins/soulseek/vendor/soulseek-rs-lib/` contains the protocol library used only by the independent Soulseek plugin.
 - `src-tauri/vendor/symphonia-format-ogg/` is a patched copy of Symphonia's Ogg demuxer that fixes Opus gapless trimming; `PATCHES.md` there lists the changes.
 - `src-tauri/gen/android/` contains generated Android project files produced for the Tauri mobile target.
 

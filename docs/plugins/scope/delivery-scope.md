@@ -2,7 +2,8 @@
 
 Sources: `verncat/player-plugins`; Player pins its tested commit as `plugins/`.
 Release workflows initialize that submodule before Cargo resolves Rust path dependencies.
-Catalog publication remains independent of the bundled code pin.
+Only the generic SDK is a Player build dependency. Providers are built and released
+by the plugin repository; catalog publication follows successful asset upload.
 
 From Player:
 

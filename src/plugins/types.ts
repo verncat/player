@@ -7,7 +7,7 @@ export interface Contribution {
 }
 export interface PluginManifest {
   id: string; name: string; version: string; apiVersion: number; description: string;
-  image?: string | null;
+  image?: string | null; pollIntervalMs?: number;
   platforms: string[]; permissions: string[]; contributions: Contribution[];
   author?: string | { name: string; url?: string | null } | null;
   homepage?: string | null; repository?: string | null;
@@ -17,7 +17,7 @@ export interface InstallSource { url: string; repository?: string | null; revisi
 export interface PluginPreview { manifest: PluginManifest; fingerprint: string; source?: InstallSource }
 export interface PluginDownload extends PluginPreview { content: string; source: InstallSource }
 export interface CatalogEntry {
-  id: string; name: string; description: string; repository: string; installUrl?: string;
+  id: string; name: string; description: string; repository: string; installUrl?: string; androidApkUrl?: string;
   addedAt: string; updatedAt?: string; version?: string; platforms: string[]; tags: string[];
   author?: PluginManifest['author']; image?: string;
 }
@@ -27,8 +27,8 @@ export interface PluginCatalogListing {
 }
 export interface AndroidPluginDiscovery { supported: boolean; plugins: Array<PluginPreview & { content: string }>; warnings: string[] }
 export interface PluginInfo {
-  manifest: PluginManifest; builtin: boolean; supported: boolean; enabled: boolean;
-  generation: number; migrated: boolean; fingerprint: string;
+  manifest: PluginManifest; supported: boolean; enabled: boolean;
+  generation: number; fingerprint: string;
   installSource?: InstallSource | null;
 }
 export interface ResourceIdentity {

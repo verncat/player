@@ -21,7 +21,8 @@ Publisher signatures are not inferred from the package fingerprint.
 
 Legacy script packages are removed on registry migration, while per-ID settings and
 secret metadata remain. Their records are disabled so the same ID can be reinstalled
-as a native replacement. Builtin IDs retain their settings and preferences.
+as a native replacement. Former built-in IDs retain settings and credentials but require installing their
+standalone package; no providers are preinstalled.
 
 macOS library signature validation remains enabled; signed/hardened builds can reject
 libraries that do not meet their signing requirements. Android pins APK file and signer

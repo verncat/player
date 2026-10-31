@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { usePluginHost } from '../host';
 import type { AndroidPluginDiscovery, CatalogEntry, PluginDownload, PluginPreview } from '../types';
 import SettingsToggle from '../../components/SettingsToggle.vue';
@@ -63,6 +64,12 @@ async function loadCatalogPlugin(entry: CatalogEntry) {
   if (busy.value) return;
   busy.value = `catalog:${entry.id}`; error.value = ''; resetPreview();
   try {
+    if (android.value && entry.androidApkUrl) {
+      await openUrl(entry.androidApkUrl);
+      error.value = 'Install the APK, then select Find APK plugins to connect it.';
+      return;
+    }
+
     const downloaded = await invoke<PluginDownload>('plugins_download', {
       url: entry.installUrl || entry.repository, expectedId: entry.id,
     });
@@ -125,9 +132,9 @@ async function retry(id: string) {
       <div class="plugin-actions">
         <button v-if="(plugin.enabled || host.errors.value[plugin.manifest.id]) && plugin.supported && !host.running.value.includes(plugin.manifest.id)" class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === `retry:${plugin.manifest.id}`" @click="retry(plugin.manifest.id)">Retry</button>
         <button v-if="!plugin.enabled" class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === `cache:${plugin.manifest.id}`" @click="clearCache(plugin.manifest.id)">Clear cache</button>
-        <button v-if="!plugin.builtin && !plugin.enabled" class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === `uninstall:${plugin.manifest.id}`" @click="uninstall(plugin.manifest.id)">Uninstall</button>
+        <button v-if="!plugin.enabled" class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === `uninstall:${plugin.manifest.id}`" @click="uninstall(plugin.manifest.id)">Uninstall</button>
       </div>
-      <small v-if="!plugin.builtin">{{ plugin.manifest.id }}</small>
+      <small>{{ plugin.manifest.id }}</small>
     </article>
     <PluginCatalog :busy="Boolean(busy)" :pending-id="busy.startsWith('catalog:') ? busy.slice(8) : undefined" @review="loadCatalogPlugin" @notify="error = $event" />
     <div class="plugin-install">

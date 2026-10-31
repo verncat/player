@@ -127,9 +127,9 @@ test('catalog selection checks the requested ID and previews the actual package 
   const helpers = {}, busy = { value: '' }, error = { value: '' }, calls = [];
   const downloaded = { content: 'actual package', manifest: { id: 'example.hello', name: 'Actual name', permissions: ['network.http'] }, fingerprint: 'actual fingerprint' };
   let preview, fail = false;
-  new Function('exports', 'invoke', 'busy', 'error', 'resetPreview', 'showPreview', code)(helpers,
+  new Function('exports', 'invoke', 'busy', 'error', 'resetPreview', 'showPreview', 'android', 'openUrl', code)(helpers,
     async (command, args) => { calls.push([command, args]); if (fail) throw new Error('ID mismatch'); return downloaded; },
-    busy, error, () => { preview = undefined; }, (content, checked) => { preview = { content, checked }; });
+    busy, error, () => { preview = undefined; }, (content, checked) => { preview = { content, checked }; }, {value:false}, async()=>{});
   await helpers.loadCatalogPlugin({ id: 'example.hello', repository: 'https://github.com/author/plugin', installUrl: 'https://example.org/plugin.player-plugin', name: 'Catalog name' });
   assert.deepEqual(calls, [['plugins_download', { url: 'https://example.org/plugin.player-plugin', expectedId: 'example.hello' }]]);
   assert.equal(preview.checked.manifest.name, 'Actual name');
@@ -206,4 +206,16 @@ test('native startup replays buffered events once and rejects later duplicates',
   const h=nativeHostHarness({startupEvent:event});await h.start();
   h.listeners.get('plugin-event')({payload:event});await settle();
   assert.equal(h.calls.filter(([command,args])=>command==='plugin_native_call'&&args.method==='event').length,1);h.stop();
+});
+
+test('Android catalog opens the APK installer download without treating an APK as a library package', async () => {
+  const source=readFileSync(new URL('../src/plugins/components/PluginManager.vue',import.meta.url),'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
+  const parsed=ts.createSourceFile('PluginManager.ts',source,ts.ScriptTarget.Latest,true);
+  const fn=parsed.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='loadCatalogPlugin');
+  const code=ts.transpileModule(`export ${fn.getText(parsed)}`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  const helpers={},busy={value:''},error={value:''},opened=[];
+  new Function('exports','invoke','busy','error','resetPreview','showPreview','android','openUrl',code)(helpers,
+    async()=>{throw new Error('APK must not be passed to the library downloader');},busy,error,()=>{},()=>{throw new Error('APK must be reviewed after installation/discovery');},{value:true},async url=>opened.push(url));
+  await helpers.loadCatalogPlugin({id:'player.soulseek',repository:'https://github.com/verncat/player-plugins',androidApkUrl:'https://github.com/verncat/player-plugins/releases/download/native-v1.0.0/player.soulseek.apk'});
+  assert.equal(opened.length,1);assert.match(error.value,/Find APK plugins/);assert.equal(busy.value,'');
 });

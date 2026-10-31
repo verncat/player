@@ -136,6 +136,9 @@ export function createPluginHost(options: HostOptions) {
       unlisteners.push(await listen<{pluginId: string; generation: number}>('plugin-invalidated', ({ payload }) => {
         if (plugins.value.some(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation)) invalidate();
       }));
+      unlisteners.push(await listen<{pluginId:string;generation:number;error:string}>('plugin-runtime-error', ({payload}) => {
+        if (plugins.value.some(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation)) errors.value = {...errors.value,[payload.pluginId]:payload.error};
+      }));
       unlisteners.push(await listen<PluginEvent>('plugin-event', ({ payload }) => {
         const info = plugins.value.find(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation);
         if (!info) return;
@@ -144,12 +147,6 @@ export function createPluginHost(options: HostOptions) {
       }));
       await refresh();
       const warnings = await invoke<string[]>('plugins_diagnostics'); if (warnings.length) errors.value = { ...errors.value, host: warnings.join(' ') };
-      let legacy: string | null = null; try { legacy = localStorage.getItem('player.discord-presence'); } catch { /* Storage may be unavailable. */ }
-      const discord = plugins.value.find(p => p.manifest.id === 'player.discord-rpc');
-      if (legacy !== null && discord && !discord.migrated) {
-        await invoke('plugins_migrate_enabled', { pluginId: discord.manifest.id, enabled: legacy === 'true' });
-        try { localStorage.removeItem('player.discord-presence'); } catch { /* Native migration marker is authoritative. */ } await refresh();
-      }
       await Promise.all(plugins.value.map(start));
     } catch (e) { errors.value = { ...errors.value, host: String(e) }; }
     finally { loading.value = false; }

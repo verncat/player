@@ -1,14 +1,10 @@
 //! Player's runtime package registry and capability gateway.
 pub mod android;
 mod catalog;
-#[cfg(feature = "discord-rpc")]
-pub mod discord;
 pub mod model;
 pub mod native;
 mod remote;
 pub(crate) mod secrets;
-#[cfg(feature = "soulseek")]
-pub mod soulseek;
 mod store;
 use model::{InstallSource, Package, PluginInfo};
 use serde::{de::DeserializeOwned, Serialize};
@@ -23,6 +19,21 @@ fn field<T: DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
             .ok_or_else(|| format!("Missing {key}"))?,
     )
     .map_err(|e| format!("Invalid {key}: {e}"))
+}
+fn staging_path(state: &PluginState, id: &str, path: &str) -> Result<std::path::PathBuf, String> {
+    let root = state
+        .root
+        .join("staging")
+        .join(id)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let path = std::path::PathBuf::from(path)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    if !path.starts_with(root) || !path.is_file() {
+        return Err("Media path must be a file in the plugin's staging directory".into());
+    }
+    Ok(path)
 }
 fn value(v: impl Serialize) -> Result<Value, String> {
     serde_json::to_value(v).map_err(|e| e.to_string())
@@ -48,55 +59,6 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .join("plugin-system");
     let state = PluginState::new(root)?;
-    #[cfg(feature = "soulseek")]
-    {
-        let cfg = app
-            .state::<crate::library::LibraryState>()
-            .get_device_settings()
-            .map_err(|e| e.to_string())?;
-        state.migrate_enabled("player.soulseek", cfg.soulseek_enabled)?;
-        if state.settings("player.soulseek")?["revision"] == 0 {
-            state.update_settings(
-                "player.soulseek",
-                0,
-                json!({"username":cfg.soulseek_username}),
-            )?;
-        }
-        if !cfg.soulseek_password.is_empty() {
-            match state
-                .secrets
-                .get("player.soulseek", "password")
-                .and_then(|existing| {
-                    if existing.is_some() {
-                        Ok(())
-                    } else {
-                        state
-                            .secrets
-                            .set("player.soulseek", "password", &cfg.soulseek_password)
-                    }
-                }) {
-                Ok(()) => {
-                    state.remember_secret("player.soulseek", "password", true)?;
-                    app.state::<crate::library::LibraryState>()
-                        .set_device_settings(
-                            &cfg.emoji,
-                            &cfg.device_name,
-                            cfg.sync_enabled,
-                            false,
-                            "",
-                            "",
-                        )
-                        .map_err(|e| e.to_string())?;
-                }
-                Err(error) => tracing::warn!("Soulseek credential migration deferred: {}", error),
-            }
-        }
-        app.manage(soulseek::SoulseekState::new(
-            state.root.join("staging/player.soulseek"),
-        ));
-    }
-    #[cfg(feature = "discord-rpc")]
-    app.manage(discord::DiscordPresenceState::default());
     app.manage(native::NativeRuntime::default());
     app.manage(state);
     Ok(())
@@ -119,10 +81,6 @@ pub fn emit_generation_event(
 }
 pub fn shutdown(app: &tauri::AppHandle) {
     native::shutdown(app);
-    #[cfg(feature = "discord-rpc")]
-    app.state::<discord::DiscordPresenceState>().shutdown();
-    #[cfg(feature = "soulseek")]
-    app.state::<soulseek::SoulseekState>().deactivate();
     let _ = app;
 }
 #[tauri::command]
@@ -135,7 +93,7 @@ pub fn plugins_list(state: tauri::State<'_, PluginState>) -> Result<Vec<PluginIn
 }
 #[tauri::command]
 pub fn plugins_preview(content: String) -> Result<Value, String> {
-    let p = Package::parse(&content, false)?;
+    let p = Package::parse(&content)?;
     Ok(json!({"manifest":p.manifest,"fingerprint":p.fingerprint()}))
 }
 #[tauri::command]
@@ -185,14 +143,6 @@ pub fn plugin_load(
     Ok(json!({"info":info,"events":state.events(&plugin_id)}))
 }
 #[tauri::command]
-pub fn plugins_migrate_enabled(
-    plugin_id: String,
-    enabled: bool,
-    state: tauri::State<'_, PluginState>,
-) -> Result<(), String> {
-    state.migrate_enabled(&plugin_id, enabled)
-}
-#[tauri::command]
 pub async fn plugins_set_enabled(
     plugin_id: String,
     enabled: bool,
@@ -218,14 +168,6 @@ pub async fn plugins_set_enabled(
             == Some(&plugin_id)
         {
             app.state::<crate::playback::PlaybackState>().stop();
-        }
-        #[cfg(feature = "discord-rpc")]
-        if plugin_id == "player.discord-rpc" {
-            let _ = discord::discord_update_presence(false, None, app.state());
-        }
-        #[cfg(feature = "soulseek")]
-        if plugin_id == "player.soulseek" {
-            app.state::<soulseek::SoulseekState>().deactivate();
         }
         if cfg!(target_os = "android") && info.manifest.android_native.is_some() {
             let id = plugin_id.clone();
@@ -260,15 +202,51 @@ pub async fn plugin_call(
     let permission = match method.as_str() {
         "settings.get" | "settings.update" => "settings",
         "secrets.has" | "secrets.set" | "secrets.delete" | "secrets.get" => "secrets",
+        "storage.staging" => "storage",
+        "media.register" | "media.state" | "media.cover" => "media.source",
         "library.import" => "library.import",
         "library.replace" => "library.replace",
         "http.request" | "http.download" => "network.http",
-        m if m.starts_with("soulseek.") => "native.soulseek",
-        m if m.starts_with("discord.") => "native.discord",
         _ => return Err("METHOD_NOT_FOUND".into()),
     };
     state.authorize(&plugin_id, generation, permission)?;
     let result = match method.as_str() {
+        "storage.staging" => {
+            let root = state.root.join("staging").join(&plugin_id);
+            std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+            Ok(json!({"path":root.canonicalize().map_err(|e|e.to_string())?}))
+        }
+        "media.register" | "media.state" => {
+            let path = staging_path(&state, &plugin_id, &field::<String>(&args, "path")?)?;
+            let transfer = match args["state"].as_str().unwrap_or("active") {
+                "active" => crate::plugin_sources::TransferState::Active,
+                "completed" => crate::plugin_sources::TransferState::Completed,
+                "failed" => crate::plugin_sources::TransferState::Failed,
+                "timed_out" => crate::plugin_sources::TransferState::TimedOut,
+                "cancelled" => crate::plugin_sources::TransferState::Cancelled,
+                _ => return Err("Unknown media transfer state".into()),
+            };
+            crate::plugin_sources::set_transfer_state(&path, transfer);
+            if method == "media.register" {
+                let mut resource: crate::plugin_sources::ResourceIdentity =
+                    field(&args, "resource")?;
+                resource.plugin_id = plugin_id.clone();
+                value(state.register_source(&plugin_id, generation, path, resource)?)
+            } else {
+                Ok(Value::Null)
+            }
+        }
+        "media.cover" => {
+            let path = staging_path(&state, &plugin_id, &field::<String>(&args, "path")?)?;
+            if path.metadata().map_err(|e| e.to_string())?.len() > 32 * 1024 * 1024 {
+                return Err("Cover exceeds 32 MiB".into());
+            }
+            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            value(crate::covers::store(
+                app.state::<crate::library::LibraryState>().data_dir(),
+                &bytes,
+            ))
+        }
         "settings.get" => state.settings(&plugin_id),
         "settings.update" => state.update_settings(
             &plugin_id,
@@ -301,22 +279,6 @@ pub async fn plugin_call(
                 .map_err(|e| e.to_string())??;
             state.remember_secret(&plugin_id, &key, false)?;
             Ok(Value::Null)
-        }
-        #[cfg(feature = "discord-rpc")]
-        "discord.availability" => value(discord::discord_availability()),
-        #[cfg(feature = "discord-rpc")]
-        "discord.update" => {
-            discord::discord_update_presence(
-                true,
-                serde_json::from_value(args.get("playback").cloned().unwrap_or(Value::Null))
-                    .map_err(|e| e.to_string())?,
-                app.state(),
-            )?;
-            Ok(Value::Null)
-        }
-        #[cfg(feature = "soulseek")]
-        m if m.starts_with("soulseek.") => {
-            soulseek_call(&app, &plugin_id, generation, m, args).await
         }
         "http.request" => {
             let url: String = field(&args, "url")?;
@@ -529,108 +491,6 @@ pub async fn plugin_call(
     Ok(result)
 }
 
-#[cfg(feature = "soulseek")]
-async fn soulseek_call(
-    app: &tauri::AppHandle,
-    id: &str,
-    generation: u64,
-    method: &str,
-    args: Value,
-) -> Result<Value, String> {
-    let library = app.state::<crate::library::LibraryState>();
-    let state = app.state::<soulseek::SoulseekState>();
-    let plugins = app.state::<PluginState>();
-    let mut cfg = library.get_device_settings().map_err(|e| e.to_string())?;
-    let settings = plugins.settings(id)?;
-    cfg.soulseek_enabled = true;
-    cfg.soulseek_username = settings["values"]["username"]
-        .as_str()
-        .unwrap_or(&cfg.soulseek_username)
-        .into();
-    if method == "soulseek.status" {
-        return value(state.status(&cfg.soulseek_username, plugins.has_secret(id, "password")?));
-    }
-    if matches!(
-        method,
-        "soulseek.search" | "soulseek.download" | "soulseek.preview" | "soulseek.cover"
-    ) {
-        cfg.soulseek_password = read_secret(&plugins, id, "password")
-            .await?
-            .unwrap_or_default();
-        plugins.authorize(id, generation, "native.soulseek")?;
-        if cfg.soulseek_password.is_empty() {
-            return Err("Save your Soulseek password in plugin settings first".into());
-        }
-        state.configure(cfg);
-    }
-    match method {
-        "soulseek.search" => value(
-            soulseek::soulseek_search(
-                field(&args, "query")?,
-                state,
-                library,
-                app.clone(),
-                generation,
-            )
-            .await?,
-        ),
-        "soulseek.download" => value(
-            soulseek::soulseek_download(
-                field(&args, "request")?,
-                app.clone(),
-                state,
-                library,
-                generation,
-            )
-            .await?,
-        ),
-        "soulseek.preview" => value(
-            soulseek::soulseek_preview(
-                field(&args, "request")?,
-                app.clone(),
-                state,
-                library,
-                generation,
-            )
-            .await?,
-        ),
-        "soulseek.cancelPreview" => value(soulseek::soulseek_cancel_preview(
-            field(&args, "request")?,
-            state,
-        )?),
-        "soulseek.cover" => value(
-            soulseek::soulseek_fetch_cover(
-                field(&args, "request")?,
-                state,
-                library,
-                app.clone(),
-                generation,
-            )
-            .await?,
-        ),
-        "soulseek.prepare" => {
-            let username: String = field(&args, "username")?;
-            let filename: String = field(&args, "filename")?;
-            let path = state.cache_path(&library, &username, &filename)?;
-            if !path.is_file()
-                || !path.canonicalize().map_err(|e| e.to_string())?.starts_with(
-                    plugins
-                        .root
-                        .join("staging/player.soulseek")
-                        .canonicalize()
-                        .map_err(|e| e.to_string())?,
-                )
-            {
-                return Err("Preview file is not ready".into());
-            }
-            let mut resource: crate::plugin_sources::ResourceIdentity = field(&args, "resource")?;
-            resource.plugin_id = id.into();
-            value(plugins.register_source(id, generation, path, resource)?)
-        }
-        _ => Err("METHOD_NOT_FOUND".into()),
-    }
-}
-
 #[tauri::command]
 pub fn plugin_play_source(
     plugin_id: String,
@@ -686,4 +546,44 @@ pub fn plugins_clear_cache(plugin_id: String, app: tauri::AppHandle) -> Result<(
         std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn staged_media_cannot_read_other_plugins_or_paths_outside_staging() {
+        let root =
+            std::env::temp_dir().join(format!("player-generic-media-{}", std::process::id()));
+        let state = PluginState::new(root.clone()).unwrap();
+        let own = root.join("staging/example.a");
+        let other = root.join("staging/example.b");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(own.join("audio.flac"), b"audio").unwrap();
+        std::fs::write(other.join("audio.flac"), b"private").unwrap();
+        assert!(staging_path(
+            &state,
+            "example.a",
+            own.join("audio.flac").to_str().unwrap()
+        )
+        .is_ok());
+        assert!(staging_path(
+            &state,
+            "example.a",
+            other.join("audio.flac").to_str().unwrap()
+        )
+        .is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(other.join("audio.flac"), own.join("escape.flac")).unwrap();
+            assert!(staging_path(
+                &state,
+                "example.a",
+                own.join("escape.flac").to_str().unwrap()
+            )
+            .is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

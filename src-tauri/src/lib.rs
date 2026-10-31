@@ -88,7 +88,7 @@ fn greet(name: &str) -> String {
 fn init_tracing() {
     INIT_TRACING.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new("warn,player_lib=info,soulseek_rs=trace")
+            tracing_subscriber::EnvFilter::new("warn,player_lib=info")
         });
 
         #[cfg(feature = "tracy")]
@@ -209,7 +209,6 @@ pub fn run() {
             plugins::plugins_uninstall,
             plugins::plugins_clear_cache,
             plugins::plugins_set_enabled,
-            plugins::plugins_migrate_enabled,
             plugins::plugin_load,
             plugins::native::plugin_native_call,
             plugins::native::plugin_native_reply,

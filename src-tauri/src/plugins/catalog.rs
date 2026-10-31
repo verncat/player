@@ -24,6 +24,8 @@ pub struct Entry {
     pub repository: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub android_apk_url: Option<String>,
     pub added_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
@@ -103,6 +105,12 @@ impl Catalog {
             if let Some(url) = &entry.install_url {
                 super::remote::download_url(url)?;
             }
+            if let Some(url) = &entry.android_apk_url {
+                super::remote::download_url(url)?;
+                if !entry.platforms.iter().any(|p| p == "android") {
+                    return Err("APK URL requires Android platform".into());
+                }
+            }
             if entry.tags.len() > 12
                 || entry
                     .tags
@@ -123,11 +131,12 @@ impl Catalog {
                 homepage: None,
                 repository: Some(entry.repository.clone()),
                 android_native: None,
+                poll_interval_ms: None,
                 platforms: entry.platforms.clone(),
                 permissions: vec![],
                 contributions: vec![],
             }
-            .validate(false)?;
+            .validate()?;
         }
         Ok(())
     }
@@ -203,6 +212,16 @@ mod tests {
     }
 
     #[test]
+    fn android_download_requires_https_and_android_platform() {
+        let mut value = fixture();
+        value["plugins"][0]["androidApkUrl"] = "https://example.org/plugin.apk".into();
+        assert!(parse(value.clone()).is_err());
+        value["plugins"][0]["platforms"] = serde_json::json!(["android"]);
+        parse(value.clone()).unwrap();
+        value["plugins"][0]["androidApkUrl"] = "http://example.org/plugin.apk".into();
+        assert!(parse(value).is_err());
+    }
+    #[test]
     fn catalog_and_calendar_dates_are_valid() {
         let catalog = parse(fixture()).unwrap();
         assert_eq!(catalog.plugins[0].id, "example.hello");
@@ -240,7 +259,7 @@ mod tests {
             ("installUrl", "file:///tmp/package"),
             ("image", "javascript:alert(1)"),
             ("updatedAt", "2020-01-01"),
-            ("id", "player.soulseek"),
+            ("id", "../escape"),
         ] {
             let mut value = fixture();
             value["plugins"][0][key] = invalid.into();

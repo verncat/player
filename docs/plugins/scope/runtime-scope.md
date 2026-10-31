@@ -8,7 +8,7 @@ metadata and event snapshots only. It then calls `plugin_native_call` for `activ
 Each request carries a plugin ID and activation generation; arguments/results are JSON
 limited to 1 MiB. Calls to one activation are serialized outside the UI thread.
 
-The Rust `NativePlugin` trait handles bundled plugins. External libraries export
+Native packages implement the Rust `NativePlugin` trait. Desktop libraries export
 C ABI 1 create/call/free/destroy, ABI version, and plugin ID functions. The loader
 validates ABI/ID before creating an instance. Each allocator releases its own buffers;
 the host context is scoped to one invocation. Rust panic boundaries do not recover

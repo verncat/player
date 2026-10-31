@@ -3,7 +3,7 @@ use super::{
     model::{native_target, NativePackage, Package},
     PluginState,
 };
-use player_plugin_sdk::{Buffer, Host, HostApi, NativePlugin, Result as PluginResult};
+use player_plugin_sdk::{Buffer, Host, HostApi, Result as PluginResult};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -35,7 +35,6 @@ impl Drop for LibraryInstance {
     }
 }
 enum Backend {
-    Builtin(Box<dyn NativePlugin>),
     Library(LibraryInstance),
     Android,
 }
@@ -48,8 +47,6 @@ struct Activation {
 pub struct NativeRuntime {
     activations: Mutex<BTreeMap<String, Arc<Mutex<Activation>>>>,
     closing: AtomicBool,
-    // Keep library code resident until shutdown, even after disabling an instance.
-    libraries: Mutex<Vec<Arc<libloading::Library>>>,
 }
 #[derive(Clone)]
 struct Context {
@@ -62,6 +59,8 @@ struct Reply {
     generation: u64,
     send: std::sync::mpsc::Sender<PluginResult>,
 }
+// Library code remains mapped until process exit, including after window/runtime teardown.
+static LIBRARIES: OnceLock<Mutex<Vec<Arc<libloading::Library>>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static REPLIES: OnceLock<Mutex<BTreeMap<u64, Reply>>> = OnceLock::new();
 fn replies() -> &'static Mutex<BTreeMap<u64, Reply>> {
@@ -255,8 +254,8 @@ fn library(
         if instance.is_null() {
             return Err("Native plugin constructor failed".into());
         }
-        app.state::<NativeRuntime>()
-            .libraries
+        LIBRARIES
+            .get_or_init(Default::default)
             .lock()
             .map_err(|e| e.to_string())?
             .push(library.clone());
@@ -277,17 +276,6 @@ fn backend(
     match &package.native {
         NativePackage::Library { .. } => library(app, package, fingerprint),
         NativePackage::AndroidApk => Ok(Backend::Android),
-        NativePackage::Builtin => match package.manifest.id.as_str() {
-            #[cfg(feature = "discord-rpc")]
-            "player.discord-rpc" => Ok(Backend::Builtin(Box::new(
-                player_discord_plugin::Plugin::default(),
-            ))),
-            #[cfg(feature = "soulseek")]
-            "player.soulseek" => Ok(Backend::Builtin(Box::new(
-                player_soulseek_plugin::Plugin::default(),
-            ))),
-            _ => Err("Unknown native builtin".into()),
-        },
     }
 }
 fn dispatch(
@@ -297,7 +285,6 @@ fn dispatch(
     args: Value,
 ) -> PluginResult {
     match &mut activation.backend {
-        Backend::Builtin(plugin) => plugin.call(method, args, context),
         Backend::Library(plugin) => unsafe {
             let request = serde_json::to_vec(&json!({"method":method,"args":args}))
                 .map_err(|e| e.to_string())?;
@@ -349,6 +336,39 @@ fn dispatch(
         }
     }
 }
+fn start_polling(app: tauri::AppHandle, id: String, generation: u64, interval: u64) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+            let current = app.state::<PluginState>().record(&id);
+            if app.state::<NativeRuntime>().closing.load(Ordering::Acquire)
+                || !current.is_ok_and(|r| r.enabled && r.generation == generation)
+            {
+                break;
+            }
+            if let Err(error) = plugin_native_call(
+                app.clone(),
+                id.clone(),
+                generation,
+                "poll".into(),
+                json!({}),
+            )
+            .await
+            {
+                if error.contains("METHOD_NOT_FOUND")
+                    || error.contains("DISABLED")
+                    || error.contains("not active")
+                {
+                    break;
+                }
+                let _ = app.emit(
+                    "plugin-runtime-error",
+                    json!({"pluginId":id,"generation":generation,"error":error}),
+                );
+            }
+        }
+    });
+}
 #[tauri::command]
 pub async fn plugin_native_call(
     app: tauri::AppHandle,
@@ -359,6 +379,7 @@ pub async fn plugin_native_call(
 ) -> PluginResult {
     if ![
         "activate",
+        "poll",
         "render",
         "action",
         "search",
@@ -413,6 +434,13 @@ pub async fn plugin_native_call(
         let result = dispatch(&mut activation, &mut context, &method, args);
         if method == "activate" && result.is_ok() {
             activation.initialized = true;
+            if let Some(interval) = app
+                .state::<PluginState>()
+                .manifest(&plugin_id)?
+                .poll_interval_ms
+            {
+                start_polling(app.clone(), plugin_id.clone(), generation, interval);
+            }
         }
         context.active()?;
         result
@@ -578,7 +606,7 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let package = Package::parse(&std::fs::read_to_string(&packaged).unwrap(), false).unwrap();
+        let package = Package::parse(&std::fs::read_to_string(&packaged).unwrap()).unwrap();
         assert_eq!(package.manifest.api_version, 2);
         assert_eq!(package.manifest.id, "example.hello");
         std::fs::remove_file(packaged).unwrap();

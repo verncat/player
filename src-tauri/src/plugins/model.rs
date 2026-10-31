@@ -12,8 +12,8 @@ pub const PERMISSIONS: &[&str] = &[
     "settings",
     "secrets",
     "network.http",
-    "native.discord",
-    "native.soulseek",
+    "storage",
+    "media.source",
     "native.android",
 ];
 
@@ -36,6 +36,8 @@ pub struct Manifest {
     pub repository: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub android_native: Option<AndroidNative>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval_ms: Option<u64>,
     pub platforms: Vec<String>,
     #[serde(default)]
     pub permissions: Vec<String>,
@@ -164,7 +166,6 @@ pub struct Package {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum NativePackage {
-    Builtin,
     Library {
         artifacts: std::collections::BTreeMap<String, NativeArtifact>,
     },
@@ -208,8 +209,6 @@ pub struct Record {
     #[serde(default)]
     pub settings: Value,
     #[serde(default)]
-    pub migrated: bool,
-    #[serde(default)]
     pub secret_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_source: Option<InstallSource>,
@@ -219,11 +218,9 @@ pub struct Record {
 #[serde(rename_all = "camelCase")]
 pub struct PluginInfo {
     pub manifest: Manifest,
-    pub builtin: bool,
     pub supported: bool,
     pub enabled: bool,
     pub generation: u64,
-    pub migrated: bool,
     pub fingerprint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_source: Option<InstallSource>,
@@ -260,18 +257,17 @@ pub fn platform() -> &'static str {
     }
 }
 impl Package {
-    pub fn parse(content: &str, builtin: bool) -> Result<Self, String> {
+    pub fn parse(content: &str) -> Result<Self, String> {
         if content.len() > MAX_PACKAGE_BYTES {
-            return Err("Plugin package exceeds 4 MiB".into());
+            return Err("Plugin package exceeds 96 MiB".into());
         }
         let package: Self =
             serde_json::from_str(content).map_err(|e| format!("Invalid plugin package: {e}"))?;
-        package.validate(builtin)?;
+        package.validate()?;
         Ok(package)
     }
-    pub fn validate(&self, builtin: bool) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         match &self.native {
-            NativePackage::Builtin if builtin => {}
             NativePackage::AndroidApk if self.manifest.android_native.is_some() => {}
             NativePackage::Library { artifacts }
                 if !artifacts.is_empty() && self.manifest.android_native.is_none() =>
@@ -305,7 +301,7 @@ impl Package {
                 )
             }
         }
-        self.manifest.validate(builtin)
+        self.manifest.validate()
     }
     pub fn fingerprint(&self) -> String {
         blake3::hash(&serde_json::to_vec(self).expect("serializable package"))
@@ -315,8 +311,13 @@ impl Package {
 }
 
 impl Manifest {
-    pub fn validate(&self, builtin: bool) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         let m = self;
+        if m.poll_interval_ms
+            .is_some_and(|interval| !(50..=60_000).contains(&interval))
+        {
+            return Err("Polling interval must be 50–60000 ms".into());
+        }
         if let Some(image) = &m.image {
             validate_image(image)?;
         }
@@ -337,8 +338,8 @@ impl Manifest {
         for url in [&m.homepage, &m.repository].into_iter().flatten() {
             web_url(url)?;
         }
-        if !valid_id(&m.id) || (!builtin && m.id.starts_with("player.")) {
-            return Err("Invalid or reserved plugin id".into());
+        if !valid_id(&m.id) {
+            return Err("Invalid plugin id".into());
         }
         if m.api_version != API_VERSION {
             return Err("Incompatible plugin API version".into());
@@ -358,10 +359,10 @@ impl Manifest {
         {
             return Err("Invalid plugin platforms".into());
         }
-        if m.permissions.iter().any(|p| {
-            !PERMISSIONS.contains(&p.as_str())
-                || (!builtin && p.starts_with("native.") && p != "native.android")
-        }) {
+        if m.permissions
+            .iter()
+            .any(|p| !PERMISSIONS.contains(&p.as_str()))
+        {
             return Err("Unknown or reserved plugin permission".into());
         }
         let native_permission = m.permissions.iter().any(|p| p == "native.android");
@@ -481,11 +482,24 @@ mod tests {
                 homepage: None,
                 repository: None,
                 android_native: None,
+                poll_interval_ms: None,
                 platforms: vec!["linux".into(), "macos".into(), "windows".into()],
                 permissions: vec![],
                 contributions: vec![],
             },
             native: fixture_native(),
+        }
+    }
+    #[test]
+    fn polling_interval_is_optional_and_bounded() {
+        let mut p = package();
+        for interval in [0, 49, 60_001, u64::MAX] {
+            p.manifest.poll_interval_ms = Some(interval);
+            assert!(p.validate().is_err());
+        }
+        for interval in [50, 250, 60_000] {
+            p.manifest.poll_interval_ms = Some(interval);
+            p.validate().unwrap();
         }
     }
     #[test]
@@ -495,22 +509,22 @@ mod tests {
         for key in ["image", "author", "homepage", "repository", "androidNative"] {
             assert!(json["manifest"].get(key).is_none());
         }
-        let roundtrip = Package::parse(&serde_json::to_string(&p).unwrap(), false).unwrap();
+        let roundtrip = Package::parse(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(p.fingerprint(), roundtrip.fingerprint());
     }
     #[test]
     fn accepts_author_forms_and_rejects_unsafe_links() {
         let mut p = package();
         p.manifest.author = Some(Author::Name("Example author".into()));
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
         p.manifest.author = Some(Author::Details(AuthorDetails {
             name: "Author".into(),
             url: Some("https://example.org/author".into()),
         }));
         p.manifest.repository = Some("https://github.com/example/plugin".into());
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
         p.manifest.homepage = Some("javascript:alert(1)".into());
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         assert!(web_url("https://user:password@example.org").is_err());
     }
     #[test]
@@ -518,15 +532,15 @@ mod tests {
         use base64::{engine::general_purpose::STANDARD, Engine};
         let mut p = package();
         p.manifest.image = Some("https://example.org/icon.png".into());
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
         p.manifest.image = Some(format!(
             "data:image/png;base64,{}",
             STANDARD.encode(include_bytes!("../../icons/32x32.png"))
         ));
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
         let encoded = serde_json::to_string(&p).unwrap();
         assert_eq!(
-            Package::parse(&encoded, false).unwrap().fingerprint(),
+            Package::parse(&encoded).unwrap().fingerprint(),
             p.fingerprint()
         );
         for invalid in [
@@ -540,10 +554,10 @@ mod tests {
             "data:image/svg+xml;base64,PHN2Zy8+",
         ] {
             p.manifest.image = Some(invalid.into());
-            assert!(p.validate(false).is_err(), "accepted {invalid}");
+            assert!(p.validate().is_err(), "accepted {invalid}");
         }
         p.manifest.image = Some(format!("data:image/png;base64,{}", "A".repeat(350_000)));
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
     }
     #[test]
     fn shipped_example_is_an_installable_external_package() {
@@ -554,22 +568,22 @@ mod tests {
             .unwrap(),
             native: fixture_native(),
         };
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
         let encoded = serde_json::to_string(&p).unwrap();
         assert_eq!(
-            Package::parse(&encoded, false).unwrap().fingerprint(),
+            Package::parse(&encoded).unwrap().fingerprint(),
             p.fingerprint()
         );
     }
     #[test]
-    fn rejects_reserved_ids_and_native_permissions() {
+    fn official_plugin_ids_are_installable_and_provider_host_permissions_are_removed() {
         let mut p = package();
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
         p.manifest.id = "player.soulseek".into();
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_ok());
         p.manifest.id = "example.hello".into();
         p.manifest.permissions.push("native.soulseek".into());
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
     }
     #[test]
     fn android_native_requires_permission_platform_and_pinned_identity() {
@@ -581,20 +595,20 @@ mod tests {
             certificate_sha256: "a".repeat(64),
             apk_sha256: "b".repeat(64),
         });
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         p.manifest.permissions.push("native.android".into());
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         p.manifest.platforms = vec!["android".into()];
-        assert!(p.validate(false).is_ok());
+        assert!(p.validate().is_ok());
         let valid = p.clone();
         p.manifest.android_native.as_mut().unwrap().entry_class = "org.other.Main".into();
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         p = valid.clone();
         p.manifest.android_native.as_mut().unwrap().apk_sha256 = "x".repeat(64);
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         p = valid;
         p.manifest.android_native = None;
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
     }
     #[test]
     fn page_menu_visibility_is_optional_and_roundtrips() {
@@ -608,14 +622,14 @@ mod tests {
         assert!(json["manifest"]["contributions"][0]
             .get("showInMenu")
             .is_none());
-        let legacy = Package::parse(&serde_json::to_string(&p).unwrap(), false).unwrap();
+        let legacy = Package::parse(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(p.fingerprint(), legacy.fingerprint());
         let legacy_fingerprint = p.fingerprint();
         for visible in [false, true] {
             p.manifest.contributions[0].show_in_menu = Some(visible);
             let json = serde_json::to_value(&p).unwrap();
             assert_eq!(json["manifest"]["contributions"][0]["showInMenu"], visible);
-            let parsed = Package::parse(&serde_json::to_string(&p).unwrap(), false).unwrap();
+            let parsed = Package::parse(&serde_json::to_string(&p).unwrap()).unwrap();
             assert_eq!(parsed.manifest.contributions[0].show_in_menu, Some(visible));
             assert_eq!(p.fingerprint(), parsed.fingerprint());
             assert_ne!(p.fingerprint(), legacy_fingerprint);
@@ -632,19 +646,19 @@ mod tests {
         for kind in ["settings", "search", "track-action", "player-widget"] {
             p.manifest.contributions[0].kind = kind.into();
             p.manifest.contributions[0].slot = Some("player.status".into());
-            assert!(p.validate(false).unwrap_err().contains("showInMenu"));
+            assert!(p.validate().unwrap_err().contains("showInMenu"));
         }
         let mut json = serde_json::to_value(&p).unwrap();
         json["manifest"]["contributions"][0]["kind"] = "page".into();
         json["manifest"]["contributions"][0]["showInMenu"] = "false".into();
-        assert!(Package::parse(&json.to_string(), false).is_err());
+        assert!(Package::parse(&json.to_string()).is_err());
     }
     #[test]
     fn rejects_path_ids_incompatible_api_and_duplicates() {
         assert!(!valid_id("../escape"));
         let mut p = package();
         p.manifest.api_version = 1;
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
         p.manifest.api_version = API_VERSION;
         p.manifest.permissions.push("ui".into());
         let c = Contribution {
@@ -658,7 +672,7 @@ mod tests {
             show_in_menu: None,
         };
         p.manifest.contributions = vec![c.clone(), c];
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
     }
     #[test]
     fn native_payloads_are_hashed_and_legacy_scripts_are_rejected() {
@@ -666,14 +680,11 @@ mod tests {
         if let NativePackage::Library { artifacts } = &mut p.native {
             artifacts.values_mut().next().unwrap().sha256 = "0".repeat(64);
         }
-        assert!(p.validate(false).unwrap_err().contains("SHA-256"));
+        assert!(p.validate().unwrap_err().contains("SHA-256"));
         let legacy = serde_json::json!({"manifest":package().manifest,"script":"legacy"});
-        assert!(Package::parse(&legacy.to_string(), false).is_err());
-        let mut p = package();
-        p.native = NativePackage::Builtin;
-        assert!(p.validate(false).is_err());
+        assert!(Package::parse(&legacy.to_string()).is_err());
         let mut p = package();
         p.manifest.api_version = 1;
-        assert!(p.validate(false).is_err());
+        assert!(p.validate().is_err());
     }
 }

@@ -9,14 +9,14 @@ has base64 `data` and a lowercase SHA-256 `sha256`. Supported keys are
 `linux-aarch64`, and `linux-x86_64`. Its OS must appear in manifest platforms.
 
 Maximums: 64 MiB decoded per library, 96 MiB per package, eight artifacts. Preview
-checks hashes, metadata, reserved IDs/permissions, platforms, and API version without
+checks hashes, metadata, IDs and permissions, platforms, and API version without
 opening a library. A fingerprint covers the entire package. Installation verifies the
 approved fingerprint and persists a disabled package. Actual loading occurs on enable.
 
 Manifest API version is 2. Existing author/repository/homepage/image fields and
-contributions remain supported. `player.*`, `native.discord`, and `native.soulseek`
-are reserved for bundled native packages. Builtins have `native.kind: "builtin"`
-and cannot be installed through the external package path.
+contributions remain supported. Official `player.*` IDs follow the normal installation
+path. There is no built-in package kind or provider-specific host permission.
+`storage` and `media.source` authorize generic staging/media services.
 
 Installed Android APKs use `native.kind: "android-apk"`; Player derives the manifest's
 `androidNative` package/class/file/certificate binding from the installed APK. They are

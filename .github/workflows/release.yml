@@ -56,7 +56,7 @@ jobs:
             tsconfig.node.json
             vite.config.ts
 
-      - name: Fetch bundled plugin sources
+      - name: Fetch native plugin SDK
         run: git submodule update --init --depth 1 -- plugins
 
       - name: Install Linux system dependencies
@@ -166,7 +166,7 @@ jobs:
             tsconfig.node.json
             vite.config.ts
 
-      - name: Fetch bundled plugin sources
+      - name: Fetch native plugin SDK
         run: git submodule update --init --depth 1 -- plugins
 
       - name: Set up pnpm

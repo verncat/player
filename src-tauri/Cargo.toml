@@ -15,9 +15,7 @@ name = "player_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["discord-rpc", "soulseek"]
-soulseek = ["dep:soulseek_rs", "dep:player-soulseek-plugin"]
-discord-rpc = ["dep:discord-rich-presence", "dep:player-discord-plugin"]
+default = []
 tracy = ["dep:tracing-tracy"]
 
 [build-dependencies]
@@ -25,9 +23,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 player-plugin-sdk = { path = "../plugins/native-sdk" }
-player-discord-plugin = { path = "../plugins/discord-rpc", default-features = false, optional = true }
-player-soulseek-plugin = { path = "../plugins/soulseek", default-features = false, optional = true }
 libloading = "0.8"
+tokio = { version = "1", features = ["time"] }
 sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -54,14 +51,12 @@ tiny_http = "0.12"
 mdns-sd = "0.11"
 hostname = "0.4"
 whoami = "1"
-soulseek_rs = { package = "soulseek-rs-lib", path = "vendor/soulseek-rs-lib", features = ["tracing"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-tracy = { version = "0.11.4", optional = true, default-features = false, features = ["enable", "ondemand", "only-localhost"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-discord-rich-presence = { version = "1.1", optional = true }
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 
