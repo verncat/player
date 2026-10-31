@@ -117,6 +117,42 @@ test('catalog display metadata does not grant permissions or define executable U
   assert.equal(displayed.repository, entry.repository);
 });
 
+test('catalog uninstall disables an active plugin before deleting it and stops if disable fails', async () => {
+  const script = readFileSync(new URL('../src/plugins/components/PluginManager.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
+  const parsed = ts.createSourceFile('PluginManager.ts', script, ts.ScriptTarget.Latest, true);
+  const fn = parsed.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === 'uninstall');
+  const code = ts.transpileModule(`export ${fn.getText(parsed)}`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const helpers = {}, busy = ref(''), error = ref(''), calls = [];
+  let finish, failDisable = false;
+  const host = {
+    plugins: ref([{ manifest: { id: 'example.native' }, enabled: true }]),
+    setEnabled: async (id, enabled) => {
+      calls.push(['disable', id, enabled]);
+      if (failDisable) throw new Error('Could not stop native plugin');
+      await new Promise(resolve => { finish = resolve; });
+    },
+    uninstall: async id => { calls.push(['uninstall', id]); },
+  };
+  new Function('exports', 'host', 'busy', 'error', code)(helpers, host, busy, error);
+  const pending = helpers.uninstall('example.native');
+  assert.equal(busy.value, 'uninstall:example.native');
+  await helpers.uninstall('example.native');
+  assert.deepEqual(calls, [['disable', 'example.native', false]]);
+  finish(); await pending;
+  assert.deepEqual(calls[1], ['uninstall', 'example.native']);
+  assert.equal(busy.value, '');
+  calls.length = 0; failDisable = true;
+  await helpers.uninstall('example.native');
+  assert.deepEqual(calls, [['disable', 'example.native', false]]);
+  assert.match(error.value, /Could not stop native plugin/);
+  assert.equal(busy.value, '');
+  calls.length = 0; host.plugins.value[0].enabled = false;
+  await helpers.uninstall('example.native');
+  assert.deepEqual(calls, [['uninstall', 'example.native']]);
+});
+
 test('catalog selection checks the requested ID and previews the actual package before installation', async () => {
   const script = readFileSync(new URL('../src/plugins/components/PluginManager.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
   const parsed = ts.createSourceFile('PluginManager.ts', script, ts.ScriptTarget.Latest, true);

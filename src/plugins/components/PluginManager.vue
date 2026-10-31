@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { usePluginHost } from '../host';
@@ -13,6 +13,7 @@ import AppToast from '../../components/AppToast.vue';
 const host = usePluginHost();
 const error = ref('');
 const busy = ref('');
+const catalogPendingId = computed(() => busy.value.match(/^(?:catalog|uninstall):(.+)$/)?.[1]);
 const url = ref('');
 const preview = ref<PluginPreview>();
 const previewCard = ref<HTMLElement>();
@@ -100,7 +101,11 @@ async function clearCache(id: string) {
 }
 async function uninstall(id: string) {
   if (busy.value) return;
-  try { busy.value = `uninstall:${id}`; error.value = ''; await host.uninstall(id); }
+  try {
+    busy.value = `uninstall:${id}`; error.value = '';
+    if (host.plugins.value.find(plugin => plugin.manifest.id === id)?.enabled) await host.setEnabled(id, false);
+    await host.uninstall(id);
+  }
   catch (e) { error.value = String(e); }
   finally { busy.value = ''; }
 }
@@ -136,7 +141,7 @@ async function retry(id: string) {
       </div>
       <small>{{ plugin.manifest.id }}</small>
     </article>
-    <PluginCatalog :busy="Boolean(busy)" :pending-id="busy.startsWith('catalog:') ? busy.slice(8) : undefined" @review="loadCatalogPlugin" @notify="error = $event" />
+    <PluginCatalog :busy="Boolean(busy)" :pending-id="catalogPendingId" @review="loadCatalogPlugin" @uninstall="uninstall" @notify="error = $event" />
     <div class="plugin-install">
       <h4>Install a plugin</h4>
       <template v-if="android">
