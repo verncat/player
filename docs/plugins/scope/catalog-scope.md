@@ -13,7 +13,7 @@ optional fields are installUrl, version, author, image, updatedAt, androidApkUrl
 At most 256 unique entries, 12 tags of up to 40 bytes, and 512 KiB total. Unknown
 fields, invalid dates/URLs or a bad entry reject the whole response.
 
-Settings → Plugins lists installed plugins. Add plugins is an indented child directly
+Settings → Plugins lists installed plugins. Add plugins is a child directly
 below Plugins in the settings navigation list, declared through SETTINGS_SUBSECTIONS.
 It opens `settings/plugins/add` with catalog/search, URL/file installation and Android
 APK discovery. Successful installation returns to Plugins.
