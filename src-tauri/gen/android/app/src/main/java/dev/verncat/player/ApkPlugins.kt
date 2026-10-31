@@ -36,6 +36,7 @@ internal class ApkCallArgs {
     lateinit var binding: ApkBinding
     lateinit var method: String
     var argsJson: String = "{}"
+    var hostToken: Long = 0
 }
 
 @InvokeArg
@@ -75,7 +76,7 @@ class ApkPlugins(private val activity: Activity) : Plugin(activity) {
 }
 
 /** Access is serialized by the Tauri adapter. Kept separate for device integration tests. */
-internal class InstalledApkRuntime(private val context: Context) {
+internal class InstalledApkRuntime(private val context: Context, private val hostCall: (Long, String, String) -> String = NativeHostBridge::call) {
     // Retain loaders: JNI libraries cannot be safely hot-replaced in a live process.
     private val loaded = mutableMapOf<String, Loaded>()
     private val minimumGeneration = mutableMapOf<String, Long>()
@@ -89,7 +90,7 @@ internal class InstalledApkRuntime(private val context: Context) {
         var instance: Any? = null
         var generation: Long = -1
         var failed = false
-        val call = type.getMethod("call", String::class.java, String::class.java)
+        val call = type.getMethod("call", String::class.java, String::class.java, kotlin.jvm.functions.Function2::class.java)
         val close = type.getMethod("close")
     }
 
@@ -104,7 +105,7 @@ internal class InstalledApkRuntime(private val context: Context) {
         val app = requireNotNull(pkg.applicationInfo)
         require(app.splitSourceDirs.isNullOrEmpty()) { "Split APK plugins are not supported; use a universal APK" }
         val meta = requireNotNull(app.metaData) { "Missing plugin metadata" }
-        require(meta.getInt("dev.verncat.player.plugin.API") == 1) { "Unsupported APK plugin API" }
+        require(meta.getInt("dev.verncat.player.plugin.API") == 2) { "Unsupported APK plugin API" }
         val id = requireNotNull(meta.getString("dev.verncat.player.plugin.ID"))
         val entry = requireNotNull(meta.getString("dev.verncat.player.plugin.CLASS"))
         require(entry.startsWith("$packageName.")) { "Entrypoint must belong to the plugin package" }
@@ -136,6 +137,8 @@ internal class InstalledApkRuntime(private val context: Context) {
                 put("packageName", packageName); put("entryClass", entry)
                 put("certificateSha256", certificate); put("apkSha256", hash)
             })
+            require(!data.has("script")) { "JavaScript plugins are no longer supported" }
+            data.put("native", JSONObject().put("kind", "android-apk"))
             data.toString()
         }
         return Descriptor(pkg, id, entry, certificate, hash, content)
@@ -177,7 +180,7 @@ internal class InstalledApkRuntime(private val context: Context) {
             try {
                 val instance = module.type.getDeclaredConstructor().newInstance()
                 module.instance = instance
-                require(module.type.getMethod("apiVersion").invoke(instance) == 1) { "Unsupported native API" }
+                require(module.type.getMethod("apiVersion").invoke(instance) == 2) { "Unsupported native API" }
                 require(module.type.getMethod("pluginId").invoke(instance) == args.pluginId) { "Native plugin ID mismatch" }
                 module.generation = args.generation
             } catch (error: Throwable) {
@@ -185,7 +188,10 @@ internal class InstalledApkRuntime(private val context: Context) {
                 throw error
             }
         }
-        val response = module.call.invoke(module.instance, args.method, args.argsJson) as? String
+        val host: (String, String) -> String = { method, arguments ->
+            hostCall(args.hostToken, method, arguments)
+        }
+        val response = module.call.invoke(module.instance, args.method, args.argsJson, host) as? String
             ?: error("Native call must return JSON as a string")
         require(response.toByteArray(Charsets.UTF_8).size <= 1024 * 1024) { "Response exceeds 1 MiB" }
         val parsed = org.json.JSONTokener(response)
@@ -225,4 +231,9 @@ private fun java.io.InputStream.readBytesLimited(limit: Int): ByteArray {
         output.write(buffer, 0, count)
     }
     return output.toByteArray()
+}
+
+/** Implemented by Player's Rust library; the token identifies one active native invocation. */
+internal object NativeHostBridge {
+    @JvmStatic external fun call(token: Long, method: String, argsJson: String): String
 }

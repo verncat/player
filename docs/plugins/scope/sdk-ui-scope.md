@@ -1,105 +1,24 @@
-# SDK / UI scope
+# Native SDK and UI scope
 
-Зависимости: [runtime](runtime-scope.md), [media](media-scope.md).
-DTO: `src/plugins/types.ts`. Исполняемый SDK: `src/plugins/worker.js`.
+SDK: `plugins/native-sdk/src/lib.rs`. Renderer/DTOs: `src/plugins/types.ts` and components.
 
-## Entrypoint и контекст
+Native plugins implement `NativePlugin::call(method, args, host)` and return JSON values.
+The SDK provides `Host::call`, `Host::invalidate`, a test host, C buffer/envelope helpers,
+and `export_plugin!`. It does not expose a JavaScript entrypoint or require Node.js.
+The full C ABI and ownership rules are documented in the standalone repository's SDK guide.
 
-Script один раз вызывает `registerPlugin(factory)`. Синхронная factory получает
-`ctx` и возвращает объект с необязательными lifecycle/операционными методами.
+Contributions remain `page`, `settings`, `search`, `track-action`, and `player-widget`.
+They require `ui`, a unique local ID, kind and label. IDs are up to 64 characters in
+`[a-z0-9-]`; at most 32 contributions. Optional fields are icon, description and order.
+Only pages accept `showInMenu: false`; hidden pages remain internally navigable.
+Player widgets declare `player.actions` or `player.status` slots.
 
-```js
-registerPlugin(ctx => ({
-  async activate() {},
-  async deactivate() {},
-  render({viewId, context}) { return {type: 'text', text: 'Ready'}; },
-  async action({action, payload, fields, context}) {},
-  async search({providerId, query, cursor, limit}) { return {items: [], nextCursor: null}; },
-  renderSearch({ids}) { return null; }
-}));
-```
+`render` receives `viewId` and context and returns `group`, `text`, `input`, `button`,
+`toggle`, or `results`. Limits: depth 12, 100 children per node, 1000 result rows.
+No HTML, scripts or Vue components are passed. UI uses shared Player styles, accessible
+controls, drafts, native action errors, and the same pending-button animation.
 
-| Контекст | Контракт |
-| --- | --- |
-| `ctx.pluginId` | ID текущего пакета |
-| `ctx.generation` | Поколение native-активации для устойчивых намерений |
-| `ctx.signal` | AbortSignal lifetime Worker; отменяется при deactivate |
-| `ctx.call(method,args)` | Promise вызова API, права проверяет хост |
-| `ctx.on(topic,handler)` | Собственные native-события; возвращает unsubscribe |
-| `ctx.playback.subscribe(handler)` | Последний snapshot сразу, затем изменения; unsubscribe |
-| `ctx.playback.play({sourceToken,resource})` | Воспроизведение через основной координатор |
-| `ctx.playback.pause/resume/stop/seek` | Управление текущим transport; seek принимает секунды |
-| `ctx.playback.adopt({resourceId,track})` | Обновить UI/очередь после импорта своего ресурса |
-| `ctx.ui.navigate(pageId,context)` | Открыть собственную зарегистрированную страницу |
-| `ctx.ui.invalidate()` | Запросить обновление представлений/результатов |
-| `ctx.log(message)` | Локальное диагностическое сообщение; не включать секреты |
-
-Playback snapshot: `{title,artist,album,position,duration,playing,resource?}`;
-времена в секундах. Transport/позиция читаются из native engine. Данные поступают
-из общей оболочки, включая воспроизведение на выбранном remote output.
-Плагин не опрашивает `playback_status` самостоятельно.
-
-## Contributions
-
-Manifest декларативно регистрирует вклады. Общие поля: `id`, `kind`, `label`,
-`description?`, `icon?`, `order?` (0 по умолчанию), `slot?`.
-Полный ключ `<pluginId>/<id>` создаёт хост. ID — до 64 символов `[a-z0-9-]`.
-Порядок: order, затем полный ключ. Основные элементы плеера не заменяются.
-
-| kind | Встраивание и обработчик |
-| --- | --- |
-| `page` | Маршрут `plugins/<pluginId>/<id>`, render(viewId=id); пункт навигации, если `showInMenu` не равен false |
-| `settings` | Раздел настроек `settings/plugin:<pluginId>/<id>`, render |
-| `search` | Отдельный блок общего поиска, явная кнопка Search, search |
-| `track-action` | Меню библиотечного трека, action=id, payload.track |
-| `player-widget` | render в `player.actions` или `player.status` |
-
-Для `page` доступно необязательное boolean-поле `showInMenu` (по умолчанию true).
-`false` скрывает страницу из бокового меню на desktop и mobile, сохраняя маршрут,
-`ctx.ui.navigate(pageId,context)` и историю переходов. Это настройка навигации,
-а не контроль доступа: права и проверка регистрации страницы остаются общими.
-Для остальных kind поле запрещено. Например, Soulseek регистрирует внутреннюю
-страницу `replacement` с `showInMenu: false`: она открывается из действия
-`Find another version` в меню трека, а обычный поиск встроен в общий Search.
-
-Переданный context — данные маршрута/действия; не ссылка на refs оболочки.
-UI должен работать с клавиатурой, мобильной шириной и общей темой Player.
-Поля и кнопки используют общие `form-field` / `form-input` / `control-button`
-стили плеера; toggle выводится через общий SettingsToggle. Отдельные стили
-элементов управления для плагинов не вводятся. Ожидание action отображается
-общими полосами на инициировавшей кнопке по правилу DESIGN.md §5.10.
-Для подключения вклада разработчик не меняет `App.vue` или `SETTINGS_SECTIONS`.
-
-## Дерево UI
-
-Схема `UiNode` ограничена известными узлами, глубина до 12, детей до 100:
-
-| type | Поля |
-| --- | --- |
-| `group` | title?, children? |
-| `text` | text, tone? (`error` для ошибки) |
-| `input` | key, label, value?, inputType? (`text` / `password`) |
-| `toggle` | label, value:boolean, action, payload?, disabled? |
-| `button` | label, action, payload?, disabled? |
-| `results` | items: SearchItem[] (до 1000) |
-
-`input` хранит draft в панели. Кнопка передаёт общий `fields` в action.
-Ошибка сохраняет draft, успех перечитывает дерево. Пароль не подставляется
-из сохранённого секрета. Текст выводится интерполяцией, без v-html/eval.
-
-SearchItem: `{id,title,subtitle?,coverHash?,status?,actions?}`;
-actions: `{id,label,disabled?}`. Нажатие вызывает plugin action с
-`payload:{resourceId:item.id}`. Item ID уникален в пространстве плагина и
-представляет внешний ресурс; он не является библиотечным track ID.
-
-`search` возвращает `{items,nextCursor}`. Cursor — непрозрачная строка следующей
-страницы или null. Хост запрашивает до 120 строк, отображает Previous/Next и
-сохраняет историю курсоров текущего запроса. Первая страница получает null;
-смена query сбрасывает курсоры и отбрасывает поздние ответы прошлого запроса.
-`renderSearch({ids})` обновляет уже найденные
-строки после transfer/cover событий без нового сетевого поиска; null сохраняет
-предыдущие строки. Изменение query отбрасывает поздний результат прошлого поиска.
-
-Приёмка: все типы вкладов через пример/fixture; некорректное дерево; ошибка
-рендера; быстрые смены query; drafts/ошибки формы; disabled-действия; мобильные
-строки результатов; удаление вкладов после остановки Worker.
+Actions receive `{action,payload,fields,context}`. Track actions receive `payload.track`;
+search-row actions receive `payload.resourceId`. Search returns `{items,nextCursor}`;
+`renderSearch` refreshes existing results without rerunning the network query.
+Navigation is limited to registered pages owned by the calling plugin.

@@ -176,20 +176,7 @@ where
                     .into(),
             );
         }
-        let manifest: Manifest =
-            serde_json::from_value(json).map_err(|e| format!("Invalid plugin manifest: {e}"))?;
-        // Validate the manifest before requesting the adjacent script.
-        Package {
-            manifest: manifest.clone(),
-            script: "validation".into(),
-        }
-        .validate(false)?;
-        let script = self
-            .text(url.join("main.js").map_err(|e| e.to_string())?)
-            .await?;
-        let package = Package { manifest, script };
-        package.validate(false)?;
-        Ok(package)
+        Err("Native installation requires a built .player-plugin package, not source files".into())
     }
 }
 
@@ -207,8 +194,8 @@ fn github_api(owner: &str, repo: &str, tail: &[&str]) -> Url {
 
 fn http_error(response: &Fetched) -> String {
     match response.status {
-        403|429=>"Download was refused or the public GitHub API rate limit was reached. Try a direct package or raw plugin.json link.".into(),
-        404=>"Plugin files were not found. Use a public repository directory containing plugin.json and main.js, or a direct .player-plugin link.".into(),
+        403|429=>"Download was refused or the public GitHub API rate limit was reached. Try a direct package or raw .player-plugin link.".into(),
+        404=>"Plugin files were not found. Use a public repository directory containing plugin.player-plugin, or a direct .player-plugin link.".into(),
         status=>format!("Plugin download returned HTTP {status}"),
     }
 }
@@ -306,20 +293,22 @@ where
                 segments.push(part);
             }
             if parts.get(2).map(String::as_str) != Some("blob") {
-                segments.push("plugin.json");
+                segments.push("plugin.player-plugin");
             }
         }
         source.repository = Some(format!("https://github.com/{owner}/{repo}"));
         source.revision = Some(revision);
         url
     } else if input.path().ends_with('/') {
-        input.join("plugin.json").map_err(|e| e.to_string())?
+        input
+            .join("plugin.player-plugin")
+            .map_err(|e| e.to_string())?
     } else {
         input
     };
     let package = resolver.package_at(package_url).await?;
     let content = serde_json::to_string(&package).map_err(|e| e.to_string())?;
-    // Escaping the combined script can make the final JSON larger than either downloaded file.
+    // Validate the complete package before showing its native-code approval.
     let package = Package::parse(&content, false)?;
     source.validate()?;
     Ok(DownloadPreview {
@@ -333,8 +322,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn manifest() -> String {
-        include_str!("../../../plugins/examples/hello/plugin.json").into()
+    fn content() -> String {
+        serde_json::to_string(&Package {
+            manifest: serde_json::from_str(include_str!(
+                "../../../plugins/examples/hello/plugin.json"
+            ))
+            .unwrap(),
+            native: super::super::model::fixture_native(),
+        })
+        .unwrap()
     }
     fn response(status: u16, body: impl Into<String>) -> Result<Fetched, String> {
         Ok(Fetched {
@@ -350,71 +346,46 @@ mod tests {
         tauri::async_runtime::block_on(resolve_with(url, fetch))
     }
     #[test]
-    fn direct_package_and_adjacent_manifest_use_same_validation() {
-        let content=serde_json::json!({"manifest":serde_json::from_str::<Value>(&manifest()).unwrap(),"script":"registerPlugin(() => ({}));"}).to_string();
-        let preview = run("https://example.org/plugin.player-plugin", &|_| {
-            std::future::ready(response(200, content.clone()))
+    fn downloads_validate_native_hash_and_expected_identity() {
+        let preview = run("https://example.org/hello.player-plugin", &|_| {
+            std::future::ready(response(200, content()))
         })
         .unwrap();
-        assert_eq!(preview.manifest.id, "example.hello");
         assert!(preview.verify_id(Some("example.hello")).is_ok());
-        assert!(preview.verify_id(Some("example.other")).is_err());
-        assert!(preview.verify_id(None).is_ok());
-        assert!(preview.source.revision.is_none());
-        let preview = run("https://example.org/plugin/plugin.json", &|url: Url| {
-            std::future::ready(response(
-                200,
-                if url.path().ends_with("plugin.json") {
-                    manifest()
-                } else {
-                    "registerPlugin(() => ({}));".into()
-                },
-            ))
+        assert!(preview.verify_id(Some("other.plugin")).is_err());
+        let broken = content().replace("ca978112", "00000000");
+        assert!(run("https://example.org/hello.player-plugin", &|_| {
+            std::future::ready(response(200, broken.clone()))
         })
-        .unwrap();
-        assert_eq!(
-            preview.fingerprint,
-            Package::parse(&preview.content, false)
-                .unwrap()
-                .fingerprint()
-        );
+        .is_err());
     }
     #[test]
-    fn github_root_uses_default_branch_and_pins_both_files() {
+    fn github_root_pins_native_package_to_commit() {
         let sha = "a".repeat(40);
-        let seen = std::sync::Mutex::new(Vec::new());
+        let seen = std::sync::Mutex::new(vec![]);
         let preview = run("https://github.com/owner/plugin", &|url: Url| {
             seen.lock().unwrap().push(url.to_string());
-            let result =
-                if url.host_str() == Some("api.github.com") && url.path().ends_with("/commits") {
-                    assert!(url
-                        .query_pairs()
-                        .any(|(k, v)| k == "sha" && v == "development"));
-                    response(200, serde_json::json!([{"sha":sha}]).to_string())
-                } else if url.host_str() == Some("api.github.com") {
-                    response(200, r#"{"default_branch":"development"}"#)
-                } else {
-                    assert!(url.path().contains(&sha));
-                    response(
-                        200,
-                        if url.path().ends_with("plugin.json") {
-                            manifest()
-                        } else {
-                            "registerPlugin(() => ({}));".into()
-                        },
-                    )
-                };
+            let result = if url.path().ends_with("/commits") {
+                response(200, serde_json::json!([{"sha":sha}]).to_string())
+            } else if url.host_str() == Some("api.github.com") {
+                response(200, r#"{"default_branch":"main"}"#)
+            } else {
+                assert!(url
+                    .path()
+                    .ends_with(&format!("/{sha}/plugin.player-plugin")));
+                response(200, content())
+            };
             std::future::ready(result)
         })
         .unwrap();
-        assert_eq!(preview.source.revision.as_deref(), Some(sha.as_str()));
-        assert_eq!(seen.lock().unwrap().len(), 4);
+        assert_eq!(preview.source.revision, Some(sha));
+        assert_eq!(seen.lock().unwrap().len(), 3);
     }
     #[test]
-    fn resolves_branch_with_slashes_and_subdirectory() {
+    fn resolves_branch_with_slashes_and_native_subdirectory() {
         let sha = "b".repeat(40);
         let preview = run(
-            "https://github.com/owner/plugin/tree/feature/audio/plugins/hello",
+            "https://github.com/owner/plugin/tree/feature/audio/examples/hello",
             &|url: Url| {
                 let result = if url.host_str() == Some("api.github.com") {
                     if url
@@ -428,15 +399,8 @@ mod tests {
                 } else {
                     assert!(url
                         .path()
-                        .starts_with(&format!("/owner/plugin/{sha}/plugins/hello/")));
-                    response(
-                        200,
-                        if url.path().ends_with("plugin.json") {
-                            manifest()
-                        } else {
-                            "registerPlugin(() => ({}));".into()
-                        },
-                    )
+                        .ends_with(&format!("/{sha}/examples/hello/plugin.player-plugin")));
+                    response(200, content())
                 };
                 std::future::ready(result)
             },
@@ -445,72 +409,37 @@ mod tests {
         assert_eq!(preview.manifest.id, "example.hello");
     }
     #[test]
-    fn rejects_insecure_urls_missing_files_and_reserved_packages() {
-        assert!(download_url("http://example.org/plugin").is_err());
-        assert!(download_url("file:///tmp/plugin").is_err());
-        assert!(download_url("https://user:pass@example.org/plugin").is_err());
-        assert!(
-            run("https://example.org/plugin.json", &|_| std::future::ready(
-                response(404, "")
-            ))
-            .unwrap_err()
-            .contains("not found")
-        );
-        let invalid = manifest().replace("example.hello", "player.soulseek");
-        let calls = std::sync::atomic::AtomicUsize::new(0);
-        assert!(run("https://example.org/plugin.json", &|_| {
-            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            std::future::ready(response(200, invalid.clone()))
-        })
-        .is_err());
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    fn rejects_script_packages_and_unbuilt_manifests() {
+        for body in [
+            serde_json::json!({"manifest":{},"script":"legacy"}).to_string(),
+            include_str!("../../../plugins/examples/hello/plugin.json").into(),
+        ] {
+            assert!(
+                run("https://example.org/plugin.json", &|_| std::future::ready(
+                    response(200, body.clone())
+                ))
+                .is_err()
+            );
+        }
     }
     #[test]
-    fn github_blob_package_and_api_rate_limit_are_handled() {
-        let sha = "c".repeat(40);
-        let content=serde_json::json!({"manifest":serde_json::from_str::<Value>(&manifest()).unwrap(),"script":"registerPlugin(() => ({}));"}).to_string();
-        let preview = run(
-            "https://github.com/owner/plugin/blob/main/release.player-plugin",
-            &|url: Url| {
-                let result = if url.host_str() == Some("api.github.com") {
-                    if url.query_pairs().any(|(k, v)| k == "sha" && v == "main") {
-                        response(200, serde_json::json!([{"sha":sha}]).to_string())
-                    } else {
-                        response(404, "")
-                    }
-                } else {
-                    assert!(url.path().ends_with("/release.player-plugin"));
-                    response(200, content.clone())
-                };
-                std::future::ready(result)
-            },
-        )
-        .unwrap();
-        assert_eq!(preview.source.revision, Some(sha));
-        let error = run("https://github.com/owner/plugin", &|_| {
-            std::future::ready(response(403, ""))
-        })
-        .unwrap_err();
-        assert!(error.contains("rate limit"));
+    fn rejects_insecure_urls_and_network_errors() {
+        for url in [
+            "http://example.org/plugin",
+            "file:///tmp/plugin",
+            "https://user:pass@example.org/plugin",
+        ] {
+            assert!(download_url(url).is_err());
+        }
+        for status in [404, 403, 429] {
+            assert!(run("https://example.org/plugin.player-plugin", &|_| {
+                std::future::ready(response(status, ""))
+            })
+            .is_err());
+        }
     }
     #[test]
-    fn assembled_package_limit_includes_json_escaping() {
-        let script = "\"".repeat(MAX_PACKAGE_BYTES / 2 + 1);
-        assert!(run("https://example.org/plugin.json", &|url: Url| {
-            std::future::ready(response(
-                200,
-                if url.path().ends_with("plugin.json") {
-                    manifest()
-                } else {
-                    script.clone()
-                },
-            ))
-        })
-        .unwrap_err()
-        .contains("4 MiB"));
-    }
-    #[test]
-    fn rejects_oversized_payloads_before_parsing() {
+    fn rejects_oversized_downloads_before_parsing() {
         assert!(run("https://example.org/plugin.player-plugin", &|_| {
             std::future::ready(response(200, "x".repeat(MAX_PACKAGE_BYTES + 1)))
         })

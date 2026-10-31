@@ -1,8 +1,7 @@
-# Плагины Player
+# Native plugins
 
-Актуальная спецификация и руководство разработчика: [docs/plugin/readme.md](docs/plugin/readme.md).
+The system supports native plugins only: desktop shared libraries, Android APKs,
+and bundled Rust packages. Current contracts: Plugin API 2, C ABI 1, catalog schema 2.
 
-Области системы: [docs/plugins/scope](docs/plugins/scope).
-
-Система реализована как устанавливаемые JavaScript-пакеты с Worker runtime,
-декларативным UI и отдельными native-адаптерами Discord RPC и Soulseek.
+Host design: [docs/plugin/readme.md](docs/plugin/readme.md).
+Packages and SDK: [verncat/player-plugins](https://github.com/verncat/player-plugins).

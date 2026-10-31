@@ -211,6 +211,8 @@ pub fn run() {
             plugins::plugins_set_enabled,
             plugins::plugins_migrate_enabled,
             plugins::plugin_load,
+            plugins::native::plugin_native_call,
+            plugins::native::plugin_native_reply,
             plugins::plugin_call,
             plugins::plugin_play_source,
             plugins::plugin_current_source,

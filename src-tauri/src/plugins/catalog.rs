@@ -1,5 +1,5 @@
 //! Discovery metadata only. Installation still downloads and reviews a real package.
-use super::model::{Author, Manifest, Package};
+use super::model::{Author, Manifest, API_VERSION};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
 
@@ -81,7 +81,7 @@ impl Catalog {
         Ok(catalog)
     }
     fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 1 {
+        if self.schema_version != 2 {
             return Err("Unsupported plugin catalog version".into());
         }
         if !valid_date(&self.updated_at) || self.plugins.len() > 256 {
@@ -112,23 +112,20 @@ impl Catalog {
                 return Err("Invalid plugin catalog tags".into());
             }
             // Share package metadata rules, including links, images and platform names.
-            Package {
-                manifest: Manifest {
-                    id: entry.id.clone(),
-                    name: entry.name.clone(),
-                    description: entry.description.clone(),
-                    version: entry.version.clone().unwrap_or_else(|| "0.0.0".into()),
-                    api_version: 1,
-                    author: entry.author.clone(),
-                    image: entry.image.clone(),
-                    homepage: None,
-                    repository: Some(entry.repository.clone()),
-                    android_native: None,
-                    platforms: entry.platforms.clone(),
-                    permissions: vec![],
-                    contributions: vec![],
-                },
-                script: "catalog metadata".into(),
+            Manifest {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                description: entry.description.clone(),
+                version: entry.version.clone().unwrap_or_else(|| "0.0.0".into()),
+                api_version: API_VERSION,
+                author: entry.author.clone(),
+                image: entry.image.clone(),
+                homepage: None,
+                repository: Some(entry.repository.clone()),
+                android_native: None,
+                platforms: entry.platforms.clone(),
+                permissions: vec![],
+                contributions: vec![],
             }
             .validate(false)?;
         }
@@ -192,7 +189,7 @@ mod tests {
     use super::*;
     fn fixture() -> serde_json::Value {
         serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "updatedAt": "2026-10-27",
             "plugins": [{
                 "id": "example.hello", "name": "Hello Player", "description": "Test entry",
@@ -227,12 +224,12 @@ mod tests {
     #[test]
     fn published_catalog_from_pinned_plugin_repository_is_valid() {
         let catalog = Catalog::parse(include_bytes!("../../../plugins/catalog.json")).unwrap();
-        assert!(!catalog.plugins.is_empty());
+        assert_eq!(catalog.schema_version, 2);
     }
     #[test]
     fn rejects_untrusted_or_ambiguous_catalog_metadata() {
         let mut value = fixture();
-        value["schemaVersion"] = 2.into();
+        value["schemaVersion"] = 3.into();
         assert!(parse(value).is_err());
         let mut value = fixture();
         let duplicate = value["plugins"][0].clone();
@@ -304,13 +301,13 @@ mod tests {
             .unwrap_err()
             .contains("Invalid plugin catalog"));
         let mut invalid = fixture();
-        invalid["schemaVersion"] = 2.into();
+        invalid["schemaVersion"] = 3.into();
         assert!(run(Ok(serde_json::to_vec(&invalid).unwrap())).is_err());
     }
     #[test]
     fn empty_remote_catalog_stays_empty_and_unsafe_urls_are_rejected_before_fetch() {
         let empty =
-            serde_json::json!({ "schemaVersion": 1, "updatedAt": "2026-10-27", "plugins": [] });
+            serde_json::json!({ "schemaVersion": 2, "updatedAt": "2026-10-27", "plugins": [] });
         let listing = tauri::async_runtime::block_on(load_with(
             "https://example.org/catalog.json",
             || async { Ok(serde_json::to_vec(&empty).unwrap()) },

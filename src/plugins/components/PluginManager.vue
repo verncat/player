@@ -43,7 +43,7 @@ async function load(event: Event) {
   if (!file || busy.value) return;
   busy.value = 'preview'; error.value = ''; resetPreview();
   try {
-    if (file.size > 4 * 1024 * 1024) throw new Error('Maximum package size is 4 MiB');
+    if (file.size > 96 * 1024 * 1024) throw new Error('Maximum native package size is 96 MiB');
     const candidate = await file.text();
     const checked = await invoke<PluginPreview>('plugins_preview', { content: candidate });
     showPreview(candidate, checked);
@@ -155,10 +155,9 @@ async function retry(id: string) {
           <div><h4>{{ preview.manifest.name }} <small>{{ preview.manifest.version }}</small></h4><p>{{ preview.manifest.description }}</p></div>
         </div>
         <PluginMetadata :manifest="preview.manifest" />
-        <p>Only install code from authors you trust. Plugins run JavaScript and can use their granted Player APIs.</p>
+        <p class="plugin-native-note">Native code runs inside Player with the app’s system access.</p>
         <p>Permissions: {{ preview.manifest.permissions.join(', ') || 'none' }}</p>
         <template v-if="preview.manifest.androidNative">
-          <p>Native code runs inside Player with all of Player’s Android permissions. Only connect APKs from authors you trust.</p>
           <small class="fingerprint">Signing certificate SHA-256: {{ preview.manifest.androidNative.certificateSha256 }}</small>
           <small class="fingerprint">APK SHA-256: {{ preview.manifest.androidNative.apkSha256 }}</small>
         </template>
@@ -173,6 +172,7 @@ async function retry(id: string) {
 </template>
 
 <style scoped>
+.plugin-native-note { color: var(--color-text-muted); font-size: var(--fs-body-sm); }
 .plugin-manager { display: grid; gap: 16px; color: var(--color-text-muted); font-size: 14px; }.plugin-manager h3,.plugin-manager h4,.plugin-manager p { margin: 0; }
 .plugin-manager p { color: var(--color-text-muted); line-height: 1.6; }
 .plugin-card { display: grid; gap: 20px; }

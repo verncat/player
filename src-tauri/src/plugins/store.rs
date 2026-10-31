@@ -76,14 +76,26 @@ impl PluginState {
             let loaded = fs::metadata(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|m| {
-                    if m.len() > 132 * 1024 * 1024 {
+                    if m.len() > 512 * 1024 * 1024 {
                         Err("Registry is too large".into())
                     } else {
                         fs::read(&path).map_err(|e| e.to_string())
                     }
                 })
                 .and_then(|bytes| {
-                    serde_json::from_slice::<Registry>(&bytes).map_err(|e| e.to_string())
+                    let mut value: Value = serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+                    let mut removed=Vec::new();
+                    if let Some(packages)=value["packages"].as_object_mut() {
+                        packages.retain(|id,p| {
+                            let native=p.get("native").is_some();
+                            if !native {removed.push(id.clone());warnings.push(format!("Removed legacy JavaScript plugin {id}; install a native version"));}
+                            native
+                        });
+                    }
+                    for id in removed {
+                        if let Some(record)=value["records"].get_mut(&id) {record["enabled"]=json!(false);}
+                    }
+                    serde_json::from_value::<Registry>(value).map_err(|e|e.to_string())
                 });
             match loaded {
                 Ok(registry) => {
@@ -113,7 +125,7 @@ impl PluginState {
                     "../../../plugins/discord-rpc/plugin.json"
                 ))
                 .map_err(|e| e.to_string())?,
-                script: include_str!("../../../plugins/discord-rpc/main.js").into(),
+                native: NativePackage::Builtin,
             };
             p.validate(true)?;
             builtins.insert(p.manifest.id.clone(), p);
@@ -125,7 +137,7 @@ impl PluginState {
                     "../../../plugins/soulseek/plugin.json"
                 ))
                 .map_err(|e| e.to_string())?,
-                script: include_str!("../../../plugins/soulseek/main.js").into(),
+                native: NativePackage::Builtin,
             };
             p.validate(true)?;
             builtins.insert(p.manifest.id.clone(), p);
@@ -157,10 +169,11 @@ impl PluginState {
         let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
         let mut next = guard.clone();
         let result = f(&mut next)?;
-        write_atomic(
-            &self.root.join("registry.json"),
-            &serde_json::to_vec(&next).map_err(|e| e.to_string())?,
-        )?;
+        let bytes = serde_json::to_vec(&next).map_err(|e| e.to_string())?;
+        if bytes.len() > 512 * 1024 * 1024 {
+            return Err("Installed native packages exceed the registry size limit".into());
+        }
+        write_atomic(&self.root.join("registry.json"), &bytes)?;
         *guard = next;
         Ok(result)
     }
@@ -171,22 +184,37 @@ impl PluginState {
             .or_else(|| self.inner.lock().ok()?.packages.get(id).cloned())
             .ok_or_else(|| "Plugin not found".into())
     }
-    pub fn record(&self, id: &str) -> Result<Record, String> {
-        self.package(id)?;
-        Ok(self
-            .inner
+    pub fn manifest(&self, id: &str) -> Result<Manifest, String> {
+        if let Some(package) = self.builtins.get(id) {
+            return Ok(package.manifest.clone());
+        }
+        self.inner
             .lock()
             .map_err(|e| e.to_string())?
-            .records
+            .packages
             .get(id)
-            .cloned()
-            .unwrap_or_default())
+            .map(|p| p.manifest.clone())
+            .ok_or_else(|| "Plugin not found".into())
+    }
+    pub fn record(&self, id: &str) -> Result<Record, String> {
+        let registry = self.inner.lock().map_err(|e| e.to_string())?;
+        if !self.builtins.contains_key(id) && !registry.packages.contains_key(id) {
+            return Err("Plugin not found".into());
+        }
+        Ok(registry.records.get(id).cloned().unwrap_or_default())
     }
     pub fn info(&self, id: &str) -> Result<PluginInfo, String> {
         let p = self.package(id)?;
         let record = self.record(id)?;
         Ok(PluginInfo {
-            supported: p.manifest.platforms.iter().any(|p| p == platform()),
+            supported: p.manifest.platforms.iter().any(|p| p == platform())
+                && match &p.native {
+                    NativePackage::Library { artifacts } => {
+                        artifacts.contains_key(&native_target())
+                    }
+                    NativePackage::AndroidApk => cfg!(target_os = "android"),
+                    NativePackage::Builtin => true,
+                },
             fingerprint: p.fingerprint(),
             manifest: p.manifest,
             builtin: self.builtins.contains_key(id),
@@ -241,15 +269,15 @@ impl PluginState {
         })
     }
     pub fn authorize(&self, id: &str, generation: u64, permission: &str) -> Result<(), String> {
-        let p = self.package(id)?;
+        let manifest = self.manifest(id)?;
         let r = self.record(id)?;
         if !r.enabled || r.generation != generation {
             return Err("DISABLED: plugin activation has ended".into());
         }
-        if !p.manifest.platforms.iter().any(|p| p == platform()) {
+        if !manifest.platforms.iter().any(|p| p == platform()) {
             return Err("UNSUPPORTED".into());
         }
-        if !p.manifest.permissions.iter().any(|p| p == permission) {
+        if !manifest.permissions.iter().any(|p| p == permission) {
             return Err(format!("PERMISSION_DENIED: {permission}"));
         }
         Ok(())
@@ -468,7 +496,16 @@ mod tests {
         let root = std::env::temp_dir().join(format!("player-plugin-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let state = PluginState::new(root.clone()).unwrap();
-        let p=Package::parse(r#"{"manifest":{"id":"example.test","name":"Test","version":"1.0.0","apiVersion":1,"platforms":["macos","linux","windows"],"permissions":["settings"]},"script":"registerPlugin({})"}"#,false).unwrap();
+        let mut p = Package {
+            manifest: serde_json::from_str(include_str!(
+                "../../../plugins/examples/hello/plugin.json"
+            ))
+            .unwrap(),
+            native: fixture_native(),
+        };
+        p.manifest.id = "example.test".into();
+        p.manifest.permissions = vec!["settings".into()];
+        p.manifest.contributions.clear();
         let source = InstallSource {
             url: "https://github.com/example/plugin".into(),
             repository: Some("https://github.com/example/plugin".into()),
@@ -528,6 +565,36 @@ mod tests {
             .install_source
             .is_none());
         assert_eq!(loaded.settings("example.test").unwrap()["values"]["a"], 1);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn removing_script_packages_preserves_settings_and_allows_native_replacement() {
+        let root = std::env::temp_dir().join(format!(
+            "player-plugin-native-migration-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("registry.json"),json!({"packages":{"example.hello":{"manifest":{"id":"example.hello","apiVersion":1},"script":"legacy"}},"records":{"example.hello":{"enabled":true,"generation":3,"settingsRevision":4,"settings":{"greeting":"Keep me"},"secretKeys":["token"]}}}).to_string()).unwrap();
+        let state = PluginState::new(root.clone()).unwrap();
+        assert!(state.package("example.hello").is_err());
+        assert!(state.warnings.iter().any(|w| w.contains("example.hello")));
+        let p = Package {
+            manifest: serde_json::from_str(include_str!(
+                "../../../plugins/examples/hello/plugin.json"
+            ))
+            .unwrap(),
+            native: fixture_native(),
+        };
+        let installed = state
+            .install(&serde_json::to_string(&p).unwrap(), &p.fingerprint(), None)
+            .unwrap();
+        assert!(!installed.enabled);
+        assert_eq!(
+            state.settings("example.hello").unwrap()["values"]["greeting"],
+            "Keep me"
+        );
+        assert!(state.has_secret("example.hello", "token").unwrap());
         let _ = fs::remove_dir_all(root);
     }
 }

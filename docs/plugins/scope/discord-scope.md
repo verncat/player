@@ -1,50 +1,16 @@
-# Discord RPC scope
+# Native Discord package scope
 
-Пакет: `plugins/discord-rpc`; адаптер: `src-tauri/src/plugins/discord.rs`.
-Зависимости: runtime, playback.read, native.discord, UI settings.
-Feature `discord-rpc`; поддержка macOS/Windows/Linux. По умолчанию отключён.
+Package: `plugins/discord-rpc/src/lib.rs`; host adapter: `src-tauri/src/plugins/discord.rs`.
 
-## Функциональность
+The package implements NativePlugin, consumes playback snapshots and returns its settings
+UI directly from Rust. It calls discord.update with the current playing track and clears
+activity on pause. The host adapter owns Discord IPC, reconnects, timestamp handling,
+and throttling. Errors are displayed through the package's native-rendered UI.
 
-Worker подписывается на общий playback snapshot, отбрасывает повторные
-обновления, отправляет meaningful change в `discord.update({playback})`.
-Playback — title/artist/album/position/duration/playing; на pause/stop передаётся
-null. Native worker владеет IPC, reconnect и time stamps. JS не открывает
-Discord socket самостоятельно и не управляет транспортом плеера.
+Manifest API 2 registers the settings contribution and requests ui, settings,
+playback.read and native.discord. Platforms: macOS, Windows, Linux. The package is
+linked into Player with FFI exports disabled; the existing discord-rpc Cargo feature
+controls the host integration. No script, Worker or frontend presence adapter is shipped.
 
-Существующий публичный application ID сохраняется; `DISCORD_CLIENT_ID`
-переопределяет его при сборке. Обложки/управление Discord-плеером не входят
-в текущий функционал.
-
-Native поведение:
-
-- публикация не чаще раза за 5 секунд;
-- retry через 15 секунд, heartbeat через 30 секунд;
-- после reconnect отправляется последнее желаемое состояние;
-- seek пересчитывает временные метки;
-- pause/stop/disable очищают активность;
-- отсутствие клиента Discord не мешает аудио или включению плагина;
-- выключенный адаптер не публикует состояние; финальный app shutdown
-  завершает native worker и закрывает IPC.
-
-Отключение пакета отзывает его capability и передаёт native enabled=false.
-Native worker может оставаться ожидающим до выхода приложения и повторно
-используется при включении, без дублирующихся потоков. Worker JS всегда новый.
-Reload UI не очищает native-активность: после attach приходит новый snapshot.
-
-## UI и миграция
-
-Пакет объявляет settings section `general`; UI показывает назначение,
-необходимость desktop Discord и ошибки обновления. Основной switch включения
-находится в Settings → Plugins. Отдельных Discord props в SettingsView нет.
-
-Legacy `player.discord-presence` переносится из localStorage в native enabled
-один раз. Устойчивый migrated marker препятствует повторной перезаписи настроек.
-Заблокированный localStorage не препятствует старту остальных плагинов.
-
-## Приёмка
-
-Автономные тесты Worker: meaningful changes, устранение повторов, pause.
-Native тесты: reconnect/latest state, rate limit, failure/clear.
-Ручные проверки: клиент отсутствует/запускается позже, pause/resume/seek,
-reload UI, disable/enable и app exit при открытом Discord.
+Checks cover native pause/error behavior, coalescing and reconnects in the host adapter.
+Live validation requires Discord desktop running. Disable clears native presence.

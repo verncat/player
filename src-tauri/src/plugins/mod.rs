@@ -4,6 +4,7 @@ mod catalog;
 #[cfg(feature = "discord-rpc")]
 pub mod discord;
 pub mod model;
+pub mod native;
 mod remote;
 pub(crate) mod secrets;
 #[cfg(feature = "soulseek")]
@@ -96,6 +97,7 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     }
     #[cfg(feature = "discord-rpc")]
     app.manage(discord::DiscordPresenceState::default());
+    app.manage(native::NativeRuntime::default());
     app.manage(state);
     Ok(())
 }
@@ -116,6 +118,7 @@ pub fn emit_generation_event(
     }
 }
 pub fn shutdown(app: &tauri::AppHandle) {
+    native::shutdown(app);
     #[cfg(feature = "discord-rpc")]
     app.state::<discord::DiscordPresenceState>().shutdown();
     #[cfg(feature = "soulseek")]
@@ -179,9 +182,7 @@ pub fn plugin_load(
     if !info.enabled || !info.supported {
         return Err("Plugin disabled or unsupported".into());
     }
-    Ok(
-        json!({"script":state.package(&plugin_id)?.script,"info":info,"events":state.events(&plugin_id)}),
-    )
+    Ok(json!({"info":info,"events":state.events(&plugin_id)}))
 }
 #[tauri::command]
 pub fn plugins_migrate_enabled(
@@ -202,6 +203,13 @@ pub async fn plugins_set_enabled(
     let previous_generation = state.record(&plugin_id)?.generation;
     let info = state.enabled(&plugin_id, enabled)?;
     if !enabled {
+        let handle = app.clone();
+        let id = plugin_id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            native::stop(&handle, &id, previous_generation)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         state.revoke_sources(&plugin_id);
         if app
             .state::<crate::playback::PlaybackState>()
@@ -257,43 +265,10 @@ pub async fn plugin_call(
         "http.request" | "http.download" => "network.http",
         m if m.starts_with("soulseek.") => "native.soulseek",
         m if m.starts_with("discord.") => "native.discord",
-        "android.call" => "native.android",
         _ => return Err("METHOD_NOT_FOUND".into()),
     };
     state.authorize(&plugin_id, generation, permission)?;
     let result = match method.as_str() {
-        "android.call" => {
-            let binding = state
-                .package(&plugin_id)?
-                .manifest
-                .android_native
-                .ok_or("Plugin has no Android native binding")?;
-            let native_method: String = field(&args, "method")?;
-            if native_method.is_empty() || native_method.len() > 100 {
-                return Err("Invalid Android method".into());
-            }
-            let native_args = args.get("args").cloned().unwrap_or(json!({}));
-            if serde_json::to_vec(&native_args)
-                .map_err(|e| e.to_string())?
-                .len()
-                > 1024 * 1024
-            {
-                return Err("Native request exceeds 1 MiB".into());
-            }
-            let id = plugin_id.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                android::mobile_call(
-                    "call",
-                    json!({
-                        "pluginId":id,"generation":generation,"binding":binding,
-                        "method":native_method,"argsJson":native_args.to_string()
-                    }),
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?
-            .map(|response| response["result"].clone())
-        }
         "settings.get" => state.settings(&plugin_id),
         "settings.update" => state.update_settings(
             &plugin_id,

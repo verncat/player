@@ -27,3 +27,5 @@
 -keep class dev.verncat.player.ApkDeactivateArgs { *; }
 -keep class dev.verncat.player.PluginSecrets { *; }
 -keep class dev.verncat.player.PluginSecretArgs { *; }
+
+-keep class dev.verncat.player.NativeHostBridge { *; }

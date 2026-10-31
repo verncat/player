@@ -1,79 +1,31 @@
-# Runtime scope: lifecycle и сообщения
+# Native runtime scope
 
-Зависимости: [package](package-scope.md), [SDK](sdk-ui-scope.md).
-Основные файлы: `host.ts`, `worker.js`, `store.rs`, native gateway `mod.rs`.
-Экспериментальные APK-расширения дополняют этот lifecycle отдельным
-[Android native контрактом](android-native-scope.md): APK-классы и `.so`
-загружаются в процесс Player, а UI остаётся в Worker.
+Implementation: `src-tauri/src/plugins/native.rs`, `src/plugins/host.ts`.
 
-## Жизненный цикл
+The backend owns native instances and library handles. Frontend `plugin_load` returns
+metadata and event snapshots only. It then calls `plugin_native_call` for `activate`,
+`render`, `action`, `search`, `renderSearch`, `playback`, and `event`.
+Each request carries a plugin ID and activation generation; arguments/results are JSON
+limited to 1 MiB. Calls to one activation are serialized outside the UI thread.
 
-Устойчивое состояние: `enabled` и `generation` в native registry. Оперативное
-состояние UI: starting, running или ошибка. Поддержка платформы определяется
-независимо от enabled. Включённый пакет не считается работающим до ответа activate.
+The Rust `NativePlugin` trait handles bundled plugins. External libraries export
+C ABI 1 create/call/free/destroy, ABI version, and plugin ID functions. The loader
+validates ABI/ID before creating an instance. Each allocator releases its own buffers;
+the host context is scoped to one invocation. Rust panic boundaries do not recover
+segmentation faults or make arbitrary native code safe.
 
-При включении native-хост проверяет платформу, сохраняет enabled и новое
-поколение. Broker загружает script, создаёт Worker, внедряет SDK и вызывает
-`activate`. Только успешный Worker получает видимые UI-вклады. Ошибка активации
-отзывает native-права, завершает Worker и показывается рядом с плагином.
+Native host calls use an activation-bound context. Settings/secrets/network/library
+calls execute through the Rust capability gateway. Frontend-owned playback/navigation
+uses `plugin-host-call` plus an owner/generation-checked `plugin_native_reply`.
+`host.invalidate` refreshes the frontend. `host.background` completes through a
+plugin-scoped event; it does not bypass capability checks.
 
-При отключении native-хост сначала сохраняет revocation и новое generation,
-отзывает source handles, останавливает активный источник этого плагина,
-отменяет его native-передачи/активность. Затем broker вызывает deactivate
-(до 2 секунд), отвергает оставшиеся RPC и принудительно завершает Worker.
-Операции включения/отключения одного плагина сериализуются.
+Events emitted during activation are buffered, merged with replay snapshots, deduplicated
+by revision, and delivered in order. Playback snapshots are coalesced while a native call
+is in flight. Panel unmount or webview reload does not destroy native transfer state.
 
-Повторное включение создаёт новый Worker и контекст. Старые ответы не должны
-изменять UI нового поколения. Native-права проверяются до операции и перед
-возвращением результата; передачи также проверяют собственное поколение.
-
-## Reload и выход
-
-Reload WebView завершает только frontend Workers. Enabled/generation,
-запущенный звук и native-передачи сохраняются. Broker подписывается на события,
-затем получает package и native event snapshots, активирует новый Worker и
-доставляет накопленные события в порядке revision, устраняя дубликаты.
-
-Аудио восстанавливается через `playback_session`; это чтение состояния,
-а не повторный play/seek. JavaScript-состояние, которое требуется после reload,
-плагин сохраняет в settings. После полного рестарта прерванные сетевые передачи
-автоматически не возобновляются. Выход приложения завершает native-адаптеры.
-
-## Протокол Worker ↔ broker
-
-Сообщения — structured-clone JSON DTO; функции, компоненты и handles ОС
-не передаются. Идентичность Worker broker определяет по своей записи runtime.
-
-| Направление | Message |
-| --- | --- |
-| Broker → Worker | `{type:'request', id, method, args}` |
-| Worker → broker | `{type:'response', id, result}` или `{type:'response', id, error}` |
-| Worker → broker | `{type:'call', id, method, args}` |
-| Broker → Worker | `{type:'reply', id, result}` или `{type:'reply', id, error}` |
-| Broker → Worker | `{type:'event', topic, payload}` |
-| Broker → Worker | `{type:'playback', snapshot}` |
-| Worker → broker | `{type:'invalidate'}` |
-
-Lifecycle методы: activate/deactivate. Рабочие методы: render, action,
-search, renderSearch. Неизвестный метод завершается ошибкой. Обычный RPC имеет
-таймаут 45 секунд, activate — 15 секунд. Таймаут frontend-ожидания не равен
-отмене уже созданной native-передачи; для неё предусмотрен cancelPreview.
-
-Native события имеют `{pluginId,generation,revision,topic,payload}`.
-Хост хранит до 512 последних состояний, ключ — plugin/topic/transfer ID.
-Это восстановление текущих состояний, не долговременный журнал всех событий.
-
-## Ошибки и ограничения
-
-- Ошибка action/search отображается в соответствующем разделе.
-- Ошибка Worker завершает его и показывается в менеджере; Retry пересоздаёт его.
-- Worker не может зависанием остановить основной JS-поток; broker может
-  завершить его без участия plugin lifecycle.
-- Native-доступ и сетевые ограничения описаны отдельно в security scope;
-  Worker не объявляется полной sandbox.
-- UI-вклад не владеет native-операцией: размонтирование панели не отменяет
-  загрузку или воспроизведение.
-
-Приёмка: repeated enable/disable, activate throw/timeout, pending RPC при
-отключении, поздний ответ, reload с растущим файлом, failure одного Worker
-при работающем втором плагине и штатный app shutdown.
+Disable persists revocation first, cancels pending frontend callbacks, deactivates and
+destroys the instance, revokes source tokens, and stops owned playback. Libraries stay
+resident until shutdown. Old generations cannot regain host capabilities. Native code
+must stop its own workers; arbitrary in-process execution cannot be forcibly terminated
+like a Worker. Retry creates a new enabled generation.

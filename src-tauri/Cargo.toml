@@ -16,14 +16,19 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = ["discord-rpc", "soulseek"]
-soulseek = ["dep:soulseek_rs"]
-discord-rpc = ["dep:discord-rich-presence"]
+soulseek = ["dep:soulseek_rs", "dep:player-soulseek-plugin"]
+discord-rpc = ["dep:discord-rich-presence", "dep:player-discord-plugin"]
 tracy = ["dep:tracing-tracy"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+player-plugin-sdk = { path = "../plugins/native-sdk" }
+player-discord-plugin = { path = "../plugins/discord-rpc", default-features = false, optional = true }
+player-soulseek-plugin = { path = "../plugins/soulseek", default-features = false, optional = true }
+libloading = "0.8"
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
@@ -69,3 +74,6 @@ security-framework = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Security_Credentials", "Win32_Foundation"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"

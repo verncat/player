@@ -1,59 +1,41 @@
 import { computed, inject, onMounted, onUnmounted, provide, ref, watch, type InjectionKey } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import prelude from './worker.js?raw';
-import { postPluginMessage } from './messages';
 import type { HostOptions, InstallSource, PluginEvent, PluginInfo, PluginSource, UiContribution, UiNode } from './types';
 import type { Track } from '../types';
 
-interface Runtime {
-  url: string; worker: Worker; ready: boolean; nextId: number; seen: Set<number>; events: PluginEvent[];
-  pending: Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>;
-}
+interface NativeHostCall { requestId: number; pluginId: string; generation: number; method: string; args: Record<string, unknown> }
 export function createPluginHost(options: HostOptions) {
   const plugins = ref<PluginInfo[]>([]);
   const errors = ref<Record<string, string>>({});
   const running = ref<string[]>([]);
   const revision = ref(0);
   const loading = ref(true);
-  const runtimes = new Map<string, Runtime>();
   const operations = new Map<string, Promise<unknown>>();
+  const unlisteners: UnlistenFn[] = [];
   const backlog = new Map<string, PluginEvent[]>();
+  const seenEvents = new Map<string, Set<number>>();
+  const eventTails = new Map<string, Promise<void>>();
   const contributionList = computed<UiContribution[]>(() => plugins.value
     .filter(p => p.enabled && p.supported && running.value.includes(p.manifest.id))
     .flatMap(p => p.manifest.contributions.map(c => ({ ...c, pluginId: p.manifest.id, key: `${p.manifest.id}/${c.id}` })))
     .sort((a, b) => a.order - b.order || a.key.localeCompare(b.key)));
   const contributions = (kind: UiContribution['kind']) => computed(() => contributionList.value.filter(c => c.kind === kind));
   let disposed = false;
-  let unlisten: UnlistenFn | undefined;
   function invalidate() { revision.value++; }
   function permitted(info: PluginInfo, permission: string) {
     if (!info.enabled || !info.manifest.permissions.includes(permission)) throw new Error(`PERMISSION_DENIED: ${permission}`);
   }
-  function call(id: string, method: string, args: unknown = {}, timeout = 45000): Promise<unknown> {
-    const runtime = runtimes.get(id);
-    if (!runtime) return Promise.reject(new Error('Plugin is not running'));
-    const requestId = ++runtime.nextId;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { runtime.pending.delete(requestId); reject(new Error(`TIMEOUT: ${method}`)); }, timeout);
-      runtime.pending.set(requestId, { resolve, reject, timer });
-      try { postPluginMessage(runtime.worker, { type: 'request', id: requestId, method, args }); }
-      catch (error) { clearTimeout(timer); runtime.pending.delete(requestId); reject(error); }
-    });
+  function nativeCall(info: PluginInfo, method: string, args: unknown = {}): Promise<unknown> {
+    // IPC carries data only; no plugin executable code enters the webview.
+    return invoke('plugin_native_call', { pluginId: info.manifest.id, generation: info.generation, method, args: JSON.parse(JSON.stringify(args)) });
   }
-  function terminate(id: string) {
-    const runtime = runtimes.get(id); if (!runtime) return;
-    runtimes.delete(id); runtime.worker.terminate(); URL.revokeObjectURL(runtime.url);
-    for (const pending of runtime.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('CANCELLED: plugin stopped')); }
-    running.value = running.value.filter(p => p !== id); invalidate();
+  function call(id: string, method: string, args: unknown = {}): Promise<unknown> {
+    const info = plugins.value.find(p => p.manifest.id === id);
+    if (!info?.enabled || !running.value.includes(id)) return Promise.reject(new Error('Native plugin is not running'));
+    return nativeCall(info, method, args);
   }
-  function event(runtime: Runtime, payload: PluginEvent) {
-    if (runtime.seen.has(payload.revision)) return;
-    runtime.seen.add(payload.revision);
-    if (runtime.seen.size > 2048) runtime.seen.delete(runtime.seen.values().next().value!);
-    if (!runtime.ready) runtime.events.push(payload);
-    else postPluginMessage(runtime.worker, { type: 'event', topic: payload.topic, payload: payload.payload });
-  }
+  function terminate(id: string) { running.value = running.value.filter(p => p !== id); invalidate(); }
   async function route(info: PluginInfo, method: string, args: Record<string, unknown>) {
     const current = plugins.value.find(p => p.manifest.id === info.manifest.id);
     if (!current?.enabled || current.generation !== info.generation) throw new Error('DISABLED: plugin activation ended');
@@ -76,44 +58,34 @@ export function createPluginHost(options: HostOptions) {
     }
     return invoke('plugin_call', { pluginId: info.manifest.id, generation: info.generation, method, args });
   }
+
+  function deliverEvent(info: PluginInfo, event: PluginEvent): Promise<void> {
+    const id = info.manifest.id;
+    const seen = seenEvents.get(id) || new Set<number>();
+    if (seen.has(event.revision)) return Promise.resolve();
+    seen.add(event.revision); if (seen.size > 2048) seen.delete(seen.values().next().value!); seenEvents.set(id, seen);
+    const pending = (eventTails.get(id) || Promise.resolve()).catch(() => {}).then(async () => {
+      if (disposed || !plugins.value.some(p => p.manifest.id === id && p.enabled && p.generation === event.generation)) return;
+      await nativeCall(info, 'event', { topic: event.topic, payload: event.payload }); invalidate();
+    });
+    eventTails.set(id, pending); return pending;
+  }
   async function start(info: PluginInfo) {
-    const id = info.manifest.id; if (runtimes.has(id) || !info.enabled || !info.supported) return;
+    const id = info.manifest.id;
+    if (running.value.includes(id) || !info.enabled || !info.supported || disposed) return;
     try {
-      const loaded = await invoke<{ script: string; events: PluginEvent[] }>('plugin_load', { pluginId: id });
+      const loaded = await invoke<{ events: PluginEvent[] }>('plugin_load', { pluginId: id });
+      await nativeCall(info, 'activate', { pluginId: id, generation: info.generation });
       if (disposed || !plugins.value.some(p => p.manifest.id === id && p.enabled && p.generation === info.generation)) return;
-      const url = URL.createObjectURL(new Blob([prelude, '\n', loaded.script], { type: 'text/javascript' }));
-      let worker: Worker;
-      try { worker = new Worker(url, { name: id }); } catch (error) { URL.revokeObjectURL(url); throw error; }
-      const runtime: Runtime = { url, worker, ready: false, pending: new Map(), nextId: 0, seen: new Set(), events: backlog.get(id) || [] };
-      backlog.delete(id); runtimes.set(id, runtime);
-      worker.onmessage = async ({ data }) => {
-        if (runtimes.get(id) !== runtime || !data || typeof data !== 'object') return;
-        if (data.type === 'response') {
-          const pending = runtime.pending.get(data.id); if (!pending) return;
-          runtime.pending.delete(data.id); clearTimeout(pending.timer);
-          if (data.error) pending.reject(new Error(String(data.error))); else pending.resolve(data.result);
-        } else if (data.type === 'call') {
-          try { const result = await route(info, String(data.method), data.args || {}); if (runtimes.get(id) === runtime) postPluginMessage(worker, { type: 'reply', id: data.id, result }); }
-          catch (e) { if (runtimes.get(id) === runtime) postPluginMessage(worker, { type: 'reply', id: data.id, error: String(e) }); }
-        } else if (data.type === 'invalidate') invalidate();
-        // Worker logs are deliberately not forwarded: third-party code may log credentials.
-      };
-      worker.onerror = (e) => { errors.value = { ...errors.value, [id]: e.message || 'Plugin worker failed' }; terminate(id); };
-      worker.onmessageerror = () => { errors.value = { ...errors.value, [id]: 'Invalid worker message' }; terminate(id); };
-      if (info.manifest.permissions.includes('playback.read')) postPluginMessage(worker, { type: 'playback', snapshot: options.snapshot() });
-      await call(id, 'activate', { pluginId: id, generation: info.generation }, 15000);
-      URL.revokeObjectURL(url);
-      if (runtimes.get(id) !== runtime) return;
-      runtime.ready = true; running.value = [...running.value, id];
-      const events = [...loaded.events, ...runtime.events].sort((a, b) => a.revision - b.revision);
-      runtime.events = []; runtime.seen.clear();
-      for (const e of events) if (e.generation === info.generation) event(runtime, e);
+      if (info.manifest.permissions.includes('playback.read')) await nativeCall(info, 'playback', options.snapshot());
+      running.value = [...running.value, id];
+      const events = [...loaded.events, ...(backlog.get(id) || [])].filter(e => e.generation === info.generation).sort((a,b) => a.revision - b.revision);
+      backlog.delete(id); await Promise.all(events.map(event => deliverEvent(info, event)));
       errors.value = { ...errors.value, [id]: '' }; invalidate();
     } catch (e) {
+      if (disposed || !plugins.value.some(p => p.manifest.id === id && p.enabled && p.generation === info.generation)) return;
       errors.value = { ...errors.value, [id]: String(e) }; terminate(id);
-      if (!disposed && plugins.value.some(p => p.manifest.id === id && p.enabled && p.generation === info.generation)) {
-        try { const disabled = await invoke<PluginInfo>('plugins_set_enabled', { pluginId: id, enabled: false }); plugins.value = plugins.value.map(p => p.manifest.id === id ? disabled : p); } catch { /* The error remains visible. */ }
-      }
+      try { const disabled = await invoke<PluginInfo>('plugins_set_enabled', { pluginId: id, enabled: false }); plugins.value = plugins.value.map(p => p.manifest.id === id ? disabled : p); } catch { /* Preserve the original startup error. */ }
     }
   }
   async function refresh() { plugins.value = await invoke<PluginInfo[]>('plugins_list'); }
@@ -123,36 +95,56 @@ export function createPluginHost(options: HostOptions) {
       try {
         const info = await invoke<PluginInfo>('plugins_set_enabled', { pluginId: id, enabled });
         plugins.value = plugins.value.map(p => p.manifest.id === id ? info : p);
-        if (!enabled) {
-          if (runtimes.has(id)) { try { await call(id, 'deactivate', {}, 2000); } catch { /* termination is the fallback */ } }
-          terminate(id);
-        } else await start(info);
+        if (enabled) { seenEvents.delete(id); await start(info); } else { terminate(id); backlog.delete(id); seenEvents.delete(id); }
       } catch (e) {
-        // Native close can fail after revocation has already been persisted.
-        await refresh();
-        if (!plugins.value.find(p => p.manifest.id === id)?.enabled) terminate(id);
+        await refresh(); if (!plugins.value.find(p => p.manifest.id === id)?.enabled) terminate(id);
         errors.value = { ...errors.value, [id]: String(e) }; throw e;
       }
     })();
     operations.set(id, operation); try { await operation; } finally { operations.delete(id); }
   }
-  async function retry(id: string) { terminate(id); const info = plugins.value.find(p => p.manifest.id === id); if (!info) return; if (!info.enabled) await setEnabled(id, true); else await start(info); }
+  async function retry(id: string) { if (plugins.value.find(p => p.manifest.id === id)?.enabled) await setEnabled(id, false); await setEnabled(id, true); }
   async function install(content: string, fingerprint: string, source?: InstallSource) { await invoke('plugins_install', { content, fingerprint, source }); await refresh(); }
   async function uninstall(id: string) { terminate(id); await invoke('plugins_uninstall', { pluginId: id }); await refresh(); }
+  // Coalesce playback snapshots while a native call is in flight.
+  const latestPlayback = new Map<string, ReturnType<HostOptions['snapshot']>>();
+  const sendingPlayback = new Set<string>();
+  async function publishPlayback(info: PluginInfo, snapshot: ReturnType<HostOptions['snapshot']>) {
+    const id = info.manifest.id; latestPlayback.set(id, snapshot);
+    if (sendingPlayback.has(id)) return;
+    sendingPlayback.add(id);
+    try {
+      while (!disposed && running.value.includes(id) && latestPlayback.has(id)) {
+        const latest = latestPlayback.get(id)!; latestPlayback.delete(id);
+        await nativeCall(info, 'playback', latest);
+      }
+    } catch (e) { errors.value = { ...errors.value, [id]: String(e) }; }
+    finally { sendingPlayback.delete(id); latestPlayback.delete(id); }
+  }
   watch(options.snapshot, snapshot => {
-    for (const [id, runtime] of runtimes) if (plugins.value.find(p => p.manifest.id === id)?.manifest.permissions.includes('playback.read')) postPluginMessage(runtime.worker, { type: 'playback', snapshot });
+    for (const info of plugins.value) if (running.value.includes(info.manifest.id) && info.manifest.permissions.includes('playback.read')) void publishPlayback(info, snapshot);
   });
   onMounted(async () => {
     try {
-      unlisten = await listen<PluginEvent>('plugin-event', ({ payload }) => {
-        const info = plugins.value.find(p => p.manifest.id === payload.pluginId);
-        const runtime = runtimes.get(payload.pluginId);
-        if (runtime && info?.enabled && info.generation === payload.generation) event(runtime, payload);
-        else if (!runtime) { const events = backlog.get(payload.pluginId) || []; events.push(payload); if (events.length > 512) events.shift(); backlog.set(payload.pluginId, events); }
-      });
+      unlisteners.push(await listen<NativeHostCall>('plugin-host-call', async ({ payload }) => {
+        const info = plugins.value.find(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation);
+        let result: unknown = null; let error: string | null = null;
+        try { if (!info) throw new Error('Plugin activation ended'); result = await route(info, payload.method, payload.args || {}); }
+        catch (e) { error = String(e); }
+        await invoke('plugin_native_reply', { requestId: payload.requestId, pluginId: payload.pluginId, generation: payload.generation, result: result ?? null, error });
+      }));
+      unlisteners.push(await listen<{pluginId: string; generation: number}>('plugin-invalidated', ({ payload }) => {
+        if (plugins.value.some(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation)) invalidate();
+      }));
+      unlisteners.push(await listen<PluginEvent>('plugin-event', ({ payload }) => {
+        const info = plugins.value.find(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation);
+        if (!info) return;
+        if (running.value.includes(info.manifest.id)) void deliverEvent(info, payload).catch(e => { errors.value = { ...errors.value, [info.manifest.id]: String(e) }; });
+        else { const queued = backlog.get(info.manifest.id) || []; queued.push(payload); if (queued.length > 512) queued.shift(); backlog.set(info.manifest.id, queued); }
+      }));
       await refresh();
       const warnings = await invoke<string[]>('plugins_diagnostics'); if (warnings.length) errors.value = { ...errors.value, host: warnings.join(' ') };
-      let legacy: string | null = null; try { legacy = localStorage.getItem('player.discord-presence'); } catch { /* Storage access must not prevent plugin startup. */ }
+      let legacy: string | null = null; try { legacy = localStorage.getItem('player.discord-presence'); } catch { /* Storage may be unavailable. */ }
       const discord = plugins.value.find(p => p.manifest.id === 'player.discord-rpc');
       if (legacy !== null && discord && !discord.migrated) {
         await invoke('plugins_migrate_enabled', { pluginId: discord.manifest.id, enabled: legacy === 'true' });
@@ -162,7 +154,7 @@ export function createPluginHost(options: HostOptions) {
     } catch (e) { errors.value = { ...errors.value, host: String(e) }; }
     finally { loading.value = false; }
   });
-  onUnmounted(() => { disposed = true; unlisten?.(); for (const id of runtimes.keys()) terminate(id); });
+  onUnmounted(() => { disposed = true; unlisteners.forEach(stop => stop()); running.value = []; });
   return { plugins, errors, running, revision, loading, contributions, call, refresh, setEnabled, retry, install, uninstall };
 }
 export type PluginHost = ReturnType<typeof createPluginHost>;

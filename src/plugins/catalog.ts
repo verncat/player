@@ -11,7 +11,7 @@ export function filterCatalog(entries: CatalogEntry[], query: string): CatalogEn
 
 /** Catalog metadata is only for display; install preview always uses the downloaded manifest. */
 export function catalogManifest(entry: CatalogEntry): PluginManifest {
-  return { id: entry.id, name: entry.name, version: entry.version || '', apiVersion: 1,
+  return { id: entry.id, name: entry.name, version: entry.version || '', apiVersion: 2,
     description: entry.description, author: entry.author, image: entry.image,
     repository: entry.repository, platforms: entry.platforms, permissions: [], contributions: [] };
 }

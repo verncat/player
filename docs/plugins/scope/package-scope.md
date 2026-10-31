@@ -1,136 +1,33 @@
-# Package scope: формат и установка
+# Native package and installation scope
 
-Зависимости: [system](system-scope.md), [storage](storage-security-scope.md).
-Реализация: `model.rs`, `remote.rs`, `store.rs`, `PluginManager.vue`, `PluginMetadata.vue`, `package-plugin.mjs`.
+Entry point: [readme](../../plugin/readme.md). Implementation: `model.rs`, `remote.rs`, `store.rs`.
 
-## Формат файла
+An external `.player-plugin` is UTF-8 JSON with `manifest` and `native`.
+`native.kind: "library"` contains `artifacts`, keyed by OS/architecture. Each artifact
+has base64 `data` and a lowercase SHA-256 `sha256`. Supported keys are
+`macos-aarch64`, `macos-x86_64`, `windows-aarch64`, `windows-x86_64`,
+`linux-aarch64`, and `linux-x86_64`. Its OS must appear in manifest platforms.
 
-`.player-plugin` — UTF-8 JSON-объект `{manifest, script}` размером до 4 MiB.
-Manifest не содержит произвольных executable-путей; script — весь JS-плагин одной строкой.
-Установка не распаковывает архивы, не выполняет install hooks и не запускает npm.
-Стандартный packer читает `plugin.json` и `main.js`; оба файла и рабочий пример
-описаны в [readme](../../plugin/readme.md).
+Maximums: 64 MiB decoded per library, 96 MiB per package, eight artifacts. Preview
+checks hashes, metadata, reserved IDs/permissions, platforms, and API version without
+opening a library. A fingerprint covers the entire package. Installation verifies the
+approved fingerprint and persists a disabled package. Actual loading occurs on enable.
 
-| Поле manifest | Контракт |
-| --- | --- |
-| `id` | До 100 символов; непустые части через точку, `[a-z0-9-]`; `player.*` зарезервирован |
-| `name` | Непустая строка до 100 символов |
-| `version` | Три десятичных целых числа `major.minor.patch`; prerelease не поддерживается |
-| `apiVersion` | Ровно `1`; несовместимый пакет отклоняется |
-| `description` | До 2000 символов, по умолчанию пустая строка |
-| `image` | Необязательная HTTP(S)-ссылка без credentials или raster data URL: PNG/JPEG/WebP/GIF base64, до 256 KiB декодированных данных |
-| `author` | Необязательно: имя строкой или `{name,url?}`; имя до 200 символов |
-| `homepage` | Необязательная HTTP(S)-ссылка на сайт плагина |
-| `repository` | Необязательная HTTP(S)-ссылка на исходники |
-| `platforms` | Непустой список из `macos`, `windows`, `linux`, `android` |
-| `permissions` | Список известных прав; отсутствующее право не выдаётся |
-| `contributions` | До 32 вкладов; локальные ID уникальны внутри пакета |
-| `androidNative` | Необязательный binding установленного APK: package/class, SHA-256 сертификата и файла; только вместе с `native.android` и `platforms: ["android"]` |
+Manifest API version is 2. Existing author/repository/homepage/image fields and
+contributions remain supported. `player.*`, `native.discord`, and `native.soulseek`
+are reserved for bundled native packages. Builtins have `native.kind: "builtin"`
+and cannot be installed through the external package path.
 
-Ссылки author.url/homepage/repository не содержат встроенных логина и пароля;
-javascript/file/data-схемы отклоняются. Метаданные показываются в preview и
-карточке установленного плагина. Старые пакеты без новых полей остаются валидными;
-для отсутствующих полей не меняется сериализация и fingerprint.
+Installed Android APKs use `native.kind: "android-apk"`; Player derives the manifest's
+`androidNative` package/class/file/certificate binding from the installed APK. They are
+not unpinned desktop packages with an Android permission added manually.
 
-`image` отображается в заголовке карточки установленного плагина, preview и
-найденного Android APK. Если картинки нет или она не загрузилась, используется
-значок из contributions либо стандартный значок. Data URL хранится вместе с
-пакетом и входит в его fingerprint и общий лимит 4 MiB. Ссылки на изображения
-загружаются при отображении без referrer; содержимое по URL не фиксируется
-fingerprint пакета. Относительные пути и SVG data URL не поддерживаются.
+The downloader accepts direct HTTPS native packages and public GitHub directories
+containing `plugin.player-plugin`, resolving branches to a specific commit. Raw source
+manifests are rejected. Redirects remain HTTPS without credentials. Native binaries
+are not fetched implicitly from arbitrary manifest paths or executed during preview.
 
-В навигации настроек `image` отображается одноцветным логотипом в
-`--color-accent-text`: SVG-фильтр сохраняет alpha-канал и заменяет RGB цветом
-темы. Нужен прозрачный фон; полностью непрозрачная картинка даст сплошной
-прямоугольник. Используйте отдельный от фона знак. Карточки и preview сохраняют
-исходные цвета; без картинки или при ошибке загрузки выводится значок в цвете темы.
-
-Неизвестные поля manifest/package/contribution отклоняются.
-У вклада `kind: "page"` необязательное `showInMenu: false` скрывает пункт
-бокового меню, сохраняя внутреннюю страницу. Если поле отсутствует или равно
-true, страница видна в меню. У остальных видов вкладов поле запрещено.
-Отсутствующее поле не добавляется при сериализации и не меняет старый fingerprint.
-`script` должен быть непустым. JS-синтаксис и entrypoint проверяются запуском
-Worker при включении; ошибка запуска видна в менеджере и допускает исправление
-пакета. Одинаковый ID означает обновление существующего установленного пакета.
-
-## Установка
-
-1. UI читает выбранный файл с проверкой размера.
-2. `plugins_preview(content)` повторно проверяет пакет на native-стороне,
-   возвращает manifest и BLAKE3 fingerprint нормализованного package JSON.
-3. UI показывает описание, права и fingerprint; пользователь подтверждает
-   установку именно этого содержимого.
-4. `plugins_install(content, fingerprint, source?)` повторяет проверку, сравнивает
-   fingerprint, сохраняет пакет отключённым.
-5. Включение — отдельная операция lifecycle. Пакет неподдерживаемой платформы
-   можно хранить, но нельзя включить.
-
-Fingerprint — контроль содержимого, не подпись автора. Установка требует
-доверия к автору. Встроенный ID нельзя подменить загруженным файлом; reserved
-права `native.discord` / `native.soulseek` нельзя получить внешним пакетом.
-Экспериментальное `native.android` разрешает unrestricted APK-код; его
-[отдельный контракт](android-native-scope.md) требует явного доверия пользователя.
-
-## Загрузка по ссылке
-
-Каталог из репозитория Player использует этот же процесс загрузки и preview:
-[формат индекса и установка из карточки](catalog-scope.md). Он не устанавливает
-пакет автоматически. Для выбранной записи downloader дополнительно сверяет ID.
-
-Коннектор, Git-клиент и OAuth не требуются. `plugins_download(url)` выполняет
-native HTTPS-загрузку и возвращает `{content,manifest,fingerprint,source}`.
-Код не запускается; далее используется тот же preview/install, что для файла.
-
-Поддержаны:
-
-- `https://github.com/owner/repo`: plugin.json и main.js в корне default branch;
-- `https://github.com/owner/repo/tree/ref/path`: папка плагина на ветке, теге
-  или commit; имена ref с `/` разрешаются через GitHub API;
-- GitHub blob-ссылка на plugin.json либо готовый package-файл;
-- прямая HTTPS-ссылка на `.player-plugin` или JSON с `{manifest,script}`, включая
-  release assets; прямая ссылка на plugin.json загружает соседний main.js;
-- HTTPS-каталог с завершающим `/`: соседние plugin.json и main.js;
-- у корневой GitHub-ссылки можно указать `?ref=branch-or-tag`.
-
-Для GitHub сначала разрешается ref в commit SHA. Оба файла читаются через
-raw.githubusercontent.com по одному SHA, поэтому изменение ветки между
-запросами не смешивает версии manifest/script. В реестре сохраняются исходная
-ссылка, repository и revision. Строка Source/commit в карточках и preview
-не выводится; автор и ссылки из manifest отображаются в одном ряду.
-GitHub API используется без authentication.
-Приватные репозитории и автоматический поиск release assets не поддерживаются:
-для asset нужна прямая ссылка, для monorepo — ссылка на конкретную папку.
-GitLab/другие хостинги доступны через прямую HTTPS-ссылку на manifest/package.
-
-Общий timeout — 30 секунд; connect timeout — 10 секунд. Каждый ответ до 4 MiB,
-общий бюджет до 12 MiB/24 запросов, до пяти redirect hops. Редиректы сохраняют
-HTTPS и не содержат встроенных credentials. Итоговый собранный package снова
-проверяется на 4 MiB, схему и разрешения. Сетевые ошибки, 404 и public API rate
-limit показываются в менеджере; при ошибке ничего не устанавливается.
-
-Установка сохраняет уже просмотренный content, повторно не скачивает URL и
-проверяет fingerprint. Автоматического включения и фонового обновления нет.
-Имя автора — сведения manifest, не проверенная идентичность издателя.
-
-## Обновление, удаление, кеш
-
-- Обновляется только отключённый пакет. Версия и script заменяются одной
-  записью реестра; настройки остаются. Автоматического обновления нет.
-- Возврат к предыдущей версии — повторная установка доверенного пакета с тем
-  же ID. Плагин отвечает за совместимость своих settings; хост использует CAS.
-- Удаление доступно только отключённым внешним пакетам. Встроенные отключаются.
-- Импортированные треки и файлы библиотеки не удаляются вместе с плагином.
-- Очистка cache — отдельное действие; запрещена для включённого плагина и
-  если декодер ещё читает его staging-файл после импорта.
-- Одновременно установлено не более 32 внешних пакетов.
-
-## Приёмка
-
-Проверить malformed JSON, слишком большой пакет, reserved ID, неизвестные
-права, повторяющийся contribution ID, несовместимый API, изменённый fingerprint,
-обновление включённого пакета, отказ записи и сохранение настроек при обновлении.
-Также проверить default branch без предположения main, ветки с `/`, подпапки,
-commit pinning, manifest/main.js, release/package URL, 404, превышение размера,
-небезопасные схемы ссылок, сохранение source после рестарта и отсутствие
-автоматической установки/запуска скачанного кода.
+Updating requires disabling the old version. The ID remains stable and settings survive.
+Libraries remain resident until process exit even after instance destruction.
+On hardened macOS, libraries must satisfy the existing signature validation rules;
+this implementation does not disable them.

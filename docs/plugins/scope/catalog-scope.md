@@ -1,109 +1,26 @@
-# Catalog scope: репозиторий плагинов
+# Native catalog scope
 
-Точка входа: [readme](../../plugin/readme.md). Реализация: `catalog.rs`,
-`PluginCatalog.vue`, `catalog.ts`. JSON каталога хранится в отдельном репозитории player-plugins:
-[catalog.json](https://github.com/verncat/player-plugins/blob/main/catalog.json).
+Implementation: `catalog.rs`, `catalog.ts`, `PluginCatalog.vue`.
+Source: `https://raw.githubusercontent.com/verncat/player-plugins/main/catalog.json`.
 
-## Получение списка
+Catalog schema 2 lists native packages only. The previous script example entry is
+removed until a compiled native artifact is published. Empty catalogs are valid.
+There is no bundled catalog, disk cache, backup, or offline fallback.
 
-Основной адрес:
-`https://raw.githubusercontent.com/verncat/player-plugins/main/catalog.json`.
-Коннектор, Git-клиент и GitHub OAuth не нужны. Поддержаны desktop и Android.
+Required top-level fields: `schemaVersion: 2`, calendar `updatedAt`, `plugins`.
+Entries require `id`, `name`, `description`, `repository`, `addedAt`, `platforms`;
+optional fields are installUrl, version, author, image, updatedAt and tags.
+At most 256 unique entries, 12 tags of up to 40 bytes, and 512 KiB total. Unknown
+fields, invalid dates/URLs or a bad entry reject the whole response.
 
-Settings → Plugins показывает каталог с поиском по названию, ID, описанию,
-автору и тегам. По умолчанию новые записи идут первыми; при одинаковой дате —
-по названию. Карточка содержит картинку, автора, ссылку на репозиторий, даты,
-версию, платформы, теги и отметку установленного пакета. Для неподдерживаемой
-платформы и включённого установленного плагина действие установки недоступно.
+Player fetches when the section opens or Refresh catalog is selected. Old entries
+are cleared before fetching; failures appear as toasts. Search matches names, IDs,
+authors, descriptions, platforms and tags. New entries sort first, then by name.
 
-`plugins_catalog()` всегда выполняет HTTPS-запрос к репозиторию. При открытии
-раздела UI делает один запрос; кнопка Refresh catalog повторяет его. Встроенного
-списка, дискового кеша, backup и offline-fallback нет. Файл `catalog.json` в player-plugins
-служит для публикации в репозитории и не включается в исполняемую сборку.
+Install downloads a real native `.player-plugin` and checks its ID before preview.
+Metadata grants no permissions and does not authenticate the publisher. GitHub folder
+URLs must contain `plugin.player-plugin`; source-only folders are not installable.
+Bundled reserved IDs are excluded. APKs use system installation plus discovery.
 
-Перед запросом прежний список очищается. Ошибка сети, 404 или невалидный ответ
-возвращают ошибку команды и показываются временным тоастом; карточки каталога
-не отображаются до успешной загрузки. Refresh остаётся доступным для новой
-попытки; установка из файла и по прямой ссылке работает независимо от каталога.
-
-Успешный ответ содержит текущую `platform` и объект `catalog`. Загрузка списка
-не скачивает код перечисленных плагинов и не включает их.
-
-## JSON schema 1
-
-```json
-{
-  "schemaVersion": 1,
-  "updatedAt": "2026-10-27",
-  "plugins": [
-    {
-      "id": "author.my-plugin",
-      "name": "My plugin",
-      "description": "What this extension adds to Player.",
-      "repository": "https://github.com/author/my-plugin",
-      "installUrl": "https://github.com/author/my-plugin",
-      "addedAt": "2026-10-27",
-      "updatedAt": "2026-10-27",
-      "version": "1.0.0",
-      "author": {"name": "Author", "url": "https://github.com/author"},
-      "image": "https://example.org/plugin.png",
-      "platforms": ["macos", "windows", "linux", "android"],
-      "tags": ["lyrics", "metadata"]
-    }
-  ]
-}
-```
-
-Обязательны глобальные `schemaVersion`, `updatedAt`, `plugins`; у записи —
-`id`, `name`, `description`, `repository`, `addedAt`, `platforms`. Остальные
-поля необязательны, `tags` по умолчанию пуст. `author`, `image`, имя, версия,
-платформы и ID используют правила [package scope](package-scope.md).
-Зарезервированные `player.*` не включаются в каталог внешних пакетов:
-Discord RPC и Soulseek уже представлены установленными встроенными плагинами.
-
-`repository` и `installUrl` — HTTPS без встроенных credentials. Если `installUrl`
-нет, используется `repository`. Для monorepo задайте installUrl папки с
-plugin.json/main.js; для готового пакета — прямую HTTPS-ссылку на `.player-plugin`.
-В `repository` можно оставить ссылку на основной репозиторий автора.
-
-Даты — календарные `YYYY-MM-DD`. `addedAt` не позже глобального `updatedAt`;
-дата изменения записи не раньше её добавления и не позже глобальной даты.
-Максимум 256 записей, ID уникальны, до 12 тегов по 40 символов на запись.
-Размер JSON — до 512 KiB. Неизвестные поля или версия схемы отклоняются целиком;
-повреждённый ответ отклоняется целиком.
-
-## Установка
-
-Кнопка Install передаёт installUrl/repository в существующий HTTPS downloader
-и добавляет `expectedId`. Rust сравнивает ID полученного пакета с выбранной
-записью. Несовпадение отклоняется до preview. Затем используется обычный
-просмотр actual manifest, fingerprint и permissions; установка
-происходит только после подтверждения. Пакет сохраняется отключённым.
-
-Сведения каталога могут отставать от репозитория. Каталог не выдаёт права и
-не подменяет manifest загруженного пакета; заявленная в нём версия не является
-проверкой наличия обновления. При обновлении включённый плагин сначала отключают.
-APK-плагины пока устанавливаются средствами Android и подключаются через
-Find APK plugins, а не через этот каталог JSON-пакетов.
-
-## Публикация и разработка
-
-Чтобы добавить плагин, добавьте запись в `catalog.json` репозитория player-plugins и обновите
-глобальную дату. Добавляйте только существующий пакет с соответствующим ID.
-Новые записи в удалённом JSON появляются при обновлении каталога без новой
-сборки приложения; смена схемы требует поддержки нового schemaVersion.
-
-Hello Player устанавливается из
-`https://github.com/verncat/player-plugins/tree/main/examples/hello`.
-Для публикации достаточно push в `main` репозитория player-plugins. Для теста
-другой ветки можно задать отдельный источник при сборке:
-
-```sh
-PLAYER_PLUGIN_CATALOG_URL="https://raw.githubusercontent.com/verncat/player-plugins/my-branch/catalog.json" pnpm tauri dev
-```
-
-Переменная задаётся при сборке Rust; UI не меняет источник каталога произвольно.
-Проверки покрывают формат и календарные даты, дубликаты/лимиты, недопустимые
-URL и изображения, новый запрос при каждой загрузке, отказ сети без fallback,
-повреждённый ответ и пустой удалённый каталог, фильтрацию,
-сортировку и несовпадение ID устанавливаемого пакета.
+`PLAYER_PLUGIN_CATALOG_URL` can override the endpoint at Rust build time. Catalog
+updates do not alter pinned bundled code or automatically replace installed libraries.

@@ -7,7 +7,17 @@ import org.junit.Test
 
 class ApkPluginsTest {
     @Test fun installedApkLoadsRustAndEnforcesIdentityAndLifecycle() {
-        val runtime = InstalledApkRuntime(InstrumentationRegistry.getInstrumentation().targetContext)
+        var settings = JSONObject("{\"revision\":0,\"values\":{}}")
+        val runtime = InstalledApkRuntime(InstrumentationRegistry.getInstrumentation().targetContext) { _, method, arguments ->
+            val args = JSONObject(arguments)
+            val result = when (method) {
+                "settings.get" -> settings
+                "settings.update" -> JSONObject().put("revision", settings.getInt("revision") + 1).put("values", args.getJSONObject("values")).also { settings = it }
+                "host.invalidate" -> JSONObject.NULL
+                else -> error("Unexpected host callback: $method")
+            }
+            JSONObject().put("ok", true).put("value", result).toString()
+        }
         val discovery = runtime.discover()
         val packages = discovery.getJSONArray("packages")
         val candidate = (0 until packages.length()).map { JSONObject(packages.getString(it)) }
@@ -22,7 +32,7 @@ class ApkPluginsTest {
         }
         val args = ApkCallArgs().apply {
             pluginId = "example.android-native"; generation = 1
-            this.binding = binding; method = "echo"; argsJson = "{\"message\":\"Привет 🎵\"}"
+            this.binding = binding; method = "activate"; argsJson = "{}"
         }
         // Validate pinning before any third-party class is initialized.
         val hash = binding.apkSha256
@@ -34,15 +44,22 @@ class ApkPluginsTest {
         assertThrows(IllegalArgumentException::class.java) { runtime.call(args) }
         binding.certificateSha256 = certificate
 
+        assertFalse(candidate.has("script"))
+        assertEquals("android-apk", candidate.getJSONObject("native").getString("kind"))
+        runtime.call(args)
+        args.method = "action"; args.argsJson = "{\"action\":\"ping\",\"fields\":{\"message\":\"Native Rust\"}}"
+        runtime.call(args)
+        args.method = "render"; args.argsJson = "{}"
         val first = runtime.call(args).getJSONObject("result")
-        assertEquals("Rust via JNI", first.getString("backend"))
-        assertEquals("Привет 🎵", first.getString("message"))
-        assertEquals("aarch64", first.getString("arch"))
+        assertTrue(first.toString().contains("Rust via JNI"))
+        assertTrue(first.toString().contains("Native Rust"))
+        assertEquals("Native Rust", settings.getJSONObject("values").getString("lastMessage"))
         runtime.deactivate(ApkDeactivateArgs().apply { pluginId = args.pluginId; generation = 2 })
         assertThrows(IllegalArgumentException::class.java) { runtime.call(args) }
-        args.generation = 3
-        val next = runtime.call(args).getJSONObject("result")
-        assertTrue(next.getLong("callCount") > first.getLong("callCount"))
+        args.generation = 3; args.method = "activate"
+        runtime.call(args)
+        args.method = "render"
+        assertTrue(runtime.call(args).getJSONObject("result").toString().contains("Native Rust"))
         runtime.deactivate(ApkDeactivateArgs().apply { pluginId = args.pluginId; generation = 4 })
     }
 }

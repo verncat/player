@@ -1,4 +1,4 @@
-//! APK extensions: JavaScript UI uses the existing worker; native calls stay pinned to one APK.
+//! Native APK packages pinned to one installed file and signing certificate.
 use super::model::Package;
 use serde_json::{json, Value};
 

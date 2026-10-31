@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const API_VERSION: u32 = 1;
-pub const MAX_PACKAGE_BYTES: usize = 4 * 1024 * 1024;
+pub const API_VERSION: u32 = 2;
+pub const MAX_PACKAGE_BYTES: usize = 96 * 1024 * 1024;
 pub const PERMISSIONS: &[&str] = &[
     "ui",
     "playback.read",
@@ -158,7 +158,45 @@ pub struct Contribution {
 #[serde(deny_unknown_fields)]
 pub struct Package {
     pub manifest: Manifest,
-    pub script: String,
+    pub native: NativePackage,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NativePackage {
+    Builtin,
+    Library {
+        artifacts: std::collections::BTreeMap<String, NativeArtifact>,
+    },
+    AndroidApk,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeArtifact {
+    pub data: String,
+    pub sha256: String,
+}
+impl NativeArtifact {
+    pub fn decode(&self) -> Result<Vec<u8>, String> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use sha2::{Digest, Sha256};
+        if self.data.len() > 90 * 1024 * 1024 {
+            return Err("Native library exceeds 64 MiB".into());
+        }
+        let bytes = STANDARD
+            .decode(&self.data)
+            .map_err(|_| "Invalid native library encoding")?;
+        if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
+            return Err("Invalid native library size".into());
+        }
+        if format!("{:x}", Sha256::digest(&bytes)) != self.sha256 {
+            return Err("Native library SHA-256 mismatch".into());
+        }
+        Ok(bytes)
+    }
+}
+pub fn native_target() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -232,7 +270,53 @@ impl Package {
         Ok(package)
     }
     pub fn validate(&self, builtin: bool) -> Result<(), String> {
-        let m = &self.manifest;
+        match &self.native {
+            NativePackage::Builtin if builtin => {}
+            NativePackage::AndroidApk if self.manifest.android_native.is_some() => {}
+            NativePackage::Library { artifacts }
+                if !artifacts.is_empty() && self.manifest.android_native.is_none() =>
+            {
+                if artifacts.len() > 8 {
+                    return Err("Too many native artifacts".into());
+                }
+                for (target, artifact) in artifacts {
+                    if ![
+                        "macos-aarch64",
+                        "macos-x86_64",
+                        "windows-x86_64",
+                        "windows-aarch64",
+                        "linux-x86_64",
+                        "linux-aarch64",
+                    ]
+                    .contains(&target.as_str())
+                    {
+                        return Err("Unsupported native target".into());
+                    }
+                    let os = target.split('-').next().unwrap_or("");
+                    if !self.manifest.platforms.iter().any(|p| p == os) {
+                        return Err("Native artifact OS is absent from manifest platforms".into());
+                    }
+                    artifact.decode()?;
+                }
+            }
+            _ => {
+                return Err(
+                    "Only native library packages or installed Android APKs are supported".into(),
+                )
+            }
+        }
+        self.manifest.validate(builtin)
+    }
+    pub fn fingerprint(&self) -> String {
+        blake3::hash(&serde_json::to_vec(self).expect("serializable package"))
+            .to_hex()
+            .to_string()
+    }
+}
+
+impl Manifest {
+    pub fn validate(&self, builtin: bool) -> Result<(), String> {
+        let m = self;
         if let Some(image) = &m.image {
             validate_image(image)?;
         }
@@ -264,12 +348,8 @@ impl Package {
         {
             return Err("Version must be major.minor.patch".into());
         }
-        if m.name.trim().is_empty()
-            || m.name.len() > 100
-            || m.description.len() > 2000
-            || self.script.trim().is_empty()
-        {
-            return Err("Invalid plugin name, description or script".into());
+        if m.name.trim().is_empty() || m.name.len() > 100 || m.description.len() > 2000 {
+            return Err("Invalid plugin name or description".into());
         }
         if m.platforms.is_empty()
             || m.platforms
@@ -357,10 +437,31 @@ impl Package {
         }
         Ok(())
     }
-    pub fn fingerprint(&self) -> String {
-        blake3::hash(&serde_json::to_vec(self).expect("serializable package"))
-            .to_hex()
-            .to_string()
+}
+
+#[cfg(test)]
+pub(super) fn fixture_native() -> NativePackage {
+    NativePackage::Library {
+        artifacts: [
+            "macos-aarch64",
+            "macos-x86_64",
+            "linux-x86_64",
+            "linux-aarch64",
+            "windows-x86_64",
+            "windows-aarch64",
+        ]
+        .into_iter()
+        .map(|target| {
+            (
+                target.into(),
+                NativeArtifact {
+                    data: "YQ==".into(),
+                    sha256: "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+                        .into(),
+                },
+            )
+        })
+        .collect(),
     }
 }
 
@@ -373,18 +474,18 @@ mod tests {
                 id: "example.hello".into(),
                 name: "Hello".into(),
                 version: "1.0.0".into(),
-                api_version: 1,
+                api_version: API_VERSION,
                 description: String::new(),
                 image: None,
                 author: None,
                 homepage: None,
                 repository: None,
                 android_native: None,
-                platforms: vec!["linux".into()],
+                platforms: vec!["linux".into(), "macos".into(), "windows".into()],
                 permissions: vec![],
                 contributions: vec![],
             },
-            script: "registerPlugin({})".into(),
+            native: fixture_native(),
         }
     }
     #[test]
@@ -451,7 +552,7 @@ mod tests {
                 "../../../plugins/examples/hello/plugin.json"
             ))
             .unwrap(),
-            script: include_str!("../../../plugins/examples/hello/main.js").into(),
+            native: fixture_native(),
         };
         assert!(p.validate(false).is_ok());
         let encoded = serde_json::to_string(&p).unwrap();
@@ -473,6 +574,7 @@ mod tests {
     #[test]
     fn android_native_requires_permission_platform_and_pinned_identity() {
         let mut p = package();
+        p.native = NativePackage::AndroidApk;
         p.manifest.android_native = Some(AndroidNative {
             package_name: "org.example.plugin".into(),
             entry_class: "org.example.plugin.Main".into(),
@@ -541,9 +643,9 @@ mod tests {
     fn rejects_path_ids_incompatible_api_and_duplicates() {
         assert!(!valid_id("../escape"));
         let mut p = package();
-        p.manifest.api_version = 2;
-        assert!(p.validate(false).is_err());
         p.manifest.api_version = 1;
+        assert!(p.validate(false).is_err());
+        p.manifest.api_version = API_VERSION;
         p.manifest.permissions.push("ui".into());
         let c = Contribution {
             id: "test".into(),
@@ -556,6 +658,22 @@ mod tests {
             show_in_menu: None,
         };
         p.manifest.contributions = vec![c.clone(), c];
+        assert!(p.validate(false).is_err());
+    }
+    #[test]
+    fn native_payloads_are_hashed_and_legacy_scripts_are_rejected() {
+        let mut p = package();
+        if let NativePackage::Library { artifacts } = &mut p.native {
+            artifacts.values_mut().next().unwrap().sha256 = "0".repeat(64);
+        }
+        assert!(p.validate(false).unwrap_err().contains("SHA-256"));
+        let legacy = serde_json::json!({"manifest":package().manifest,"script":"legacy"});
+        assert!(Package::parse(&legacy.to_string(), false).is_err());
+        let mut p = package();
+        p.native = NativePackage::Builtin;
+        assert!(p.validate(false).is_err());
+        let mut p = package();
+        p.manifest.api_version = 1;
         assert!(p.validate(false).is_err());
     }
 }
