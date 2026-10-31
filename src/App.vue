@@ -106,7 +106,7 @@ const pluginPageContext = ref<Record<string, unknown>>({});
 const isSettingsNav = computed(() => activeNav.value === 'settings' || activeNav.value.startsWith('settings/'));
 const settingsSection = computed<SettingsSection | null>(() => {
   const section = activeNav.value.slice('settings/'.length);
-  return SETTINGS_SECTIONS.some(item => item.id === section) || section.startsWith('plugin:') ? section as SettingsSection : null;
+  return SETTINGS_SECTIONS.some(item => item.id === section) || section === 'plugins/add' || section.startsWith('plugin:') ? section as SettingsSection : null;
 });
 function openSettings(section: SettingsSection | null = null) {
   activeNav.value = section ? `settings/${section}` : 'settings';

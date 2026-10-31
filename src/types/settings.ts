@@ -9,7 +9,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'about', label: 'About', description: 'Version, updates and release notes', icon: 'info' },
 ] as const satisfies readonly { id: string; label: string; description: string; icon: AppIconName }[];
 
-export type SettingsSection = typeof SETTINGS_SECTIONS[number]['id'] | `plugin:${string}`;
+export type SettingsSection = typeof SETTINGS_SECTIONS[number]['id'] | 'plugins/add' | `plugin:${string}`;
 
 export interface Contributor {
   login: string;

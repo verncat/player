@@ -13,7 +13,10 @@ optional fields are installUrl, version, author, image, updatedAt, androidApkUrl
 At most 256 unique entries, 12 tags of up to 40 bytes, and 512 KiB total. Unknown
 fields, invalid dates/URLs or a bad entry reject the whole response.
 
-Player fetches when the section opens or Refresh catalog is selected. Old entries
+Settings → Plugins lists installed packages and offers Add plugin. The separate
+`settings/plugins/add` page contains the catalog/search, URL/file installation and
+Android APK discovery. Successful installation returns to Plugins.
+Player fetches when Add plugin opens or Refresh catalog is selected. Old entries
 are cleared before fetching; failures appear as toasts. Search matches names, IDs,
 authors, descriptions, platforms and tags. New entries sort first, then by name.
 

@@ -38,6 +38,7 @@ git submodule update --init -- plugins
 | Android discovery and pinned loader | [android.rs](../../src-tauri/src/plugins/android.rs), [ApkPlugins.kt](../../src-tauri/gen/android/app/src/main/java/dev/verncat/player/ApkPlugins.kt) |
 | Credential providers | [secrets.rs](../../src-tauri/src/plugins/secrets.rs) |
 | Frontend data bridge | [host.ts](../../src/plugins/host.ts) |
+| Installed plugins / Add plugin page | [PluginManager.vue](../../src/plugins/components/PluginManager.vue), [PluginInstaller.vue](../../src/plugins/components/PluginInstaller.vue) |
 | UI renderer | [components](../../src/plugins/components) |
 
 ## Scope documents

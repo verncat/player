@@ -154,7 +154,7 @@ test('catalog uninstall disables an active plugin before deleting it and stops i
 });
 
 test('catalog selection checks the requested ID and previews the actual package before installation', async () => {
-  const script = readFileSync(new URL('../src/plugins/components/PluginManager.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
+  const script = readFileSync(new URL('../src/plugins/components/PluginInstaller.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
   const parsed = ts.createSourceFile('PluginManager.ts', script, ts.ScriptTarget.Latest, true);
   const fn = parsed.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === 'loadCatalogPlugin');
   const code = ts.transpileModule(`export ${fn.getText(parsed)}`, {
@@ -245,7 +245,7 @@ test('native startup replays buffered events once and rejects later duplicates',
 });
 
 test('Android catalog opens the APK installer download without treating an APK as a library package', async () => {
-  const source=readFileSync(new URL('../src/plugins/components/PluginManager.vue',import.meta.url),'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
+  const source=readFileSync(new URL('../src/plugins/components/PluginInstaller.vue',import.meta.url),'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
   const parsed=ts.createSourceFile('PluginManager.ts',source,ts.ScriptTarget.Latest,true);
   const fn=parsed.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='loadCatalogPlugin');
   const code=ts.transpileModule(`export ${fn.getText(parsed)}`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
