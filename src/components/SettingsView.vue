@@ -162,8 +162,11 @@ onMounted(() => { void loadConfig(); });
           <hr v-if="index === SETTINGS_SECTIONS.length" class="settings-nav-divider" aria-label="Plugin settings" />
           <button :class="{ selected: selected === item.id, 'active-settings-group': activeSubsectionGroup?.id === item.id }" :aria-current="section === item.id ? 'page' : undefined"
             :aria-expanded="item.children?.length ? activeSubsectionGroup?.id === item.id : undefined" :aria-controls="item.children?.length ? `settings-subsections-${item.id}` : undefined" @click="emit('navigate', item.id)">
-            <PluginImage v-if="item.manifest" :manifest="item.manifest" monochrome />
-            <AppIcon v-else class="settings-nav-icon" :name="item.icon" />
+            <span class="settings-nav-icon-wrap">
+              <PluginImage v-if="item.manifest" :manifest="item.manifest" monochrome />
+              <AppIcon v-else class="settings-nav-icon" :name="item.icon" />
+              <AppIcon v-if="item.children?.length" class="settings-subsections-arrow" name="disclosure" :size="10" />
+            </span>
             <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
             <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
             <AppIcon class="nav-chevron" name="disclosure" :size="20" />
@@ -290,13 +293,16 @@ p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 
 /* Match the parent's padding + icon width + gap, keeping the button full width. */
 .settings-nav button.settings-subnav { padding: 9px 12px; padding-inline-start: calc(12px + 19px + 12px); border-radius: 6px; font-size: 12px; }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
+.settings-nav-icon-wrap { position: relative; display: grid; place-items: center; width: var(--plugin-icon-size, 19px); height: var(--plugin-icon-size, 19px); flex: 0 0 var(--plugin-icon-size, 19px); }
+.settings-nav .settings-subsections-arrow { position: absolute; right: -5px; bottom: -4px; width: 10px; height: 10px; color: var(--color-accent-text); background: var(--color-surface); border-radius: 50%; transform: rotate(0deg); transition: transform 180ms ease; }
+.settings-nav button[aria-expanded="true"] .settings-subsections-arrow { transform: rotate(90deg); }
 .settings-subsections { display: grid; grid-template-rows: 1fr; opacity: 1; margin-block-start: 0; }
 .settings-subsections-inner { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow: hidden; }
 .settings-subsections-enter-active, .settings-subsections-leave-active { transition: grid-template-rows 180ms ease, opacity 140ms ease, margin-block-start 180ms ease; }
 .settings-subsections-enter-from, .settings-subsections-leave-to { grid-template-rows: 0fr; opacity: 0; margin-block-start: -4px; }
 .settings-subsections-leave-active { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
-  .settings-subsections-enter-active, .settings-subsections-leave-active { transition: none; }
+  .settings-subsections-enter-active, .settings-subsections-leave-active, .settings-nav .settings-subsections-arrow { transition: none; }
 }
 .settings-nav-icon { color: var(--color-accent-text); }
 .nav-copy { flex: 1; }
