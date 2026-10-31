@@ -324,10 +324,7 @@ mod tests {
     use super::*;
     fn content() -> String {
         serde_json::to_string(&Package {
-            manifest: serde_json::from_str(include_str!(
-                "../../../plugins/examples/hello/plugin.json"
-            ))
-            .unwrap(),
+            manifest: crate::plugins::model::fixture_manifest(),
             native: super::super::model::fixture_native(),
         })
         .unwrap()

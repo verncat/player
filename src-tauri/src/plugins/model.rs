@@ -441,6 +441,17 @@ impl Manifest {
 }
 
 #[cfg(test)]
+pub(super) fn fixture_manifest() -> Manifest {
+    serde_json::from_value(
+        player_plugin_sdk::packaging::manifest(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/examples/hello"),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[cfg(test)]
 pub(super) fn fixture_native() -> NativePackage {
     NativePackage::Library {
         artifacts: [
@@ -562,10 +573,7 @@ mod tests {
     #[test]
     fn shipped_example_is_an_installable_external_package() {
         let p = Package {
-            manifest: serde_json::from_str(include_str!(
-                "../../../plugins/examples/hello/plugin.json"
-            ))
-            .unwrap(),
+            manifest: fixture_manifest(),
             native: fixture_native(),
         };
         assert!(p.validate().is_ok());

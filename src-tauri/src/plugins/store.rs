@@ -457,10 +457,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let state = PluginState::new(root.clone()).unwrap();
         let mut p = Package {
-            manifest: serde_json::from_str(include_str!(
-                "../../../plugins/examples/hello/plugin.json"
-            ))
-            .unwrap(),
+            manifest: crate::plugins::model::fixture_manifest(),
             native: fixture_native(),
         };
         p.manifest.id = "example.test".into();
@@ -540,10 +537,7 @@ mod tests {
         assert!(state.package("example.hello").is_err());
         assert!(state.warnings.iter().any(|w| w.contains("example.hello")));
         let p = Package {
-            manifest: serde_json::from_str(include_str!(
-                "../../../plugins/examples/hello/plugin.json"
-            ))
-            .unwrap(),
+            manifest: crate::plugins::model::fixture_manifest(),
             native: fixture_native(),
         };
         let installed = state
