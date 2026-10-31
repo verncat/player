@@ -303,6 +303,7 @@ Device identity and Soulseek credentials keep their existing SQLite persistence.
 - Track the initiating action and item separately: only its button shows stripes. Other buttons may be disabled when they conflict with the operation, without appearing busy. A button disabled because an action is unavailable is not busy.
 - Reduced motion, from either the system or Player's setting, leaves the stripes static. Use the existing global styles; do not override this behavior locally.
 - File selectors use `input[aria-busy="true"]::file-selector-button` for the same feedback. For confirmation dialogs, pass `:save-busy="pending"` to [ResponsivePopup](src/components/ResponsivePopup.vue); it also disables the Save button. Declarative plugin buttons receive their pending state from the host, without plugin-specific loading markup.
+- Images use [ImageLoader](src/components/ImageLoader.vue), which shares the same `.loading-stripes` pattern. CoverImage and PluginImage show it until the image loads, remove it on failure, and reset it when the source changes. Keep the image box dimensions stable and render interactive overlays above the loader.
 
 Typical Vue usage (the operation and error display belong to the feature):
 

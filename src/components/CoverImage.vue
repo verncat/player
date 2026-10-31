@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import ImageLoader from "./ImageLoader.vue";
 
-// A cover image filling its box, over an optional gradient placeholder that
-// shows while it loads and when it fails. Size and shape come from the
-// parent's class; children go on top of the image.
+// A cover image filling its box, with striped loading feedback and an optional
+// gradient fallback. Size and shape come from the parent's class;
+// children go on top of the image.
 const props = defineProps<{
   src: string | null;
   placeholder?: [string, string];
 }>();
 
 const failed = ref(false);
-watch(() => props.src, () => { failed.value = false; });
+const loaded = ref(false);
+watch(() => props.src, () => { failed.value = false; loaded.value = false; }, { flush: 'sync' });
+const loading = computed(() => Boolean(props.src && !failed.value && !loaded.value));
 
 const placeholderStyle = computed(() => (props.placeholder
   ? { background: `linear-gradient(135deg, ${props.placeholder[0]}, ${props.placeholder[1]})` }
@@ -22,14 +25,18 @@ const placeholderStyle = computed(() => (props.placeholder
     <!-- crossorigin: WebKitGTK only loads cover:// images in CORS mode. -->
     <img
       v-if="src && !failed"
+      :key="src"
       :src="src"
+      :class="{ 'image-pending': loading }"
       alt=""
       crossorigin="anonymous"
       loading="lazy"
       decoding="async"
       draggable="false"
+      @load="loaded = true"
       @error="failed = true"
     >
+    <ImageLoader v-if="loading" />
     <slot />
   </div>
 </template>
@@ -50,4 +57,5 @@ img {
   object-fit: cover;
   border-radius: inherit;
 }
+.image-pending { visibility: hidden; }
 </style>

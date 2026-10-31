@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, useId, watch } from 'vue';
 import AppIcon from '../../components/AppIcon.vue';
+import ImageLoader from '../../components/ImageLoader.vue';
 import { icons, type AppIconName } from '../../icons';
 import type { PluginManifest } from '../types';
 
 const props = defineProps<{ manifest: PluginManifest; monochrome?: boolean }>();
 const tintId = `plugin-image-tint-${useId()}`;
 const failed = ref(false);
-watch(() => props.manifest.image, () => { failed.value = false; });
+const loaded = ref(false);
+watch(() => props.manifest.image, () => { failed.value = false; loaded.value = false; }, { flush: 'sync' });
+const loading = computed(() => Boolean(props.manifest.image && !failed.value && !loaded.value));
 const fallback = computed<AppIconName>(() => {
   const name = props.manifest.contributions.find(c => c.icon)?.icon;
   return name && Object.prototype.hasOwnProperty.call(icons, name) ? name as AppIconName : 'settings';
@@ -24,14 +27,16 @@ const fallback = computed<AppIconName>(() => {
         </filter>
       </defs>
     </svg>
-    <img v-if="manifest.image && !failed" :src="manifest.image" :style="monochrome ? { filter: `url(#${tintId})` } : undefined" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" @error="failed = true" />
+    <img v-if="manifest.image && !failed" :key="manifest.image" :src="manifest.image" :class="{ 'image-pending': loading }" :style="monochrome ? { filter: `url(#${tintId})` } : undefined" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" @load="loaded = true" @error="failed = true" />
     <AppIcon v-else :name="fallback" :size="26" />
+    <ImageLoader v-if="loading" />
   </span>
 </template>
 
 <style scoped>
-.plugin-image { display: grid; place-items: center; width: 56px; height: 56px; flex: 0 0 56px; overflow: hidden; border-radius: 10px; color: var(--color-text-muted); }
+.plugin-image { position: relative; display: grid; place-items: center; width: 56px; height: 56px; flex: 0 0 56px; overflow: hidden; border-radius: 10px; color: var(--color-text-muted); }
 .plugin-image img { width: 100%; height: 100%; object-fit: contain; }
+.image-pending { visibility: hidden; }
 @media(max-width: 600px) { .plugin-image { width: 44px; height: 44px; flex-basis: 44px; } }
 .plugin-image-monochrome { width: var(--plugin-icon-size, 19px); height: var(--plugin-icon-size, 19px); flex-basis: var(--plugin-icon-size, 19px); background: none; border-radius: 0; color: var(--color-accent-text); }
 .plugin-image-monochrome > svg:not(.plugin-image-filter) { width: 100%; height: 100%; }
