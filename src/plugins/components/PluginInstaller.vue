@@ -103,6 +103,24 @@ async function uninstall(id: string) {
 <template>
   <section class="plugin-manager">
     <AppToast :message="error" @dismiss="error = ''" />
+    <div v-if="preview" ref="previewCard" class="plugin-card">
+      <div class="plugin-heading">
+        <PluginImage :manifest="preview.manifest" />
+        <div><h4>{{ preview.manifest.name }} <small>{{ preview.manifest.version }}</small></h4><p>{{ preview.manifest.description }}</p></div>
+      </div>
+      <PluginMetadata :manifest="preview.manifest" />
+      <p class="plugin-native-note">Native code runs inside Player with the app’s system access.</p>
+      <p>Permissions: {{ preview.manifest.permissions.join(', ') || 'none' }}</p>
+      <template v-if="preview.manifest.androidNative">
+        <small class="fingerprint">Signing certificate SHA-256: {{ preview.manifest.androidNative.certificateSha256 }}</small>
+        <small class="fingerprint">APK SHA-256: {{ preview.manifest.androidNative.apkSha256 }}</small>
+      </template>
+      <small class="fingerprint">BLAKE3: {{ preview.fingerprint }}</small>
+      <div class="plugin-actions plugin-install-actions">
+        <button class="control-button control-button-primary" :disabled="Boolean(busy)" :aria-busy="busy === 'install'" @click="install">Install and grant these permissions</button>
+        <button class="control-button" :disabled="Boolean(busy)" @click="resetPreview">Cancel</button>
+      </div>
+    </div>
     <PluginCatalog :busy="Boolean(busy)" :pending-id="catalogPendingId" @review="loadCatalogPlugin" @uninstall="uninstall" @notify="error = $event" />
     <div class="plugin-install">
       <h4>Manual installation</h4>
@@ -123,24 +141,6 @@ async function uninstall(id: string) {
         <div class="plugin-url-row"><input id="plugin-url" v-model="url" class="form-input" type="url" placeholder="https://github.com/author/plugin" autocomplete="off" :disabled="Boolean(busy)" /><button class="control-button" :disabled="Boolean(busy) || !url.trim()" :aria-busy="busy === 'download'">{{ busy === 'download' ? 'Loading…' : 'Load from URL' }}</button></div>
       </form>
       <label>Or choose a .player-plugin package<input class="form-file" type="file" accept=".player-plugin,.json" :disabled="Boolean(busy)" :aria-busy="busy === 'preview'" @change="load" /></label>
-      <div v-if="preview" ref="previewCard" class="plugin-card">
-        <div class="plugin-heading">
-          <PluginImage :manifest="preview.manifest" />
-          <div><h4>{{ preview.manifest.name }} <small>{{ preview.manifest.version }}</small></h4><p>{{ preview.manifest.description }}</p></div>
-        </div>
-        <PluginMetadata :manifest="preview.manifest" />
-        <p class="plugin-native-note">Native code runs inside Player with the app’s system access.</p>
-        <p>Permissions: {{ preview.manifest.permissions.join(', ') || 'none' }}</p>
-        <template v-if="preview.manifest.androidNative">
-          <small class="fingerprint">Signing certificate SHA-256: {{ preview.manifest.androidNative.certificateSha256 }}</small>
-          <small class="fingerprint">APK SHA-256: {{ preview.manifest.androidNative.apkSha256 }}</small>
-        </template>
-        <small class="fingerprint">BLAKE3: {{ preview.fingerprint }}</small>
-        <div class="plugin-actions plugin-install-actions">
-          <button class="control-button control-button-primary" :disabled="Boolean(busy)" :aria-busy="busy === 'install'" @click="install">Install and grant these permissions</button>
-          <button class="control-button" :disabled="Boolean(busy)" @click="resetPreview">Cancel</button>
-        </div>
-      </div>
     </div>
   </section>
 </template>

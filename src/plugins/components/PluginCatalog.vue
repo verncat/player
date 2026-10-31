@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import AppIcon from '../../components/AppIcon.vue';
 import { usePluginHost } from '../host';
 import { catalogManifest, filterCatalog } from '../catalog';
 import type { CatalogEntry, PluginCatalogListing } from '../types';
@@ -18,6 +20,12 @@ const entries = computed(() => filterCatalog(listing.value?.catalog.plugins || [
 const installed = (id: string) => host.plugins.value.find(p => p.manifest.id === id);
 const supported = (entry: CatalogEntry) => !!listing.value && entry.platforms.includes(listing.value.platform);
 const tags = (entry: CatalogEntry) => [...new Set([...entry.platforms, ...entry.tags])];
+const submissionUrl = 'https://github.com/verncat/player-plugins/blob/main/docs/catalog.md#publish';
+
+async function openSubmission() {
+  try { await openUrl(submissionUrl); }
+  catch (e) { emit('notify', String(e)); }
+}
 
 async function load() {
   if (loading.value) return;
@@ -57,6 +65,7 @@ onUnmounted(() => { disposed = true; });
         <button type="button" class="control-button control-button-compact" :disabled="busy || (!installed(entry.id) && !supported(entry))" :aria-busy="pendingId === entry.id" @click="installed(entry.id) ? emit('uninstall', entry.id) : emit('review', entry)">{{ installed(entry.id) ? 'Uninstall' : listing?.platform === 'android' && entry.androidApkUrl ? 'Download APK' : 'Install' }}</button>
       </div>
     </article>
+    <a class="catalog-submit" :href="submissionUrl" @click.prevent="openSubmission">Add your plugin <AppIcon name="external-link" :size="14" /></a>
   </section>
 </template>
 
@@ -77,6 +86,9 @@ onUnmounted(() => { disposed = true; });
 .catalog-footer { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
 .catalog-footer > button { flex-shrink: 0; margin-inline-start: auto; }
 .catalog-dates { font-size: 12px; overflow-wrap: anywhere; }
+.catalog-submit { display: inline-flex; align-items: center; gap: 6px; justify-self: start; color: var(--color-text-muted); font-size: 13px; text-underline-offset: 3px; }
+.catalog-submit:hover { color: var(--color-accent-text); }
+.catalog-submit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 .catalog-filter { display: grid; gap: 8px; }
 .catalog-tags { display: flex; flex: 1 1 240px; flex-wrap: wrap; gap: 5px; list-style: none; padding: 0; margin: 0; min-width: 0; }
 .catalog-tags li { border: 1px solid var(--color-border); border-radius: 99px; padding: 2px 7px; font-size: 11px; line-height: 1.4; color: var(--color-text-muted); overflow-wrap: anywhere; max-width: 100%; }
