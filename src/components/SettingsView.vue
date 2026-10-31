@@ -160,20 +160,25 @@ onMounted(() => { void loadConfig(); });
       <nav class="settings-nav" aria-label="Settings sections">
         <template v-for="(item, index) in sections" :key="item.id">
           <hr v-if="index === SETTINGS_SECTIONS.length" class="settings-nav-divider" aria-label="Plugin settings" />
-          <button :class="{ selected: selected === item.id, 'active-settings-group': activeSubsectionGroup?.id === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
+          <button :class="{ selected: selected === item.id, 'active-settings-group': activeSubsectionGroup?.id === item.id }" :aria-current="section === item.id ? 'page' : undefined"
+            :aria-expanded="item.children?.length ? activeSubsectionGroup?.id === item.id : undefined" :aria-controls="item.children?.length ? `settings-subsections-${item.id}` : undefined" @click="emit('navigate', item.id)">
             <PluginImage v-if="item.manifest" :manifest="item.manifest" monochrome />
             <AppIcon v-else class="settings-nav-icon" :name="item.icon" />
             <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
             <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
             <AppIcon class="nav-chevron" name="disclosure" :size="20" />
           </button>
-          <template v-if="selected === item.id || item.children?.some(child => child.id === selected)">
-            <button v-for="child in item.children" :key="child.id" class="settings-subnav active-settings-group" :class="{ selected: selected === child.id }"
-              :aria-current="section === child.id ? 'page' : undefined" @click="emit('navigate', child.id)">
-              <span class="nav-copy"><span class="nav-label">{{ child.label }}</span><span class="nav-description">{{ child.description }}</span></span>
-              <AppIcon class="nav-chevron" name="disclosure" :size="20" />
-            </button>
-          </template>
+          <Transition name="settings-subsections">
+            <div v-if="activeSubsectionGroup?.id === item.id" :id="`settings-subsections-${item.id}`" class="settings-subsections active-settings-group">
+              <div class="settings-subsections-inner">
+                <button v-for="child in item.children" :key="child.id" class="settings-subnav active-settings-group" :class="{ selected: selected === child.id }"
+                  :aria-current="section === child.id ? 'page' : undefined" @click="emit('navigate', child.id)">
+                  <span class="nav-copy"><span class="nav-label">{{ child.label }}</span><span class="nav-description">{{ child.description }}</span></span>
+                  <AppIcon class="nav-chevron" name="disclosure" :size="20" />
+                </button>
+              </div>
+            </div>
+          </Transition>
         </template>
         <p class="local-note">Preferences stay on this device.</p>
       </nav>
@@ -279,12 +284,20 @@ p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 
 .settings-layout { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 44px; align-items: start; }
 .settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: var(--settings-page-top); }
 .settings-nav-divider { border: 0; border-top: 1px solid var(--color-border); margin: 8px 12px; }
-.settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
-.settings-nav > button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
-.settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
+.settings-nav button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
+.settings-nav button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
+.settings-nav button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
 /* Match the parent's padding + icon width + gap, keeping the button full width. */
-.settings-nav > button.settings-subnav { padding: 9px 12px; padding-inline-start: calc(12px + 19px + 12px); border-radius: 6px; font-size: 12px; }
+.settings-nav button.settings-subnav { padding: 9px 12px; padding-inline-start: calc(12px + 19px + 12px); border-radius: 6px; font-size: 12px; }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
+.settings-subsections { display: grid; grid-template-rows: 1fr; opacity: 1; margin-block-start: 0; }
+.settings-subsections-inner { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow: hidden; }
+.settings-subsections-enter-active, .settings-subsections-leave-active { transition: grid-template-rows 180ms ease, opacity 140ms ease, margin-block-start 180ms ease; }
+.settings-subsections-enter-from, .settings-subsections-leave-to { grid-template-rows: 0fr; opacity: 0; margin-block-start: -4px; }
+.settings-subsections-leave-active { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .settings-subsections-enter-active, .settings-subsections-leave-active { transition: none; }
+}
 .settings-nav-icon { color: var(--color-accent-text); }
 .nav-copy { flex: 1; }
 .nav-description, .nav-chevron { display: none; }
@@ -367,11 +380,13 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .settings-layout { display: block; }
   .settings-nav { position: static; gap: 0; }
   .settings-nav-divider { margin: 12px 4px; }
-  .settings-nav > button { padding: 18px 4px; border-bottom: 1px solid var(--color-border); border-radius: 0; gap: 16px; min-height: 76px; }
-  .settings-nav > button.selected { background: transparent; color: var(--color-text-muted); }
-  .settings-nav > button.settings-subnav { padding: 12px; padding-inline-start: calc(4px + 22px + 16px); min-height: 52px; }
+  .settings-nav button { padding: 18px 4px; border-bottom: 1px solid var(--color-border); border-radius: 0; gap: 16px; min-height: 76px; }
+  .settings-nav button.selected { background: transparent; color: var(--color-text-muted); }
+  .settings-nav button.settings-subnav { padding: 12px; padding-inline-start: calc(4px + 22px + 16px); min-height: 52px; }
   .settings-nav svg { width: 22px; height: 22px; }
   .settings-nav { --plugin-icon-size: 22px; }
+  .settings-subsections-inner { gap: 0; }
+  .settings-subsections-enter-from, .settings-subsections-leave-to { margin-block-start: 0; }
   .nav-label { color: var(--color-text); font-size: 15px; }
   .nav-description { display: block; color: var(--color-text-muted); font-size: 12px; font-weight: 400; margin-top: 6px; }
   .nav-chevron { display: block; color: var(--color-text-faint); }
@@ -380,7 +395,7 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .has-section .settings-nav { display: none; }
   .has-section.has-subsections .settings-nav { display: flex; margin-bottom: 20px; }
   .has-section.has-subsections .settings-nav > :not(.active-settings-group) { display: none; }
-  .has-section.has-subsections .settings-nav > button.active-settings-group { min-height: 44px; padding-block: 10px; }
+  .has-section.has-subsections .settings-nav button.active-settings-group { min-height: 44px; padding-block: 10px; }
   .has-section .settings-panel { display: block; }
   .setting-row { align-items: flex-start; flex-wrap: wrap; gap: 14px; }
   .setting-row > div:first-child { flex: 1; min-width: 180px; }

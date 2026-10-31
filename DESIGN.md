@@ -331,7 +331,7 @@ async function save() {
 
 ### 5.11 Settings subtabs
 
-Declare nested settings entries in SETTINGS_SUBSECTIONS in [settings.ts](src/types/settings.ts). Render them directly below their parent in the settings navigation list, without extra horizontal indentation and with their own selected state, only while the parent or one of its children is open. Add plugins is a child of Plugins and opens catalog search and manual installation. The same navigation hierarchy is available on mobile.
+Declare nested settings entries in SETTINGS_SUBSECTIONS in [settings.ts](src/types/settings.ts). Render them directly below their parent in the settings navigation list, without extra horizontal indentation and with their own selected state, only while the parent or one of its children is open. Animate subsection expansion/collapse with a short height and opacity transition; respect reduced motion. Add plugins is a child of Plugins and opens catalog search and manual installation. The same navigation hierarchy is available on mobile.
 
 ## 6. Backend Design
 
